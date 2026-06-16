@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Buyer Dashboard — Seaside Horizon</title>
+  <link rel="icon" type="image/png" href="/img/logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><img src="/img/logo.png" alt="Seaside Horizon" class="brand-logo"> Seaside Horizon</div>
+    <nav>
+      <a href="/dashboard.html">Posting</a>
+      <a href="/buyers.html" class="active">Buyers</a>
+      <a href="/leads.html">Leads</a>
+      <button class="logout" id="logout-btn">Sign Out</button>
+    </nav>
+  </div>
+
+  <div class="page">
+    <div class="page-header">
+      <div>
+        <h1>Buyer Dashboard</h1>
+        <div class="sub" id="buyer-count"></div>
+      </div>
+      <div class="flex gap-8">
+        <button class="btn btn-ghost btn-sm" id="export-btn">⬇ Export for GHL</button>
+        <button class="btn btn-ghost btn-sm" id="import-btn">📥 Import Buyers</button>
+        <button class="btn btn-ghost btn-sm" id="onboard-btn" title="Email new buyers asking what they're buying — answers flow back into their record">📨 Request buy-box</button>
+        <button class="btn btn-primary btn-sm" id="add-btn">+ Add Buyer</button>
+      </div>
+    </div>
+
+    <div class="card mt-8" style="margin-bottom:18px">
+      <div class="flex gap-12" style="flex-wrap:wrap">
+        <input type="search" id="search" placeholder="Search by name, email, phone…" style="max-width:260px">
+        <select id="filter-tier" style="max-width:140px">
+          <option value="">All tiers</option>
+          <option value="A">Tier A (hot)</option>
+          <option value="B">Tier B (warm)</option>
+          <option value="C">Tier C (cold)</option>
+        </select>
+        <select id="filter-state" style="max-width:140px">
+          <option value="">All states</option>
+        </select>
+        <select id="filter-strategy" style="max-width:170px">
+          <option value="">All strategies</option>
+          <option value="subto">Subject To</option>
+          <option value="owner_finance">Owner Finance</option>
+          <option value="cash">Cash</option>
+          <option value="morby">Morby/Stack</option>
+          <option value="all">All strategies</option>
+        </select>
+        <label class="flex gap-8" style="align-items:center;font-weight:500;color:var(--text-2);font-size:0.86rem;white-space:nowrap">
+          <input type="checkbox" id="filter-missing" style="width:auto">
+          ⚠ Missing info only
+        </label>
+      </div>
+      <p class="muted" id="filter-summary" style="margin:10px 0 0;font-size:0.82rem"></p>
+    </div>
+
+    <div id="content"><div class="loading"><div class="spinner"></div>Loading buyers…</div></div>
+  </div>
+
+  <!-- ── Add/Edit modal ── -->
+  <div id="modal-backdrop" class="hidden" style="position:fixed;inset:0;background:rgba(17,41,80,0.45);display:flex;align-items:center;justify-content:center;z-index:50">
+    <div class="card" style="width:100%;max-width:480px;max-height:85vh;overflow-y:auto">
+      <h2 id="modal-title" style="margin-top:0">Add Buyer</h2>
+      <form id="buyer-form">
+        <input type="hidden" id="b-id">
+        <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px">
+          <div class="field"><label>Name *</label><input id="b-name" required></div>
+          <div class="field"><label>Tier</label>
+            <select id="b-tier"><option value="A">A — Hot</option><option value="B" selected>B — Warm</option><option value="C">C — Cold</option></select>
+          </div>
+          <div class="field"><label>Email</label><input type="email" id="b-email"></div>
+          <div class="field"><label>Phone</label><input id="b-phone"></div>
+          <div class="field"><label>States (comma-separated)</label><input id="b-states" placeholder="FL, TX, MN"></div>
+          <div class="field"><label>Strategy</label>
+            <select id="b-strategy">
+              <option value="all">All</option><option value="subto">Subject To</option>
+              <option value="owner_finance">Owner Finance</option><option value="cash">Cash</option>
+              <option value="morby">Morby/Stack</option>
+            </select>
+          </div>
+          <div class="field"><label>Max PITI</label><input type="number" id="b-piti"></div>
+          <div class="field"><label>Min Beds</label><input type="number" id="b-beds"></div>
+        </div>
+        <div class="field mt-8"><label>Notes</label><textarea id="b-notes" rows="2"></textarea></div>
+        <div class="flex gap-8 mt-16">
+          <label class="flex gap-8" style="font-weight:500;color:var(--text-2)"><input type="checkbox" id="b-sms" style="width:auto"> SMS opt-in</label>
+        </div>
+        <div class="flex gap-8 mt-16" style="justify-content:flex-end">
+          <button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Buyer</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ── Import buyers modal ── -->
+  <div id="import-backdrop" class="hidden" style="position:fixed;inset:0;background:rgba(17,41,80,0.45);display:flex;align-items:center;justify-content:center;z-index:50">
+    <div class="card" style="width:100%;max-width:640px;max-height:88vh;overflow-y:auto">
+      <h2 style="margin-top:0">📥 Import Buyers</h2>
+      <p class="muted" style="font-size:0.85rem;margin-top:-6px">
+        Drop a CSV from BatchLeads, InvestorLift, a Facebook export — anything. Columns are auto-detected, contacts are deduped against your existing list, and only new buyers are added.
+      </p>
+
+      <div id="import-drop" style="border:2px dashed var(--border);border-radius:10px;padding:28px;text-align:center;cursor:pointer;background:#F7FAFC">
+        <div style="font-size:1.6rem">📄</div>
+        <div style="font-weight:600;color:var(--navy-dark);margin-top:6px">Click to choose a CSV, or drag one here</div>
+        <div class="muted" style="font-size:0.8rem;margin-top:4px">.csv files only · first row should be column headers</div>
+        <input type="file" id="import-file" accept=".csv,text/csv" class="hidden">
+      </div>
+
+      <div id="import-config" class="hidden">
+        <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:16px">
+          <div class="field"><label>Source tag</label>
+            <select id="import-source">
+              <option value="batchleads">BatchLeads</option>
+              <option value="investorlift">InvestorLift</option>
+              <option value="facebook">Facebook</option>
+              <option value="propstream">PropStream</option>
+              <option value="import">Other / generic</option>
+            </select>
+          </div>
+          <div class="field"><label>Default tier</label>
+            <select id="import-tier"><option value="A">A — Hot</option><option value="B" selected>B — Warm</option><option value="C">C — Cold</option></select>
+          </div>
+          <div class="field"><label>Default strategy</label>
+            <select id="import-strategy">
+              <option value="all">All</option><option value="cash">Cash</option>
+              <option value="subto">Subject To</option><option value="owner_finance">Owner Finance</option>
+              <option value="morby">Morby/Stack</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field mt-8"><label style="font-weight:600">Column mapping <span class="muted" style="font-weight:400">(auto-detected — adjust if needed)</span></label></div>
+        <div id="import-mapping" class="grid" style="grid-template-columns:1fr 1fr;gap:10px"></div>
+
+        <div id="import-summary" class="card" style="background:#F7FAFC;margin-top:14px;font-size:0.88rem"></div>
+
+        <div id="import-preview" style="margin-top:10px;max-height:180px;overflow:auto;font-size:0.78rem"></div>
+      </div>
+
+      <div class="flex gap-8 mt-16" style="justify-content:flex-end">
+        <button type="button" class="btn btn-ghost" id="import-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary hidden" id="import-confirm">Import 0 buyers</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/supa.js"></script>
+  <script>
+    let allBuyers = [];
+    let lastContactByBuyer = {};
+
+    const TIER_INFO = {
+      A: { label: "Hot",  cls: "tier-hot",  rank: 0 },
+      B: { label: "Warm", cls: "tier-warm", rank: 1 },
+      C: { label: "Cold", cls: "tier-cold", rank: 2 },
+    };
+    const TIER_CYCLE = { A: "B", B: "C", C: "A" };
+    function tierInfo(t) { return TIER_INFO[t] || { label: t || "Untiered", cls: "tier-cold", rank: 3 }; }
+
+    function escapeHtml(s) {
+      return String(s || "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    }
+    function fmtMoney(n) { n = Number(n) || 0; return n ? `$${n.toLocaleString()}` : ""; }
+    function fmtDate(d) {
+      if (!d) return null;
+      try { return new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); }
+      catch { return null; }
+    }
+    function missingInfo(b) {
+      const noStates = !((b.states || "").trim());
+      const noPiti = !b.max_piti;
+      const noContact = !b.email && !b.phone;
+      return { noStates, noPiti, noContact, any: noStates || noPiti || noContact };
+    }
+
+    async function loadBuyers() {
+      const [{ data, error }, { data: activity }] = await Promise.all([
+        supa.from("buyers").select("*").order("date_added", { ascending: false }),
+        supa.from("buyer_activity").select("buyer_id,created_at"),
+      ]);
+      const content = document.getElementById("content");
+      if (error) { content.innerHTML = `<div class="empty">Couldn't load buyers: ${escapeHtml(error.message)}</div>`; return; }
+      allBuyers = data || [];
+      lastContactByBuyer = {};
+      for (const a of (activity || [])) {
+        const cur = lastContactByBuyer[a.buyer_id];
+        if (!cur || new Date(a.created_at) > new Date(cur)) lastContactByBuyer[a.buyer_id] = a.created_at;
+      }
+      populateStateFilter();
+      render();
+    }
+
+    function populateStateFilter() {
+      const sel = document.getElementById("filter-state");
+      if (sel.dataset.populated) return;
+      const states = new Set();
+      allBuyers.forEach(b => (b.states || "").split(",").forEach(s => { const t = s.trim(); if (t) states.add(t); }));
+      [...states].sort().forEach(s => sel.insertAdjacentHTML("beforeend", `<option value="${s}">${s}</option>`));
+      sel.dataset.populated = "1";
+    }
+
+    function applyFilters() {
+      const q = document.getElementById("search").value.trim().toLowerCase();
+      const tier = document.getElementById("filter-tier").value;
+      const state = document.getElementById("filter-state").value;
+      const strategy = document.getElementById("filter-strategy").value;
+      const missingOnly = document.getElementById("filter-missing").checked;
+
+      return allBuyers.filter(b => {
+        if (tier && b.tier !== tier) return false;
+        if (state && !(b.states || "").split(",").map(s => s.trim()).includes(state)) return false;
+        if (strategy && b.strategy !== strategy) return false;
+        if (missingOnly && !missingInfo(b).any) return false;
+        if (q) {
+          const hay = `${b.name} ${b.email} ${b.phone}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+    }
+
+    function render() {
+      const filtered = applyFilters();
+      document.getElementById("buyer-count").textContent =
+        `${allBuyers.length} buyer${allBuyers.length === 1 ? "" : "s"}`;
+      document.getElementById("filter-summary").textContent =
+        `Showing ${filtered.length} of ${allBuyers.length} buyer${allBuyers.length === 1 ? "" : "s"}`;
+
+      const content = document.getElementById("content");
+      if (!filtered.length) {
+        content.innerHTML = `<div class="empty">No buyers match your filters.</div>`;
+        return;
+      }
+
+      const sorted = [...filtered].sort((a, b) => {
+        const ra = tierInfo(a.tier).rank, rb = tierInfo(b.tier).rank;
+        if (ra !== rb) return ra - rb;
+        return (a.name || "").localeCompare(b.name || "");
+      });
+
+      content.innerHTML = `<div class="grid buyer-grid">${sorted.map(b => renderCard(b)).join("")}</div>`;
+
+      content.querySelectorAll(".tier-pill").forEach(btn => btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const b = getBuyer(e);
+        const next = TIER_CYCLE[b.tier] || "A";
+        await supa.from("buyers").update({ tier: next }).eq("id", b.id);
+        await loadBuyers();
+      }));
+      content.querySelectorAll(".edit-btn").forEach(btn => btn.addEventListener("click", e => openModal(getBuyer(e))));
+      content.querySelectorAll(".del-btn").forEach(btn => btn.addEventListener("click", async e => {
+        const b = getBuyer(e);
+        if (!confirm(`Delete ${b.name}?`)) return;
+        await supa.from("buyers").delete().eq("id", b.id);
+        await loadBuyers();
+      }));
+    }
+
+    function renderCard(b) {
+      const tier = tierInfo(b.tier);
+      const miss = missingInfo(b);
+      const lastContact = fmtDate(lastContactByBuyer[b.id]);
+      const states = (b.states || "").split(",").map(s => s.trim()).filter(Boolean);
+      const phoneHref = (b.phone || "").replace(/[^\d+]/g, "");
+
+      const flags = [
+        miss.noStates ? `<span class="warn-icon" title="No buy-box states set">🟠</span>` : "",
+        miss.noContact ? `<span class="warn-icon" title="No phone or email on file">🔴</span>` : "",
+      ].join("");
+
+      const chips = [
+        ...states.map(s => `<span class="pill pill-state" style="font-size:0.7rem">${escapeHtml(s)}</span>`),
+        b.strategy ? `<span class="chip-mini">${escapeHtml((b.strategy || "").replace(/_/g, " "))}</span>` : "",
+        b.max_price ? `<span class="chip-mini">Max Entry ${fmtMoney(b.max_price)}</span>` : "",
+        b.max_piti ? `<span class="chip-mini">Max PITI ${fmtMoney(b.max_piti)}/mo</span>` : "",
+      ].filter(Boolean).join(" ");
+
+      return `
+        <div class="card buyer-card" data-id="${b.id}">
+          <div class="flex-between" style="align-items:flex-start">
+            <div class="flex gap-8" style="align-items:center;flex-wrap:wrap">
+              <strong style="font-size:1.05rem;color:var(--navy-dark)">${escapeHtml(b.name)}</strong>
+              ${flags}
+            </div>
+            <div class="flex gap-8" style="align-items:center;flex-direction:column;align-items:flex-end">
+              <button type="button" class="tier-pill ${tier.cls}" title="Click to change tier (Hot → Warm → Cold)">${escapeHtml(tier.label)}</button>
+              ${b.list_source ? `<span class="muted" style="font-size:0.7rem">${escapeHtml(b.list_source)}</span>` : ""}
+            </div>
+          </div>
+
+          <div style="margin-top:8px;font-size:0.86rem;color:var(--text-2)">
+            ${b.phone ? `<a href="tel:${escapeHtml(phoneHref)}" style="color:var(--navy);text-decoration:none">📞 ${escapeHtml(b.phone)}</a>` : ""}
+            ${b.phone && b.email ? " · " : ""}
+            ${b.email ? `<span>✉️ ${escapeHtml(b.email)}</span>` : ""}
+            ${!b.phone && !b.email ? `<span class="muted">No contact info on file</span>` : ""}
+            ${b.sms_opt_in ? ` <span class="muted" style="font-size:0.74rem">📱 SMS</span>` : ""}
+          </div>
+
+          ${chips ? `<div class="flex gap-6" style="flex-wrap:wrap;margin-top:10px">${chips}</div>` : ""}
+
+          <div style="margin-top:10px">
+            <div class="muted" style="font-size:0.7rem;font-weight:700;letter-spacing:0.4px;text-transform:uppercase">Notes:</div>
+            <div class="notes-box" style="font-size:0.84rem;color:var(--text-1);margin-top:2px;white-space:pre-wrap">${b.notes ? escapeHtml(b.notes) : '<span class="muted">—</span>'}</div>
+          </div>
+
+          <div style="margin-top:auto;padding-top:12px;border-top:1px solid var(--border)">
+            <div class="muted" style="font-size:0.74rem;margin-bottom:8px">${lastContact ? `Last contacted: ${lastContact}` : "Not yet contacted"}</div>
+            <div class="flex gap-8">
+              ${b.phone ? `<a class="btn btn-ghost btn-sm" href="tel:${escapeHtml(phoneHref)}">📞 Call</a>` : ""}
+              <button class="btn btn-ghost btn-sm edit-btn">Edit</button>
+              <button class="btn btn-danger btn-sm del-btn">Delete</button>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function getBuyer(e) {
+      const id = Number(e.target.closest(".buyer-card").dataset.id);
+      return allBuyers.find(b => b.id === id);
+    }
+
+    function openModal(b) {
+      document.getElementById("modal-title").textContent = b ? "Edit Buyer" : "Add Buyer";
+      document.getElementById("b-id").value = b ? b.id : "";
+      document.getElementById("b-name").value = b ? b.name : "";
+      document.getElementById("b-tier").value = b ? b.tier : "B";
+      document.getElementById("b-email").value = b ? (b.email || "") : "";
+      document.getElementById("b-phone").value = b ? (b.phone || "") : "";
+      document.getElementById("b-states").value = b ? (b.states || "") : "";
+      document.getElementById("b-strategy").value = b ? b.strategy : "all";
+      document.getElementById("b-piti").value = b ? (b.max_piti || "") : "";
+      document.getElementById("b-beds").value = b ? (b.min_beds || "") : "";
+      document.getElementById("b-notes").value = b ? (b.notes || "") : "";
+      document.getElementById("b-sms").checked = b ? !!b.sms_opt_in : false;
+      document.getElementById("modal-backdrop").classList.remove("hidden");
+    }
+    function closeModal() { document.getElementById("modal-backdrop").classList.add("hidden"); }
+
+    function exportCsv() {
+      const headers = ["First Name","Last Name","Email","Phone","Tier","States","Strategy","Max PITI","Min Beds","Source","Notes"];
+      const rows = allBuyers.map(b => {
+        const parts = (b.name || "").split(" ");
+        return [
+          parts[0] || "", parts.slice(1).join(" "), b.email || "", b.phone || "",
+          b.tier || "", b.states || "", b.strategy || "", b.max_piti || 0, b.min_beds || 0,
+          b.list_source || "", (b.notes || "").replace(/\n/g, " "),
+        ];
+      });
+      const csv = [headers, ...rows].map(r =>
+        r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")
+      ).join("\n");
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "seaside_buyers_ghl.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Buyer Inflow Engine — universal CSV import
+    // Turns any buyer list (BatchLeads, InvestorLift, Facebook, PropStream…)
+    // into deduped CRM buyers. Auto-detects columns, dedupes by phone/email
+    // against the existing list AND within the file, then bulk-inserts.
+    // ─────────────────────────────────────────────────────────────────────
+
+    // RFC-4180-ish CSV parser: handles quoted fields, escaped quotes, commas
+    // and newlines inside quotes, and \r\n / \r / \n line endings.
+    function parseCsv(text) {
+      const rows = [];
+      let row = [], field = "", inQuotes = false;
+      text = text.replace(/^﻿/, ""); // strip BOM
+      for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (inQuotes) {
+          if (c === '"') {
+            if (text[i + 1] === '"') { field += '"'; i++; }
+            else inQuotes = false;
+          } else field += c;
+        } else {
+          if (c === '"') inQuotes = true;
+          else if (c === ",") { row.push(field); field = ""; }
+          else if (c === "\n" || c === "\r") {
+            if (c === "\r" && text[i + 1] === "\n") i++;
+            row.push(field); field = "";
+            if (row.some(v => v !== "")) rows.push(row);
+            row = [];
+          } else field += c;
+        }
+      }
+      if (field !== "" || row.length) { row.push(field); if (row.some(v => v !== "")) rows.push(row); }
+      return rows;
+    }
+
+    // Header synonym sets — map messy real-world headers to our fields.
+    const HEADER_SYNONYMS = {
+      first:   ["first name","first","fname","owner first name","owner first","first_name","contact first name"],
+      last:    ["last name","last","lname","owner last name","owner last","last_name","contact last name"],
+      name:    ["name","full name","owner name","contact name","contact","buyer name","investor name","display name"],
+      email:   ["email","email 1","email1","email address","e-mail","primary email","email_1","emailaddress"],
+      phone:   ["phone","phone 1","phone1","mobile","cell","cell phone","phone number","telephone","primary phone","phone_1","mobile phone","contact phone"],
+      company: ["company","business","business name","llc","entity","company name","organization"],
+      state:   ["state","states","mailing state","property state","st","mailing st","buy box states","buy_box"],
+      city:    ["city","mailing city","property city"],
+      notes:   ["notes","note","comment","comments","tags","tag"],
+    };
+    // Header substrings that mark ADDITIONAL phone/email columns to harvest.
+    const PHONE_HINT = ["phone","mobile","cell","tel"];
+    const EMAIL_HINT = ["email","e-mail"];
+
+    function detectMapping(headers) {
+      const norm = headers.map(h => (h || "").trim().toLowerCase());
+      const map = {};
+      // Exact-ish single-field detection (first match wins).
+      for (const [field, syns] of Object.entries(HEADER_SYNONYMS)) {
+        const idx = norm.findIndex(h => syns.includes(h));
+        if (idx !== -1) map[field] = idx;
+      }
+      // Fallback fuzzy: header contains a synonym word.
+      for (const [field, syns] of Object.entries(HEADER_SYNONYMS)) {
+        if (map[field] != null) continue;
+        const idx = norm.findIndex(h => syns.some(s => h.includes(s)));
+        if (idx !== -1) map[field] = idx;
+      }
+      // All phone/email column indices (we harvest the first non-empty per row).
+      map._phones = norm.map((h, i) => PHONE_HINT.some(w => h.includes(w)) ? i : -1).filter(i => i !== -1);
+      map._emails = norm.map((h, i) => EMAIL_HINT.some(w => h.includes(w)) ? i : -1).filter(i => i !== -1);
+      return map;
+    }
+
+    const ALL_STATE_ABBR = new Set(["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC"]);
+    const STATE_NAME_TO_ABBR = {alabama:"AL",alaska:"AK",arizona:"AZ",arkansas:"AR",california:"CA",colorado:"CO",connecticut:"CT",delaware:"DE",florida:"FL",georgia:"GA",hawaii:"HI",idaho:"ID",illinois:"IL",indiana:"IN",iowa:"IA",kansas:"KS",kentucky:"KY",louisiana:"LA",maine:"ME",maryland:"MD",massachusetts:"MA",michigan:"MI",minnesota:"MN",mississippi:"MS",missouri:"MO",montana:"MT",nebraska:"NE",nevada:"NV","new hampshire":"NH","new jersey":"NJ","new mexico":"NM","new york":"NY","north carolina":"NC","north dakota":"ND",ohio:"OH",oklahoma:"OK",oregon:"OR",pennsylvania:"PA","rhode island":"RI","south carolina":"SC","south dakota":"SD",tennessee:"TN",texas:"TX",utah:"UT",vermont:"VT",virginia:"VA",washington:"WA","west virginia":"WV",wisconsin:"WI",wyoming:"WY","district of columbia":"DC"};
+    function normalizeState(raw) {
+      const out = [];
+      for (let part of String(raw || "").replace(/[;|/]/g, ",").split(",")) {
+        part = part.trim();
+        if (!part) continue;
+        const up = part.toUpperCase();
+        if (ALL_STATE_ABBR.has(up)) out.push(up);
+        else if (STATE_NAME_TO_ABBR[part.toLowerCase()]) out.push(STATE_NAME_TO_ABBR[part.toLowerCase()]);
+      }
+      return [...new Set(out)].join(",");
+    }
+    function digitsOnly(p) { return String(p || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, ""); }
+    function validEmail(e) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(e || "").trim()); }
+    function firstNonEmpty(row, idxs) {
+      for (const i of idxs) { const v = (row[i] || "").trim(); if (v) return v; }
+      return "";
+    }
+
+    // Parsed state held between "choose file" and "confirm import".
+    let importState = null;
+
+    function buildRowsFromCsv(rows, mapping) {
+      const out = [];
+      for (const row of rows) {
+        let name = "";
+        if (mapping.first != null || mapping.last != null) {
+          name = [row[mapping.first] || "", row[mapping.last] || ""].map(s => s.trim()).filter(Boolean).join(" ");
+        }
+        if (!name && mapping.name != null) name = (row[mapping.name] || "").trim();
+        const phoneRaw = mapping._phones.length ? firstNonEmpty(row, mapping._phones)
+                       : (mapping.phone != null ? (row[mapping.phone] || "").trim() : "");
+        let email = mapping._emails.length ? firstNonEmpty(row, mapping._emails)
+                  : (mapping.email != null ? (row[mapping.email] || "").trim() : "");
+        email = email.toLowerCase();
+        if (email && !validEmail(email)) email = "";
+        const company = mapping.company != null ? (row[mapping.company] || "").trim() : "";
+        const states = mapping.state != null ? normalizeState(row[mapping.state]) : "";
+        const extraNote = mapping.notes != null ? (row[mapping.notes] || "").trim() : "";
+        if (!name && company) name = company;
+        if (!name && (phoneRaw || email)) name = email || phoneRaw;
+        out.push({ name: name.trim(), phone: phoneRaw.trim(), email, company, states, notes: extraNote });
+      }
+      return out;
+    }
+
+    function classifyImport(parsedRows) {
+      const exPhones = new Set(allBuyers.map(b => digitsOnly(b.phone)).filter(Boolean));
+      const exEmails = new Set(allBuyers.map(b => (b.email || "").toLowerCase()).filter(Boolean));
+      const seenPhones = new Set(), seenEmails = new Set();
+      const fresh = [], dupes = [], invalid = [];
+      for (const r of parsedRows) {
+        const pd = digitsOnly(r.phone);
+        const em = r.email;
+        if (!r.name && !pd && !em) { invalid.push(r); continue; }
+        if (!pd && !em) { invalid.push(r); continue; }
+        if ((pd && exPhones.has(pd)) || (em && exEmails.has(em)) ||
+            (pd && seenPhones.has(pd)) || (em && seenEmails.has(em))) { dupes.push(r); continue; }
+        if (pd) seenPhones.add(pd);
+        if (em) seenEmails.add(em);
+        fresh.push(r);
+      }
+      return { fresh, dupes, invalid };
+    }
+
+    function renderImportConfig() {
+      const { headers, rows } = importState.raw;
+      const mapping = importState.mapping;
+      const fields = [
+        ["name", "Name"], ["first", "First name"], ["last", "Last name"],
+        ["email", "Email"], ["phone", "Phone"], ["company", "Company"],
+        ["state", "State(s)"], ["notes", "Notes"],
+      ];
+      const opts = (sel) => `<option value="">— none —</option>` +
+        headers.map((h, i) => `<option value="${i}" ${sel === i ? "selected" : ""}>${escapeHtml(h || `Column ${i + 1}`)}</option>`).join("");
+      document.getElementById("import-mapping").innerHTML = fields.map(([f, label]) =>
+        `<div class="field"><label style="font-size:0.78rem">${label}</label><select class="map-sel" data-field="${f}">${opts(mapping[f])}</select></div>`
+      ).join("");
+      document.getElementById("import-mapping").querySelectorAll(".map-sel").forEach(sel => {
+        sel.addEventListener("change", () => {
+          const f = sel.dataset.field;
+          mapping[f] = sel.value === "" ? null : Number(sel.value);
+          recomputeImport();
+        });
+      });
+      document.getElementById("import-config").classList.remove("hidden");
+      recomputeImport();
+    }
+
+    function recomputeImport() {
+      const { rows } = importState.raw;
+      const parsed = buildRowsFromCsv(rows, importState.mapping);
+      const { fresh, dupes, invalid } = classifyImport(parsed);
+      importState.fresh = fresh;
+      const withPhone = fresh.filter(r => digitsOnly(r.phone)).length;
+      const withEmail = fresh.filter(r => r.email).length;
+      document.getElementById("import-summary").innerHTML = `
+        <div class="flex gap-16" style="flex-wrap:wrap">
+          <div><strong style="color:var(--navy-dark);font-size:1.1rem">${fresh.length}</strong> new to add</div>
+          <div class="muted">${dupes.length} duplicate${dupes.length === 1 ? "" : "s"} skipped</div>
+          <div class="muted">${invalid.length} unusable (no name/contact)</div>
+        </div>
+        <div class="muted" style="font-size:0.8rem;margin-top:6px">Of the new: ${withPhone} have a phone, ${withEmail} have an email.</div>`;
+      const preview = fresh.slice(0, 8);
+      document.getElementById("import-preview").innerHTML = preview.length ? `
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="text-align:left;color:var(--text-2)">
+            <th style="padding:4px 6px">Name</th><th style="padding:4px 6px">Phone</th><th style="padding:4px 6px">Email</th><th style="padding:4px 6px">States</th>
+          </tr></thead>
+          <tbody>${preview.map(r => `<tr style="border-top:1px solid var(--border)">
+            <td style="padding:4px 6px">${escapeHtml(r.name)}</td>
+            <td style="padding:4px 6px">${escapeHtml(r.phone)}</td>
+            <td style="padding:4px 6px">${escapeHtml(r.email)}</td>
+            <td style="padding:4px 6px">${escapeHtml(r.states)}</td></tr>`).join("")}</tbody>
+        </table>
+        ${fresh.length > 8 ? `<div class="muted" style="padding:6px">…and ${fresh.length - 8} more</div>` : ""}` : "";
+      const btn = document.getElementById("import-confirm");
+      btn.textContent = `Import ${fresh.length} buyer${fresh.length === 1 ? "" : "s"}`;
+      btn.classList.toggle("hidden", fresh.length === 0);
+      btn.disabled = fresh.length === 0;
+    }
+
+    function handleImportFile(file) {
+      if (!file) return;
+      if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") { alert("Please choose a .csv file."); return; }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const all = parseCsv(reader.result);
+        if (all.length < 2) { alert("That CSV has no data rows."); return; }
+        const headers = all[0];
+        const rows = all.slice(1);
+        importState = { raw: { headers, rows }, mapping: detectMapping(headers), fresh: [] };
+        renderImportConfig();
+      };
+      reader.readAsText(file);
+    }
+
+    async function runImport() {
+      const fresh = importState.fresh || [];
+      if (!fresh.length) return;
+      const btn = document.getElementById("import-confirm");
+      btn.disabled = true;
+      const source = document.getElementById("import-source").value;
+      const tier = document.getElementById("import-tier").value;
+      const strategy = document.getElementById("import-strategy").value;
+      const records = fresh.map(r => {
+        const noteParts = [];
+        if (r.company) noteParts.push(`Company: ${r.company}`);
+        if (r.notes) noteParts.push(r.notes);
+        noteParts.push(`Imported from ${source} ${new Date().toLocaleDateString()}`);
+        return {
+          name: r.name, email: r.email, phone: r.phone, states: r.states,
+          max_price: 0, max_piti: 0, min_beds: 0,
+          strategy, tier, list_source: source, active: true, sms_opt_in: false,
+          notes: noteParts.join(" | "),
+        };
+      });
+      let added = 0, failed = 0;
+      for (let i = 0; i < records.length; i += 200) {
+        const chunk = records.slice(i, i + 200);
+        btn.textContent = `Importing… ${i}/${records.length}`;
+        const { error } = await supa.from("buyers").insert(chunk);
+        if (error) { failed += chunk.length; console.error("import chunk failed:", error.message); }
+        else added += chunk.length;
+      }
+      closeImport();
+      await loadBuyers();
+      alert(`Imported ${added} new buyer${added === 1 ? "" : "s"}.` + (failed ? ` ${failed} failed — check console.` : ""));
+    }
+
+    // ── Onboarding buy-box request ──
+    async function callOnboard(payload) {
+      const { data: { session } } = await supa.auth.getSession();
+      if (!session) { alert("Not signed in."); return null; }
+      const r = await fetch("/.netlify/functions/onboard-buyers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify(payload),
+      });
+      const out = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(`Failed: ${out.error || r.status}`); return null; }
+      return out;
+    }
+    async function onboardBuyers() {
+      // How many would be targeted? (email, never onboarded)
+      const pending = allBuyers.filter(b => b.email && /@/.test(b.email) && !b.onboarded_at);
+      if (!pending.length) {
+        alert("No new buyers to ask — everyone with an email has already gotten a buy-box request.");
+        return;
+      }
+      if (confirm(`Send a TEST of the buy-box email to yourself first?\n\n(Recommended before emailing ${pending.length} real buyers.)`)) {
+        const t = await callOnboard({ test: true });
+        if (t) alert(`Test sent to ${t.to}. Check your inbox, then confirm the live send.`);
+        else return;
+      }
+      if (!confirm(`Send the buy-box request to ${pending.length} new buyer${pending.length === 1 ? "" : "s"} now?\n\nThis emails real buyers. Each is asked only once.`)) return;
+      const res = await callOnboard({});
+      if (res) {
+        alert(`Sent ${res.sent} buy-box request${res.sent === 1 ? "" : "s"}.` + (res.failed ? ` ${res.failed} failed.` : ""));
+        await loadBuyers();
+      }
+    }
+
+    function openImport() {
+      importState = null;
+      document.getElementById("import-config").classList.add("hidden");
+      document.getElementById("import-confirm").classList.add("hidden");
+      document.getElementById("import-file").value = "";
+      document.getElementById("import-backdrop").classList.remove("hidden");
+    }
+    function closeImport() { document.getElementById("import-backdrop").classList.add("hidden"); }
+
+    (async () => {
+      const session = await requireAuth();
+      if (!session) return;
+      wireLogout(document.getElementById("logout-btn"));
+
+      ["search","filter-tier","filter-state","filter-strategy","filter-missing"].forEach(id =>
+        document.getElementById(id).addEventListener("input", render));
+
+      document.getElementById("add-btn").addEventListener("click", () => openModal(null));
+      document.getElementById("modal-cancel").addEventListener("click", closeModal);
+      document.getElementById("modal-backdrop").addEventListener("click", e => { if (e.target.id === "modal-backdrop") closeModal(); });
+      document.getElementById("export-btn").addEventListener("click", exportCsv);
+
+      // ── Import engine wiring ──
+      const importDrop = document.getElementById("import-drop");
+      const importFile = document.getElementById("import-file");
+      document.getElementById("import-btn").addEventListener("click", openImport);
+      document.getElementById("onboard-btn").addEventListener("click", onboardBuyers);
+      document.getElementById("import-cancel").addEventListener("click", closeImport);
+      document.getElementById("import-confirm").addEventListener("click", runImport);
+      document.getElementById("import-backdrop").addEventListener("click", e => { if (e.target.id === "import-backdrop") closeImport(); });
+      importDrop.addEventListener("click", () => importFile.click());
+      importFile.addEventListener("change", () => handleImportFile(importFile.files[0]));
+      ["dragover","dragenter"].forEach(ev => importDrop.addEventListener(ev, e => { e.preventDefault(); importDrop.style.borderColor = "var(--navy)"; }));
+      ["dragleave","drop"].forEach(ev => importDrop.addEventListener(ev, e => { e.preventDefault(); importDrop.style.borderColor = "var(--border)"; }));
+      importDrop.addEventListener("drop", e => { const f = e.dataTransfer.files[0]; if (f) handleImportFile(f); });
+
+      document.getElementById("buyer-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const id = document.getElementById("b-id").value;
+        const payload = {
+          name: document.getElementById("b-name").value.trim(),
+          tier: document.getElementById("b-tier").value,
+          email: document.getElementById("b-email").value.trim(),
+          phone: document.getElementById("b-phone").value.trim(),
+          states: document.getElementById("b-states").value.split(",").map(s => s.trim().toUpperCase()).filter(Boolean).join(","),
+          strategy: document.getElementById("b-strategy").value,
+          max_piti: Number(document.getElementById("b-piti").value) || 0,
+          min_beds: Number(document.getElementById("b-beds").value) || 0,
+          notes: document.getElementById("b-notes").value.trim(),
+          sms_opt_in: document.getElementById("b-sms").checked,
+        };
+        if (id) await supa.from("buyers").update(payload).eq("id", id);
+        else await supa.from("buyers").insert({ ...payload, list_source: "direct", active: true });
+        closeModal();
+        await loadBuyers();
+      });
+
+      await loadBuyers();
+    })();
+  </script>
+</body>
+</html>

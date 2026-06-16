@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Leads — Seaside Horizon</title>
+  <link rel="icon" type="image/png" href="/img/logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><img src="/img/logo.png" alt="Seaside Horizon" class="brand-logo"> Seaside Horizon</div>
+    <nav>
+      <a href="/dashboard.html">Posting</a>
+      <a href="/buyers.html">Buyers</a>
+      <a href="/leads.html" class="active">Leads</a>
+      <button class="logout" id="logout-btn">Sign Out</button>
+    </nav>
+  </div>
+
+  <div class="page">
+    <div class="page-header">
+      <div>
+        <h1>Leads</h1>
+        <div class="sub" id="lead-count"></div>
+      </div>
+    </div>
+
+    <div class="card mt-8" style="margin-bottom:18px">
+      <p class="muted" style="margin:0;font-size:0.85rem">
+        InvestorLift hot buyers land here first — grouped by the deal they showed interest in.
+        Call or email whoever you want, then <strong>Promote</strong> the good ones into your buyer list.
+      </p>
+      <div class="flex gap-12 mt-8" style="flex-wrap:wrap">
+        <input type="search" id="search" placeholder="Search name, email, phone…" style="max-width:240px">
+        <select id="filter-status" style="max-width:160px">
+          <option value="">All statuses</option>
+          <option value="new">New</option>
+          <option value="contacted">Contacted</option>
+          <option value="responded">Responded</option>
+          <option value="promoted">Promoted</option>
+          <option value="dismissed">Dismissed</option>
+        </select>
+        <select id="filter-deal" style="max-width:200px"><option value="">All deals</option></select>
+      </div>
+    </div>
+
+    <div id="content"><div class="loading"><div class="spinner"></div>Loading leads…</div></div>
+  </div>
+
+  <script src="/js/supa.js"></script>
+  <script>
+    let allLeads = [];
+
+    const STATUS_INFO = {
+      new:       { label: "New",       cls: "tier-warm" },
+      contacted: { label: "Contacted", cls: "tier-cold" },
+      responded: { label: "Responded", cls: "tier-hot" },
+      promoted:  { label: "Promoted",  cls: "tier-hot" },
+      dismissed: { label: "Dismissed", cls: "tier-cold" },
+    };
+
+    function escapeHtml(s) {
+      return String(s || "").replace(/[&<>"']/g, c =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    async function loadLeads() {
+      const { data, error } = await supa.from("leads").select("*").order("created_at", { ascending: false });
+      const content = document.getElementById("content");
+      if (error) { content.innerHTML = `<div class="empty">Couldn't load leads: ${escapeHtml(error.message)}</div>`; return; }
+      allLeads = data || [];
+      populateDealFilter();
+      render();
+    }
+
+    function populateDealFilter() {
+      const sel = document.getElementById("filter-deal");
+      if (sel.dataset.populated) return;
+      // Unique deals, keyed by deal_id, label = address or deal_id.
+      const deals = {};
+      allLeads.forEach(l => {
+        const key = l.deal_id || "";
+        if (key && !deals[key]) deals[key] = l.deal_address || `Deal #${key}`;
+      });
+      Object.entries(deals).sort((a, b) => a[1].localeCompare(b[1])).forEach(([id, label]) => {
+        sel.insertAdjacentHTML("beforeend",
+          `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`);
+      });
+      sel.dataset.populated = "1";
+    }
+
+    function applyFilters() {
+      const q      = document.getElementById("search").value.trim().toLowerCase();
+      const status = document.getElementById("filter-status").value;
+      const deal   = document.getElementById("filter-deal").value;
+      return allLeads.filter(l => {
+        if (status && l.status !== status) return false;
+        if (deal   && l.deal_id !== deal) return false;
+        if (q && !`${l.name} ${l.email} ${l.phone}`.toLowerCase().includes(q)) return false;
+        return true;
+      });
+    }
+
+    // ── Note parsers ──────────────────────────────────────────────────────────
+    function noteVal(l, key) {
+      const m = (l.notes || "").match(new RegExp(key + "[:\\s]+([^|]+)", "i"));
+      return m ? m[1].trim() : "";
+    }
+    function leadScore(l)        { const v = noteVal(l, "Buyer score");    return v ? parseInt(v.replace(/,/g,""),10) : 0; }
+    function leadTypes(l)        { return noteVal(l, "Buyer type"); }
+    function leadImagesViewed(l) { return noteVal(l, "Images viewed"); }
+    function leadTimeSpent(l)    { return noteVal(l, "Time spent"); }
+    function leadActionScore(l)  { return noteVal(l, "Action score"); }
+
+    // ── Render ────────────────────────────────────────────────────────────────
+    function render() {
+      const filtered = applyFilters();
+      const counts = allLeads.reduce((a, l) => { a[l.status] = (a[l.status]||0)+1; return a; }, {});
+      document.getElementById("lead-count").textContent =
+        `${allLeads.length} lead${allLeads.length===1?"":"s"} · ${counts.new||0} new · ${counts.promoted||0} promoted`;
+
+      const content = document.getElementById("content");
+      if (!filtered.length) { content.innerHTML = `<div class="empty">No leads match.</div>`; return; }
+
+      // Group by deal_id → sort hottest-first within each deal.
+      const dealOrder = [];
+      const byDeal = {};
+      filtered.forEach(l => {
+        const key = l.deal_id || "__none__";
+        if (!byDeal[key]) { byDeal[key] = []; dealOrder.push(key); }
+        byDeal[key].push(l);
+      });
+      // Sort each group hottest-first by Buyer Score.
+      Object.values(byDeal).forEach(arr => arr.sort((a,b) => leadScore(b) - leadScore(a)));
+
+      let html = "";
+      dealOrder.forEach(dealKey => {
+        const leads = byDeal[dealKey];
+        const first = leads[0];
+        const dealLabel = first.deal_address || (dealKey !== "__none__" ? `Deal #${dealKey}` : "Unknown Deal");
+        const newCount = leads.filter(l => l.status === "new").length;
+        html += `
+          <div style="margin-bottom:32px">
+            <div class="flex-between" style="align-items:center;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid var(--navy)">
+              <div>
+                <span style="font-size:1.1rem;font-weight:700;color:var(--navy-dark)">🏠 ${escapeHtml(dealLabel)}</span>
+                ${dealKey !== "__none__" ? `<span class="muted" style="font-size:0.78rem;margin-left:8px">Deal #${escapeHtml(dealKey)}</span>` : ""}
+              </div>
+              <div class="flex gap-8" style="align-items:center">
+                <span class="chip-mini">${leads.length} lead${leads.length===1?"":"s"}</span>
+                ${newCount ? `<span class="chip-mini tier-warm">${newCount} new</span>` : ""}
+              </div>
+            </div>
+            <div class="grid buyer-grid">${leads.map(renderCard).join("")}</div>
+          </div>`;
+      });
+
+      content.innerHTML = html;
+      content.querySelectorAll(".promote-btn").forEach(b => b.addEventListener("click", e => promoteLead(getLead(e))));
+      content.querySelectorAll(".dismiss-btn").forEach(b => b.addEventListener("click", e => dismissLead(getLead(e))));
+    }
+
+    function renderCard(l) {
+      const st          = STATUS_INFO[l.status] || { label: l.status, cls: "tier-cold" };
+      const phoneHref   = (l.phone || "").replace(/[^\d+]/g, "");
+      const score       = leadScore(l);
+      const types       = leadTypes(l);
+      const images      = leadImagesViewed(l);
+      const timeSpent   = leadTimeSpent(l);
+      const actionScore = leadActionScore(l);
+
+      const typeChips = types
+        ? types.split(",").map(t =>
+            `<span class="chip-mini" style="background:#E6F4EA;color:#1E7E45">${escapeHtml(t.trim())}</span>`
+          ).join(" ")
+        : "";
+
+      const engagementLine = [
+        images      ? `👁 ${images} imgs`       : "",
+        timeSpent   ? `⏱ ${timeSpent}`          : "",
+        actionScore ? `⚡ ${actionScore} action` : "",
+      ].filter(Boolean).join(" · ");
+
+      return `
+        <div class="card buyer-card" data-id="${l.id}">
+          <div class="flex-between" style="align-items:flex-start">
+            <strong style="font-size:1.05rem;color:var(--navy-dark)">${escapeHtml(l.name || l.email || l.phone || "Unknown")}</strong>
+            <div class="flex gap-6" style="align-items:center">
+              ${score ? `<span class="chip-mini" title="InvestorLift Total Score" style="background:#FFF3D6;color:#8A5A00">🔥 ${score.toLocaleString()}</span>` : ""}
+              <span class="tier-pill ${st.cls}">${escapeHtml(st.label)}</span>
+            </div>
+          </div>
+          <div style="margin-top:8px;font-size:0.86rem;color:var(--text-2)">
+            ${l.phone ? `<div>📞 <a href="tel:${escapeHtml(phoneHref)}" style="color:var(--navy);text-decoration:none">${escapeHtml(l.phone)}</a></div>` : ""}
+            ${l.email
+              ? `<div>✉️ <a href="mailto:${escapeHtml(l.email)}" style="color:var(--navy);text-decoration:none">${escapeHtml(l.email)}</a></div>`
+              : `<div class="muted" style="font-size:0.78rem">No email (masked by InvestorLift)</div>`}
+          </div>
+          ${typeChips ? `<div class="flex gap-6" style="flex-wrap:wrap;margin-top:10px">${typeChips}</div>` : ""}
+          ${engagementLine ? `<div class="muted" style="font-size:0.78rem;margin-top:6px">${engagementLine}</div>` : ""}
+          <div style="margin-top:auto;padding-top:12px;border-top:1px solid var(--border)" class="flex gap-8" style="flex-wrap:wrap">
+            ${l.phone ? `<a class="btn btn-ghost btn-sm" href="tel:${escapeHtml(phoneHref)}">📞 Call</a>` : ""}
+            ${l.email ? `<a class="btn btn-ghost btn-sm" href="mailto:${escapeHtml(l.email)}">✉️ Email</a>` : ""}
+            ${l.status !== "promoted"
+              ? `<button class="btn btn-primary btn-sm promote-btn">✓ Promote to buyer</button>`
+              : `<span class="muted" style="font-size:0.78rem">In buyer list</span>`}
+            ${l.status !== "dismissed" && l.status !== "promoted"
+              ? `<button class="btn btn-ghost btn-sm dismiss-btn">Dismiss</button>`
+              : ""}
+          </div>
+        </div>`;
+    }
+
+    function getLead(e) {
+      const id = Number(e.target.closest(".buyer-card").dataset.id);
+      return allLeads.find(l => l.id === id);
+    }
+
+    async function promoteLead(l) {
+      const digits = (l.phone || "").replace(/\D/g,"").replace(/^1/,"");
+      const { data: existing } = await supa.from("buyers").select("id,email,phone");
+      const dupe = (existing || []).some(b =>
+        (l.email && (b.email||"").toLowerCase() === l.email.toLowerCase()) ||
+        (digits  && (b.phone||"").replace(/\D/g,"").replace(/^1/,"") === digits));
+      if (!dupe) {
+        const { error } = await supa.from("buyers").insert({
+          name: l.name || l.email || l.phone || "Unknown",
+          email: l.email||"", phone: l.phone||"", states: l.states||"",
+          strategy: "all", tier: "B", list_source: l.source||"lead",
+          active: true, sms_opt_in: false,
+          notes: `Promoted from leads${l.deal_address ? " — hot on " + l.deal_address : ""}`,
+        });
+        if (error) { alert(`Couldn't add to buyers: ${error.message}`); return; }
+      }
+      await supa.from("leads").update({ status:"promoted", promoted_at: new Date().toISOString() }).eq("id", l.id);
+      await loadLeads();
+    }
+
+    async function dismissLead(l) {
+      await supa.from("leads").update({ status:"dismissed" }).eq("id", l.id);
+      await loadLeads();
+    }
+
+    (async () => {
+      const session = await requireAuth();
+      if (!session) return;
+      wireLogout(document.getElementById("logout-btn"));
+      ["search","filter-status","filter-deal"].forEach(id =>
+        document.getElementById(id).addEventListener("input", render));
+      await loadLeads();
+    })();
+  </script>
+</body>
+</html>

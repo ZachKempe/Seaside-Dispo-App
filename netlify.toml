@@ -1,0 +1,12 @@
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+[functions."sync-trello"]
+  schedule = "*/10 * * * *"
+
+[functions."sync-buyers"]
+  schedule = "*/5 * * * *"
+
+[functions."capture-replies"]
+  schedule = "*/15 * * * *"

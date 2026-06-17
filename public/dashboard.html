@@ -987,6 +987,8 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
               <div class="acq-field"><label>Long-Term Rent (monthly)</label><input type="number" class="acq-input" data-field="ltr_monthly_rent" value="${num(m.ltr_monthly_rent)}"></div>
               <div class="acq-field"><label>Short-Term Rent (monthly)</label><input type="number" class="acq-input" data-field="str_monthly_rent" value="${num(m.str_monthly_rent)}"></div>
             `}
+            <div class="acq-field"><label>Property Taxes (monthly)</label><input type="number" class="acq-input" data-field="monthly_taxes" value="${num(m.monthly_taxes)}" placeholder="0"></div>
+            <div class="acq-field"><label>Insurance (monthly)</label><input type="number" class="acq-input" data-field="monthly_insurance" value="${num(m.monthly_insurance)}" placeholder="0"></div>
           </div>
         </div>
 
@@ -1587,17 +1589,21 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
 
       // Cash Flow Analysis is laid out as a simple P&L: income, less debt
       // service (DSCR loan + seller financing), equals net cash flow.
-      const sellerPmt = Number(m.monthly_payment) || 0;
+      const sellerPmt  = Number(m.monthly_payment)   || 0;
+      const taxes      = Number(m.monthly_taxes)      || 0;
+      const insurance  = Number(m.monthly_insurance)  || 0;
       let cashFlowLeftRows, cashFlowRightRows;
       let cashFlowHeadlineLtr, cashFlowHeadlineStr, cashFlowLabelLtr, cashFlowLabelStr;
       if (propertyType === "commercial") {
         const noi = m.monthly_noi != null ? Number(m.monthly_noi) : (Number(m.annual_noi) || 0) / 12;
-        const netCashFlow = noi - monthlyDebtService - sellerPmt;
+        const netCashFlow = noi - monthlyDebtService - sellerPmt - taxes - insurance;
         cashFlowLeftRows = [
-          ["Net Operating Income", fmt(noi)],
-          ["DSCR Loan Payment", fmtExpense(monthlyDebtService)],
-          ["Seller Financing Pmt", fmtExpense(sellerPmt)],
-          ["Net Cash Flow", fmt(netCashFlow), true],
+          ["Net Operating Income",   fmt(noi)],
+          ["DSCR Loan Payment",      fmtExpense(monthlyDebtService)],
+          ["Seller Financing Pmt",   fmtExpense(sellerPmt)],
+          ...(taxes     ? [["Property Taxes",   fmtExpense(taxes)]]     : []),
+          ...(insurance ? [["Insurance",         fmtExpense(insurance)]] : []),
+          ["Net Cash Flow",          fmt(netCashFlow), true],
         ];
         cashFlowRightRows = [];
         cashFlowHeadlineLtr = fmt(netCashFlow);
@@ -1607,20 +1613,26 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       } else {
         const ltr = Number(m.ltr_monthly_rent) || 0;
         const str = Number(m.str_monthly_rent) || 0;
+        const ltrNet = ltr - monthlyDebtService - sellerPmt - taxes - insurance;
+        const strNet = str - monthlyDebtService - sellerPmt - taxes - insurance;
         cashFlowLeftRows = [
-          ["Rental Income (LTR)", fmt(ltr)],
-          ["DSCR Loan Payment", fmtExpense(monthlyDebtService)],
+          ["Rental Income (LTR)",  fmt(ltr)],
+          ["DSCR Loan Payment",    fmtExpense(monthlyDebtService)],
           ["Seller Financing Pmt", fmtExpense(sellerPmt)],
-          ["Net Cash Flow", fmt(ltr - monthlyDebtService - sellerPmt), true],
+          ...(taxes     ? [["Property Taxes",  fmtExpense(taxes)]]     : []),
+          ...(insurance ? [["Insurance",        fmtExpense(insurance)]] : []),
+          ["Net Cash Flow",        fmt(ltrNet), true],
         ];
         cashFlowRightRows = [
-          ["Rental Income (STR)", fmt(str)],
-          ["DSCR Loan Payment", fmtExpense(monthlyDebtService)],
+          ["Rental Income (STR)",  fmt(str)],
+          ["DSCR Loan Payment",    fmtExpense(monthlyDebtService)],
           ["Seller Financing Pmt", fmtExpense(sellerPmt)],
-          ["Net Cash Flow", fmt(str - monthlyDebtService - sellerPmt), true],
+          ...(taxes     ? [["Property Taxes",  fmtExpense(taxes)]]     : []),
+          ...(insurance ? [["Insurance",        fmtExpense(insurance)]] : []),
+          ["Net Cash Flow",        fmt(strNet), true],
         ];
-        cashFlowHeadlineLtr = fmt(ltr - monthlyDebtService - sellerPmt);
-        cashFlowHeadlineStr = fmt(str - monthlyDebtService - sellerPmt);
+        cashFlowHeadlineLtr = fmt(ltrNet);
+        cashFlowHeadlineStr = fmt(strNet);
         cashFlowLabelLtr = "Net Cash Flow (LTR)";
         cashFlowLabelStr = "Net Cash Flow (STR)";
       }

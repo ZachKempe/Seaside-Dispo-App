@@ -987,7 +987,13 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
               <div class="acq-field"><label>Long-Term Rent (monthly)</label><input type="number" class="acq-input" data-field="ltr_monthly_rent" value="${num(m.ltr_monthly_rent)}"></div>
               <div class="acq-field"><label>Short-Term Rent (monthly)</label><input type="number" class="acq-input" data-field="str_monthly_rent" value="${num(m.str_monthly_rent)}"></div>
             `}
-            <div class="acq-field"><label>Property Taxes (monthly)</label><input type="number" class="acq-input" data-field="monthly_taxes" value="${num(m.monthly_taxes)}" placeholder="0"></div>
+            <div class="acq-field">
+              <label>Property Taxes (monthly)
+                <button type="button" class="btn btn-ghost btn-sm estimate-ti-btn" data-card-id="${cardId}"
+                  style="font-size:0.7rem;padding:1px 6px;margin-left:6px" title="Estimate from purchase price + state">💡 Estimate</button>
+              </label>
+              <input type="number" class="acq-input" data-field="monthly_taxes" value="${num(m.monthly_taxes)}" placeholder="0">
+            </div>
             <div class="acq-field"><label>Insurance (monthly)</label><input type="number" class="acq-input" data-field="monthly_insurance" value="${num(m.monthly_insurance)}" placeholder="0"></div>
           </div>
         </div>
@@ -1383,6 +1389,46 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
             await saveField(field, value);
             await loadAll(); // re-render so property-type-dependent fields + DSCR defaults update
           });
+        });
+      });
+
+      // ── Estimate taxes & insurance from purchase price + state ──
+      // State effective property tax rates (% of assessed value, 2024 averages).
+      const STATE_TAX_RATES = {
+        AL:0.41,AK:1.04,AZ:0.62,AR:0.62,CA:0.75,CO:0.51,CT:1.79,DE:0.57,FL:0.89,
+        GA:0.92,HI:0.28,ID:0.69,IL:2.23,IN:0.85,IA:1.57,KS:1.41,KY:0.83,LA:0.55,
+        ME:1.09,MD:1.07,MA:1.12,MI:1.54,MN:1.12,MS:0.65,MO:0.97,MT:0.84,NE:1.73,
+        NV:0.60,NH:1.89,NJ:2.47,NM:0.80,NY:1.72,NC:0.78,ND:0.98,OH:1.53,OK:0.87,
+        OR:0.91,PA:1.49,RI:1.53,SC:0.57,SD:1.08,TN:0.66,TX:1.80,UT:0.57,VT:1.83,
+        VA:0.82,WA:0.93,WV:0.59,WI:1.85,WY:0.61,DC:0.56
+      };
+      document.querySelectorAll(".estimate-ti-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const cardId = btn.dataset.cardId;
+          const panel = document.querySelector(`.morby-panel[data-card-id="${cardId}"]`);
+          const deal  = dealCache[cardId];
+          if (!panel || !deal) return;
+
+          // Read live purchase price from form.
+          const priceInput = panel.querySelector('.acq-input[data-field="purchase_price"]');
+          const price = Number(priceInput?.value) || Number(deal.morby?.purchase_price) || 0;
+          if (!price) { alert("Enter a Purchase Price first."); return; }
+
+          // State from the property record.
+          const state = (deal.prop?.state || "").toUpperCase().trim();
+          const taxRate = STATE_TAX_RATES[state] || 1.0; // fallback 1%
+
+          const monthlyTax = Math.round(price * (taxRate / 100) / 12);
+          const monthlyIns = Math.round(price * 0.007 / 12); // 0.7%/yr standard estimate
+
+          // Fill the inputs.
+          const taxInput = panel.querySelector('.acq-input[data-field="monthly_taxes"]');
+          const insInput = panel.querySelector('.acq-input[data-field="monthly_insurance"]');
+          if (taxInput) { taxInput.value = monthlyTax; taxInput.dispatchEvent(new Event("blur")); }
+          if (insInput) { insInput.value = monthlyIns; insInput.dispatchEvent(new Event("blur")); }
+
+          btn.textContent = "✓ Estimated";
+          setTimeout(() => btn.textContent = "💡 Estimate", 2000);
         });
       });
 

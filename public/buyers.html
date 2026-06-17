@@ -28,6 +28,10 @@
         <div class="sub" id="buyer-count"></div>
       </div>
       <div class="flex gap-8">
+        <button class="btn btn-ghost btn-sm" id="copy-form-btn" title="Copy buyer questionnaire link to clipboard">📋 Copy Form Link</button>
+        <a class="btn btn-ghost btn-sm" id="text-form-btn"
+          href="sms:?body=Hey%2C%20I%E2%80%99d%20love%20to%20add%20you%20to%20our%20exclusive%20buyer%20list%20at%20Seaside%20Horizon.%20Fill%20out%20this%20quick%20form%20and%20we%E2%80%99ll%20send%20you%20deals%20that%20match%20exactly%20what%20you%E2%80%99re%20looking%20for%3A%20https%3A%2F%2Fseaside-buyer-questionnaire.netlify.app%2F"
+          title="Open pre-filled iMessage with form link">📱 Text Form</a>
         <button class="btn btn-ghost btn-sm" id="export-btn">⬇ Export for GHL</button>
         <button class="btn btn-ghost btn-sm" id="import-btn">📥 Import Buyers</button>
         <button class="btn btn-ghost btn-sm" id="onboard-btn" title="Email new buyers asking what they're buying — answers flow back into their record">📨 Request buy-box</button>
@@ -661,6 +665,12 @@
         document.getElementById(id).addEventListener("input", render));
 
       document.getElementById("add-btn").addEventListener("click", () => openModal(null));
+      document.getElementById("copy-form-btn").addEventListener("click", () => {
+        navigator.clipboard.writeText("https://seaside-buyer-questionnaire.netlify.app/");
+        const btn = document.getElementById("copy-form-btn");
+        btn.textContent = "✓ Copied!";
+        setTimeout(() => btn.textContent = "📋 Copy Form Link", 2000);
+      });
       document.getElementById("modal-cancel").addEventListener("click", closeModal);
       document.getElementById("modal-backdrop").addEventListener("click", e => { if (e.target.id === "modal-backdrop") closeModal(); });
       document.getElementById("export-btn").addEventListener("click", exportCsv);

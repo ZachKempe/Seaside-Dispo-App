@@ -81,17 +81,23 @@ exports.handler = async () => {
       { headers: { Authorization: `Bearer ${NETLIFY_TOKEN}` } }
     )).json();
     const forms = Array.isArray(formsRaw) ? formsRaw : (formsRaw.forms || []);
+    console.log(`sync-buyers: found ${forms.length} forms on site ${SITE_ID}:`, forms.map(f => f.name));
     const form = forms.find(f => f.name === FORM_NAME);
     if (!form) throw new Error(`Form '${FORM_NAME}' not found on site ${SITE_ID}`);
+    console.log(`sync-buyers: using form id=${form.id} name=${form.name}`);
 
     // 2. Fetch submissions
-    const submissions = await (await fetch(
+    const submissionsRaw = await (await fetch(
       `https://api.netlify.com/api/v1/forms/${form.id}/submissions?per_page=1000`,
       { headers: { Authorization: `Bearer ${NETLIFY_TOKEN}` } }
     )).json();
+    const submissions = Array.isArray(submissionsRaw) ? submissionsRaw : (submissionsRaw.submissions || []);
+    console.log(`sync-buyers: ${submissions.length} total submissions`);
+    if (submissions.length > 0) console.log("sync-buyers: first submission keys:", Object.keys(submissions[0]));
 
     // 3. Existing buyers (for dedupe)
     const existing = await sb(`/buyers?select=phone,email`, { method: "GET" }, SB_URL, SB_KEY);
+    console.log(`sync-buyers: ${existing.length} existing buyers for dedupe`);
     const exPhones = new Set(existing.map(b => digitsOnly(b.phone)).filter(Boolean));
     const exEmails = new Set(existing.map(b => (b.email || "").toLowerCase()).filter(Boolean));
 

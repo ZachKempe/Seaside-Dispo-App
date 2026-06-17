@@ -76,10 +76,11 @@ exports.handler = async () => {
 
   try {
     // 1. Find the form ID
-    const forms = await (await fetch(
+    const formsRaw = await (await fetch(
       `https://api.netlify.com/api/v1/sites/${SITE_ID}/forms`,
       { headers: { Authorization: `Bearer ${NETLIFY_TOKEN}` } }
     )).json();
+    const forms = Array.isArray(formsRaw) ? formsRaw : (formsRaw.forms || []);
     const form = forms.find(f => f.name === FORM_NAME);
     if (!form) throw new Error(`Form '${FORM_NAME}' not found on site ${SITE_ID}`);
 

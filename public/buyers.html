@@ -39,6 +39,12 @@
       </div>
     </div>
 
+    <div id="new-buyers-banner" style="display:none;background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;padding:12px 18px;margin-bottom:16px;display:none;align-items:center;gap:12px;flex-wrap:wrap">
+      <span style="font-size:1.1rem">🔔</span>
+      <span id="new-buyers-text" style="font-weight:600;color:#166534;flex:1"></span>
+      <button onclick="dismissNewBuyersBanner()" style="background:none;border:none;color:#166534;cursor:pointer;font-size:1.1rem;line-height:1">✕</button>
+    </div>
+
     <div class="card mt-8" style="margin-bottom:18px">
       <div class="flex gap-12" style="flex-wrap:wrap">
         <input type="search" id="search" placeholder="Search by name, email, phone…" style="max-width:260px">
@@ -203,6 +209,25 @@
       }
       populateStateFilter();
       render();
+      checkNewBuyers(data || []);
+    }
+
+    function checkNewBuyers(buyers) {
+      const STORAGE_KEY = 'seaside_buyers_last_visit';
+      const lastVisit = localStorage.getItem(STORAGE_KEY);
+      const now = new Date().toISOString();
+      localStorage.setItem(STORAGE_KEY, now);
+      if (!lastVisit) return;
+      const newOnes = buyers.filter(b => b.list_source === 'investor' && b.date_added && new Date(b.date_added) > new Date(lastVisit));
+      if (!newOnes.length) return;
+      const names = newOnes.slice(0, 3).map(b => b.name).join(', ');
+      const extra = newOnes.length > 3 ? ` + ${newOnes.length - 3} more` : '';
+      document.getElementById('new-buyers-text').textContent = `${newOnes.length} new buyer${newOnes.length > 1 ? 's' : ''} from the form: ${names}${extra}`;
+      document.getElementById('new-buyers-banner').style.display = 'flex';
+    }
+
+    function dismissNewBuyersBanner() {
+      document.getElementById('new-buyers-banner').style.display = 'none';
     }
 
     function populateStateFilter() {

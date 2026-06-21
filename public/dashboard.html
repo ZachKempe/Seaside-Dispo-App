@@ -157,6 +157,16 @@
     let session;
     const dealCache = {}; // card_id -> { prop, terms, matched: [...buyers] }
     const activeTabByCard = {}; // card_id -> "posting" | "dealinfo" — preserved across re-renders
+    let artemisByDeal = {}; // IL deal_id -> { byPhone, byEmail } of scraped Artemis engagement
+
+    // Returns this buyer's Artemis engagement on a specific IL deal, or null.
+    function artemisFor(ilDealId, b) {
+        const eng = artemisByDeal[String(ilDealId || "")];
+        if (!eng) return null;
+        const pd = String(b.phone || "").replace(/\D/g, "").replace(/^1/, "");
+        const em = (b.email || "").toLowerCase();
+        return (pd && eng.byPhone[pd]) || (em && eng.byEmail[em]) || null;
+    }
 
     function fmtMoney(n) {
       n = Number(n) || 0;
@@ -281,6 +291,16 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         supa.from("blast_recipients").select("card_id,channel,status,buyer_id"),
       ]);
 
+      // Artemis engagement — loaded separately and fault-tolerantly so a missing
+      // column (before the 016 migration runs) can never break the dashboard.
+      let artemis = [];
+      try {
+        const { data: aData } = await supa.from("leads")
+          .select("phone,email,deal_id,images_viewed,time_spent,action_score,buyer_score")
+          .eq("source", "investorlift");
+        artemis = aData || [];
+      } catch (e) { console.warn("Artemis engagement load skipped:", e?.message); }
+
       if (pErr) {
         content.innerHTML = `<div class="empty">Couldn't load properties: ${escapeHtml(pErr.message)}</div>`;
         return;
@@ -298,6 +318,19 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       for (const r of (recips || [])) (recipsByCard[r.card_id] ||= []).push(r);
       const acqByCard = Object.fromEntries((acq || []).map(a => [a.card_id, a]));
       const morbyByCard = Object.fromEntries((morby || []).map(m => [m.card_id, m]));
+
+      // Artemis engagement, keyed by IL deal_id then by buyer phone/email, so
+      // the match engine can tell who actually viewed THIS deal on InvestorLift.
+      artemisByDeal = {};
+      const dig = (p) => String(p || "").replace(/\D/g, "").replace(/^1/, "");
+      for (const l of (artemis || [])) {
+        const did = String(l.deal_id || "");
+        if (!did) continue;
+        (artemisByDeal[did] ||= { byPhone: {}, byEmail: {} });
+        const pd = dig(l.phone), em = (l.email || "").toLowerCase();
+        if (pd) artemisByDeal[did].byPhone[pd] = l;
+        if (em) artemisByDeal[did].byEmail[em] = l;
+      }
 
       document.getElementById("prop-count").textContent =
         `${props.length} active under-contract propert${props.length === 1 ? "y" : "ies"}`;
@@ -346,10 +379,25 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
 
     // Scores a buyer's fit for a deal (0-100ish) with human-readable reasons,
     // plus a list of missing contact fields that would block reaching them.
-    function scoreBuyerForDeal(b, state, price, piti, beds) {
+    // `eng` (optional) is this buyer's Artemis engagement on THIS deal.
+    function scoreBuyerForDeal(b, state, price, piti, beds, eng) {
       let score = 0;
       const reasons = [];
       const missing = [];
+
+      // 🔥 FUSION: a buyer who actually viewed this exact deal on InvestorLift is
+      // the single strongest signal — it beats any buy-box guess. Big boost,
+      // scaled by how much they engaged.
+      if (eng) {
+        score += 45;
+        const bits = [];
+        if (eng.images_viewed != null) bits.push(`${eng.images_viewed} imgs`);
+        if (eng.time_spent)            bits.push(eng.time_spent);
+        if (eng.action_score != null && eng.action_score > 0) bits.push(`action ${eng.action_score}`);
+        reasons.unshift(`🔥 Viewed this deal on InvestorLift${bits.length ? " — " + bits.join(", ") : ""}`);
+        if ((eng.images_viewed || 0) >= 10) { score += 10; }
+        if ((eng.action_score || 0) >= 50)  { score += 10; }
+      }
 
       const states = (b.states || "").trim();
       if (states) {
@@ -388,8 +436,9 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       return buyers
         .filter(b => matchesDeal(b, dealStrategy, state, price, piti, beds))
         .map(b => {
-          const { score, reasons, missing } = scoreBuyerForDeal(b, state, price, piti, beds);
-          return { ...b, _score: score, _reasons: reasons, _missing: missing };
+          const eng = artemisFor(p.il_property_id, b);
+          const { score, reasons, missing } = scoreBuyerForDeal(b, state, price, piti, beds, eng);
+          return { ...b, _score: score, _reasons: reasons, _missing: missing, _engaged: !!eng };
         })
         .sort((a, b) => b._score - a._score);
     }
@@ -445,6 +494,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       const posts = fbByCard[p.card_id] || [];
       const matched = matchedBuyersForDeal(p, t, buyers);
       const matchCount = matched.length;
+      const engagedCount = matched.filter(b => b._engaged).length;
       const leads = leadsByCard[p.card_id] || [];
       const blasts = blastsByCard[p.card_id] || [];
       const recips = (recipsByCard && recipsByCard[p.card_id]) || [];
@@ -559,6 +609,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
                 ${t.sqft ? `<span class="term-chip"><b>${t.sqft.toLocaleString()}</b> sqft</span>` : ""}
                 ${t.year_built ? `<span class="term-chip">Built <b>${t.year_built}</b></span>` : ""}
                 <span class="term-chip">👥 <b>${matchCount}</b> matching buyer${matchCount === 1 ? "" : "s"}</span>
+                ${engagedCount ? `<span class="term-chip" style="background:#fff7ed;color:#c2410c;font-weight:600" title="Matched buyers who actually viewed this deal on InvestorLift">🔥 <b>${engagedCount}</b> viewed on IL</span>` : ""}
                 <button type="button" class="btn btn-ghost btn-sm terms-edit-btn">✎ Edit Terms</button>
               </div>
             </div>
@@ -2131,9 +2182,10 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         const missing = b._missing || [];
         const scoreColor = score >= 70 ? "#2F855A" : score >= 45 ? "#B7791F" : "#A0AEC0";
         return `
-        <label style="display:flex;flex-direction:column;gap:2px;padding:6px 0;font-weight:400;color:var(--text-1);font-size:0.86rem;border-bottom:1px solid var(--border, #eee)">
+        <label style="display:flex;flex-direction:column;gap:2px;padding:6px 0;font-weight:400;color:var(--text-1);font-size:0.86rem;border-bottom:1px solid var(--border, #eee)${b._engaged ? ';background:#fff7ed;border-radius:6px;padding-left:6px' : ''}">
           <span style="display:flex;align-items:center;gap:8px">
             <input type="checkbox" class="blast-buyer-cb" value="${b.id}" checked style="width:auto">
+            ${b._engaged ? '<span title="Viewed this deal on InvestorLift">🔥</span>' : ''}
             <span class="pill pill-tier-${b.tier}" style="font-size:0.66rem">${escapeHtml(b.tier || "B")}</span>
             <span style="font-size:0.7rem;font-weight:700;color:${scoreColor}" title="Match score">${score}</span>
             <strong>${escapeHtml(b.name)}</strong>

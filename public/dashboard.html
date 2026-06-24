@@ -278,8 +278,15 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
     async function loadAll() {
       const content = document.getElementById("content");
 
-      const [{ data: props, error: pErr }, { data: terms }, { data: statuses }, { data: fbPosts }, { data: buyers }, { data: leads }, { data: blasts }, { data: acq }, { data: morby }, { data: recips }] = await Promise.all([
-        supa.from("properties").select("*").order("synced_at", { ascending: false }),
+      let { data: props, error: pErr } = await supa.from("properties").select("*").eq("archived", false).order("synced_at", { ascending: false });
+      if (pErr) {
+        // `archived` column doesn't exist yet (017 migration not run) — fall
+        // back to unfiltered so the dashboard still loads; archiving just
+        // won't take visual effect until the migration runs.
+        ({ data: props, error: pErr } = await supa.from("properties").select("*").order("synced_at", { ascending: false }));
+      }
+
+      const [{ data: terms }, { data: statuses }, { data: fbPosts }, { data: buyers }, { data: leads }, { data: blasts }, { data: acq }, { data: morby }, { data: recips }] = await Promise.all([
         supa.from("deal_terms").select("*"),
         supa.from("property_status").select("*"),
         supa.from("facebook_posts").select("*"),

@@ -93,6 +93,35 @@ async function supabaseGetExistingCardIds(sbUrl, sbKey) {
   return new Set(rows.map(row => row.card_id));
 }
 
+// All non-archived properties currently in the DB, with their card_id — used
+// to detect cards that moved off the watched Trello list since the last sync.
+async function supabaseGetActiveCardIds(sbUrl, sbKey) {
+  const r = await fetch(`${sbUrl}/rest/v1/properties?select=card_id&archived=is.false`, {
+    headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` },
+  });
+  if (!r.ok) throw new Error(`Supabase select active properties -> ${r.status}: ${await r.text()}`);
+  const rows = await r.json();
+  return rows.map(row => row.card_id);
+}
+
+async function supabaseSetArchived(sbUrl, sbKey, cardIds, archived) {
+  if (!cardIds.length) return;
+  const idList = cardIds.map(id => `"${id}"`).join(",");
+  const r = await fetch(`${sbUrl}/rest/v1/properties?card_id=in.(${idList})`, {
+    method: "PATCH",
+    headers: {
+      apikey: sbKey,
+      Authorization: `Bearer ${sbKey}`,
+      "Content-Type": "application/json",
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify(archived
+      ? { archived: true, archived_at: new Date().toISOString() }
+      : { archived: false, archived_at: null }),
+  });
+  if (!r.ok) throw new Error(`Supabase set archived(${archived}) -> ${r.status}: ${await r.text()}`);
+}
+
 async function supabaseGetExistingDealTermIds(sbUrl, sbKey) {
   const r = await fetch(`${sbUrl}/rest/v1/deal_terms?select=card_id`, {
     headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` },
@@ -210,9 +239,21 @@ exports.handler = async () => {
     await supabaseUpsert("properties", existingRows, "card_id", SB_URL, SB_KEY);
     await supabaseUpsert("deal_terms", dealTermRows, "card_id", SB_URL, SB_KEY);
 
+    // Anything previously active that ISN'T on the watched list anymore was
+    // moved off it (or archived/deleted in Trello) — flag it so the dashboard
+    // stops showing it. Anything that came back (bounced back onto the list)
+    // gets un-flagged. This is the diff sync-trello never used to do.
+    const currentCardIds = new Set(cards.map(c => c.id));
+    const activeCardIds = await supabaseGetActiveCardIds(SB_URL, SB_KEY);
+    const toArchive = activeCardIds.filter(id => !currentCardIds.has(id));
+    const toUnarchive = [...currentCardIds].filter(id => existingCardIds.has(id) && !activeCardIds.includes(id));
+
+    await supabaseSetArchived(SB_URL, SB_KEY, toArchive, true);
+    await supabaseSetArchived(SB_URL, SB_KEY, toUnarchive, false);
+
     const total = newRows.length + existingRows.length;
-    console.log(`sync-trello: synced ${total} card(s), ${newCount} new, ${dealTermRows.length} deal-term row(s) seeded (existing copy + terms left untouched)`);
-    return { statusCode: 200, body: `synced ${total} cards (${newCount} new, ${dealTermRows.length} terms seeded)` };
+    console.log(`sync-trello: synced ${total} card(s), ${newCount} new, ${dealTermRows.length} deal-term row(s) seeded, ${toArchive.length} archived (moved off list), ${toUnarchive.length} restored`);
+    return { statusCode: 200, body: `synced ${total} cards (${newCount} new, ${toArchive.length} archived, ${dealTermRows.length} terms seeded)` };
   } catch (err) {
     console.error("sync-trello error:", err.message);
     return { statusCode: 500, body: err.message };

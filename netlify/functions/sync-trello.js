@@ -93,10 +93,13 @@ async function supabaseGetExistingCardIds(sbUrl, sbKey) {
   return new Set(rows.map(row => row.card_id));
 }
 
-// All non-archived properties currently in the DB, with their card_id — used
-// to detect cards that moved off the watched Trello list since the last sync.
+// All non-archived SUB-TO properties currently in the DB, with their card_id —
+// used to detect cards that moved off the watched Trello list since the last
+// sync. Scoped to deal_type=subto so this diff can never touch Morby deals —
+// those are created/deleted entirely independently of Trello (LOI upload +
+// the manual 🗑 Remove button) and must never be auto-archived by this sync.
 async function supabaseGetActiveCardIds(sbUrl, sbKey) {
-  const r = await fetch(`${sbUrl}/rest/v1/properties?select=card_id&archived=is.false`, {
+  const r = await fetch(`${sbUrl}/rest/v1/properties?select=card_id&archived=is.false&deal_type=eq.subto`, {
     headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` },
   });
   if (!r.ok) throw new Error(`Supabase select active properties -> ${r.status}: ${await r.text()}`);

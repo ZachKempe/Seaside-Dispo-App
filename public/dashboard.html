@@ -522,7 +522,10 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
                 ${p.state ? `<span class="pill pill-state">${escapeHtml(p.state)}</span>` : ""}
               </div>
             </div>
-            <button class="btn btn-ghost btn-sm morby-delete-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Remove this Morby deal">🗑 Remove</button>
+            <div class="flex gap-8">
+              <button class="btn btn-primary btn-sm morby-send-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Generate Deal Deck PDF and email it to all Stack Method buyers">📣 Send Deal Deck</button>
+              <button class="btn btn-ghost btn-sm morby-delete-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Remove this Morby deal">🗑 Remove</button>
+            </div>
           </div>
           ${renderMorbyPanel(p, morby, t)}
         </div>`;
@@ -1495,6 +1498,28 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         btn.addEventListener("click", () => generateDealDeck(btn.dataset.cardId, btn));
       });
 
+      // ── Send Deal Deck to Stack Method buyers ──
+      document.querySelectorAll(".morby-send-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const cardId = btn.dataset.cardId;
+          const address = btn.dataset.address;
+          const original = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = "Generating PDF…";
+          try {
+            await loadJsPdf();
+            const pdfBase64 = await generateDealDeck(cardId, null, { returnBase64: true });
+            btn.textContent = original;
+            btn.disabled = false;
+            openBlastModal(btn, { isMorbyDeck: true, dealDeckPdf: pdfBase64 });
+          } catch (e) {
+            alert(`Couldn't generate Deal Deck: ${e.message}`);
+            btn.textContent = original;
+            btn.disabled = false;
+          }
+        });
+      });
+
       // ── Upload LOI → AI extraction ──
       document.querySelectorAll(".morby-loi-btn").forEach(btn => {
         btn.addEventListener("click", () => extractLoi(btn));
@@ -1611,7 +1636,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       });
     }
 
-    async function generateDealDeck(cardId, btn) {
+    async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
       const deal = dealCache[cardId];
       if (!deal) return;
       const p = deal.prop, t = deal.terms || {};
@@ -2047,12 +2072,13 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         }
 
         const filename = `Deal Deck - ${(dealAddress || cardId).replace(/[\\/:*?"<>|]/g, "")}.pdf`;
+        if (returnBase64) return doc.output("datauristring");
         doc.save(filename);
       } catch (e) {
+        if (returnBase64) throw e;
         alert(`Couldn't generate PDF: ${e.message}`);
       } finally {
-        btn.textContent = original;
-        btn.disabled = false;
+        if (btn) { btn.textContent = original; btn.disabled = false; }
       }
     }
 
@@ -2145,16 +2171,17 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       loadAll();
     }
 
-    let activeBlast = null; // { cardId, address, statusEl, matched }
+    let activeBlast = null; // { cardId, address, statusEl, matched, isMorbyDeck?, dealDeckPdf? }
 
-    function openBlastModal(btn) {
+    function openBlastModal(btn, { isMorbyDeck = false, dealDeckPdf = null } = {}) {
       const cardId = btn.dataset.cardId;
       const address = btn.dataset.address;
-      const statusEl = btn.closest(".flex-between").querySelector(".blast-status");
+      // Morby cards don't have a .blast-status el in the same .flex-between — use card header
+      const statusEl = btn.closest(".flex-between")?.querySelector(".blast-status") || btn.closest(".card")?.querySelector(".blast-status") || btn;
       const deal = dealCache[cardId];
       const matched = (deal && deal.matched) || [];
-      const variations = (deal && deal.prop && deal.prop.variations) || [];
-      activeBlast = { cardId, address, statusEl, matched, variations };
+      const variations = isMorbyDeck ? [] : ((deal && deal.prop && deal.prop.variations) || []);
+      activeBlast = { cardId, address, statusEl, matched, variations, isMorbyDeck, dealDeckPdf };
 
       const varSel = document.getElementById("blast-variation-select");
       const varField = document.getElementById("blast-variation-field");
@@ -2175,9 +2202,10 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         varPreview.textContent = "";
       }
 
-      document.getElementById("blast-modal-title").textContent = `Send Blast — ${address}`;
-      document.getElementById("blast-modal-sub").textContent =
-        `${matched.length} buyer${matched.length === 1 ? "" : "s"} match this deal's state${matched.some(b=>b.max_price||b.max_piti||b.min_beds) ? " & criteria" : ""}.`;
+      document.getElementById("blast-modal-title").textContent = isMorbyDeck ? `Send Deal Deck — ${address}` : `Send Blast — ${address}`;
+      document.getElementById("blast-modal-sub").textContent = isMorbyDeck
+        ? `Deal Deck PDF will be emailed to ${matched.length} Stack Method buyer${matched.length === 1 ? "" : "s"}.`
+        : `${matched.length} buyer${matched.length === 1 ? "" : "s"} match this deal's state${matched.some(b=>b.max_price||b.max_piti||b.min_beds) ? " & criteria" : ""}.`;
       document.getElementById("blast-mode-all").checked = true;
       document.getElementById("blast-buyer-list").classList.add("hidden");
       document.getElementById("blast-all-count").textContent = `(${matched.length})`;
@@ -2263,7 +2291,10 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
           if (testEmail) body.test_email = testEmail;
         }
         if (buyerIds) body.buyer_ids = buyerIds;
-        if (activeBlast.variations && activeBlast.variations.length) {
+        if (activeBlast.isMorbyDeck) {
+          body.deal_deck_pdf = activeBlast.dealDeckPdf;
+          body.channels = ["email"]; // PDF attachment is email-only
+        } else if (activeBlast.variations && activeBlast.variations.length) {
           const idx = Number(document.getElementById("blast-variation-select").value) || 0;
           const v = activeBlast.variations[idx] || {};
           body.variation_index = idx;

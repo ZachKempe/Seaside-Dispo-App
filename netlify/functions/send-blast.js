@@ -211,7 +211,7 @@ function buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl) {
 }
 
 // ── ESP send: Resend (preferred) ─────────────────────────────────
-async function sendViaResend(to, subject, html, unsubUrl) {
+async function sendViaResend(to, subject, html, unsubUrl, attachments) {
   const body = {
     from: RESEND_FROM,
     to: [to],
@@ -222,12 +222,77 @@ async function sendViaResend(to, subject, html, unsubUrl) {
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
     } : undefined,
   };
+  if (attachments && attachments.length) body.attachments = attachments;
   const r = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`Resend -> ${r.status}: ${await r.text()}`);
+}
+
+// ── Morby / Stack Method Deal Deck email ─────────────────────────
+function buildMorbyEmail(prop, morby, unsubUrl) {
+  const address = prop.address_override || prop.name || "";
+  const subject = `📊 Stack Method Deal — ${address}`;
+  const fmtM = (n) => n ? `$${Number(n).toLocaleString()}` : "—";
+  const fmtPct = (n) => n ? `${Number(n).toFixed(2)}%` : "—";
+
+  const rows = [
+    ["Purchase Price",    fmtM(morby.purchase_price)],
+    ["Down Payment",      fmtM(morby.down_payment)],
+    ["Seller Carry",      fmtM(morby.seller_carry_balance)],
+    ["Monthly Payment",   fmtM(morby.monthly_payment)],
+    ["Deferred Rate",     fmtPct(morby.deferred_interest_rate)],
+    ["Balloon",           morby.balloon_months ? `${morby.balloon_months} months` : "—"],
+    ["Inspection Period", morby.inspection_period_days ? `${morby.inspection_period_days} days` : "—"],
+    ["Close of Escrow",   morby.close_of_escrow_days ? `${morby.close_of_escrow_days} days` : "—"],
+  ].filter(([, v]) => v && v !== "—");
+
+  const termRows = rows.map(([label, val]) =>
+    `<tr><td style="padding:6px 12px;color:#718096;font-size:13px;border-bottom:1px solid #EDF2F7">${escapeHtml(label)}</td>` +
+    `<td style="padding:6px 12px;font-weight:600;font-size:13px;color:#1A202C;border-bottom:1px solid #EDF2F7">${escapeHtml(val)}</td></tr>`
+  ).join("");
+
+  const unsubFooter = unsubUrl
+    ? `<tr><td colspan="2" style="padding:6px 32px 16px;font-size:11px;color:#A0AEC0;background:#fff">You're receiving this because you're on Seaside Horizon's buyer list. <a href="${escapeHtml(unsubUrl)}" style="color:#A0AEC0;text-decoration:underline">Unsubscribe</a>.</td></tr>`
+    : "";
+
+  const html = `
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F0F4F8;padding:24px 0;font-family:Arial,Helvetica,sans-serif">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #E2E8F0">
+        <tr><td style="background:linear-gradient(135deg,${BRAND_NAVY_DARK} 0%,${BRAND_NAVY} 100%);padding:24px 32px;color:#fff">
+          <table cellpadding="0" cellspacing="0"><tr>
+            <td style="vertical-align:middle;padding-right:14px"><img src="${LOGO_URL}" alt="Seaside Horizon" width="44" height="44" style="display:block;border-radius:8px;background:#fff;padding:4px"></td>
+            <td style="vertical-align:middle">
+              <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:${BRAND_GOLD};font-weight:700">Seaside Horizon · Stack Method</div>
+              <div style="font-size:21px;font-weight:700;margin-top:3px;color:#fff">${escapeHtml(address)}</div>
+            </td>
+          </tr></table>
+        </td></tr>
+        <tr><td style="height:4px;background:${BRAND_GOLD};font-size:0;line-height:0">&nbsp;</td></tr>
+        <tr><td style="padding:20px 32px 8px;color:${BRAND_NAVY};font-size:14px">
+          <p style="margin:0 0 16px">Hi — I have a new Stack Method deal I wanted to share with you. The full Deal Deck is attached as a PDF with all the financials.</p>
+          <p style="margin:0 0 12px;font-weight:700;color:${BRAND_NAVY}">Deal Snapshot:</p>
+          <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E2E8F0;border-radius:8px;overflow:hidden">
+            ${termRows}
+          </table>
+        </td></tr>
+        <tr><td style="padding:16px 32px 20px">
+          <p style="margin:0;font-size:13px;color:#4A5568">📎 <strong>Full Deal Deck attached</strong> — review the complete financial analysis, DSCR breakdown, and property details.</p>
+          ${CONTACT_PHONE ? `<p style="margin:8px 0 0;font-size:13px;color:#4A5568">Interested? Reply to this email or call/text <strong>${escapeHtml(CONTACT_NAME)}</strong> at <strong>${escapeHtml(CONTACT_PHONE)}</strong>.</p>` : ""}
+        </td></tr>
+        <tr><td style="background:${BRAND_NAVY_DARK};padding:16px 32px;color:#fff">
+          <div style="font-size:14px;font-weight:700">${escapeHtml(CONTACT_NAME)}</div>
+          ${CONTACT_PHONE ? `<div style="font-size:13px;color:${BRAND_GOLD};margin-top:2px;font-weight:600">${escapeHtml(CONTACT_PHONE)}</div>` : ""}
+        </td></tr>
+        ${unsubFooter}
+      </table>
+    </td></tr>
+  </table>`;
+
+  return { subject, html };
 }
 
 // ── Gmail fallback ────────────────────────────────────────────────
@@ -312,7 +377,8 @@ exports.handler = async (event) => {
     if (!user) return { statusCode: 401, body: "Unauthorized" };
 
     const { card_id, channels, test, test_email, test_phone, buyer_ids, retry_failed,
-            variation_index, variation_title, variation_body } = JSON.parse(event.body || "{}");
+            variation_index, variation_title, variation_body,
+            deal_deck_pdf } = JSON.parse(event.body || "{}");
     if (!card_id) return { statusCode: 400, body: "card_id required" };
 
     const variation = (variation_body || variation_title)
@@ -327,15 +393,17 @@ exports.handler = async (event) => {
     const targetIdSet = targeted ? new Set(buyer_ids.map(Number)) : null;
     const useResend = !!(RESEND_API_KEY && RESEND_FROM);
 
-    const [props, termsRows, acqRows, buyers] = await Promise.all([
+    const [props, termsRows, acqRows, buyers, morbyRows] = await Promise.all([
       sb(`/properties?card_id=eq.${encodeURIComponent(card_id)}&select=*&limit=1`, { method: "GET" }),
       sb(`/deal_terms?card_id=eq.${encodeURIComponent(card_id)}&select=*&limit=1`, { method: "GET" }),
       sb(`/deal_acquisition?card_id=eq.${encodeURIComponent(card_id)}&select=cover_image_url&limit=1`, { method: "GET" }),
       sb(`/buyers?active=eq.true&select=*`, { method: "GET" }),
+      sb(`/morby_deals?card_id=eq.${encodeURIComponent(card_id)}&select=*&limit=1`, { method: "GET" }),
     ]);
     const prop = (props || [])[0];
     if (!prop) return { statusCode: 404, body: "property not found" };
     const terms = (termsRows || [])[0] || {};
+    const morbyTerms = (morbyRows || [])[0] || {};
     const coverImageUrl = ((acqRows || [])[0] || {}).cover_image_url || "";
     const address = prop.name || prop.card_id;
     const dealStrategy = prop.deal_type === "morby" ? "morby" : "subto";
@@ -350,11 +418,24 @@ exports.handler = async (event) => {
     const result = { email: null, sms: null, test: isTest, targeted, retry: retryMode, esp: useResend ? "resend" : "gmail" };
     const recipientRows = [];
 
+    // Morby/Stack deals email the Deal Deck PDF as an attachment. Strip the
+    // data URI prefix if present so Resend gets a plain base64 content string.
+    const isMorbyDeck = !!(deal_deck_pdf && dealStrategy === "morby");
+    const pdfAttachments = isMorbyDeck ? [{
+      filename: `Deal Deck - ${(prop.address_override || prop.name || card_id).replace(/[\\/:*?"<>|]/g, "")}.pdf`,
+      content: deal_deck_pdf.replace(/^data:[^;]+;base64,/, ""),
+    }] : null;
+
+    // Helper: build email content, swapping to the Morby template when needed.
+    const buildEmail = (unsubUrl) => isMorbyDeck
+      ? buildMorbyEmail(prop, morbyTerms, unsubUrl)
+      : buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl);
+
     // ── TEST MODE: single preview to the caller; no real buyers, no logging ──
     if (isTest) {
       if (wantEmail) {
         const to = test_email || user.email;
-        const { subject, html } = buildHtmlEmail(prop, terms, unsubUrlFor("preview"), coverImageUrl);
+        const { subject, html } = buildEmail(unsubUrlFor("preview"));
         const testSubject = `[TEST] ${subject}`;
         const banner = `<div style="background:#FEEBC8;color:#7B341E;padding:10px 16px;font:600 13px Arial;border-radius:8px 8px 0 0">⚠️ TEST SEND — preview only, sent to ${escapeHtml(to)}, would normally go to ${matched.filter(b => b.email && !b.email_opt_out).length} matching buyer(s)</div>`;
         if (!to) {
@@ -363,7 +444,7 @@ exports.handler = async (event) => {
           result.email = { sent: 0, failed: 0, error: "No email provider configured (set RESEND_API_KEY+RESEND_FROM or Gmail creds)" };
         } else {
           try {
-            if (useResend) await sendViaResend(to, testSubject, banner + html, null);
+            if (useResend) await sendViaResend(to, testSubject, banner + html, null, pdfAttachments);
             else await sendViaGmail(await gmailAccessToken(), to, testSubject, banner + html, null);
             result.email = { sent: 1, failed: 0, to, would_reach: matched.filter(b => b.email && !b.email_opt_out).length };
           } catch (e) { result.email = { sent: 0, failed: 1, error: e.message }; }
@@ -416,9 +497,9 @@ exports.handler = async (event) => {
             const chunk = emailBuyers.slice(i, i + EMAIL_CONCURRENCY);
             await Promise.all(chunk.map(async (b) => {
               const unsubUrl = unsubUrlFor(b.id);
-              const { subject, html } = buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl);
+              const { subject, html } = buildEmail(unsubUrl);
               try {
-                if (useResend) await sendViaResend(b.email, subject, html, unsubUrl);
+                if (useResend) await sendViaResend(b.email, subject, html, unsubUrl, pdfAttachments);
                 else await sendViaGmail(token, b.email, subject, html, unsubUrl);
                 sent++;
                 recipientRows.push(recipientRow(card_id, b, address, "email", b.email, "sent", variation));

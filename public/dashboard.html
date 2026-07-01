@@ -58,10 +58,12 @@
         <p class="muted" id="blast-variation-preview" style="font-size:0.76rem;margin-top:6px;max-height:70px;overflow-y:auto;white-space:pre-wrap"></p>
       </div>
 
-      <div id="blast-buyer-list" class="hidden" style="border:1px solid var(--border);border-radius:10px;padding:10px;max-height:280px;overflow-y:auto;margin-top:6px">
-        <div class="flex gap-8" style="margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">
-          <button type="button" class="btn btn-ghost btn-sm" id="blast-select-all">Select all</button>
-          <button type="button" class="btn btn-ghost btn-sm" id="blast-select-none">Select none</button>
+      <div id="blast-buyer-list" class="hidden" style="border:1px solid var(--border);border-radius:10px;padding:10px;max-height:320px;overflow-y:auto;margin-top:6px">
+        <div id="blast-method-filter" class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px"></div>
+        <div class="flex gap-8" style="margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border);align-items:center">
+          <button type="button" class="btn btn-ghost btn-sm" id="blast-select-all">Select all shown</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="blast-select-none">Deselect all shown</button>
+          <span class="muted" id="blast-selected-count" style="font-size:0.76rem;margin-left:auto"></span>
         </div>
         <div id="blast-buyer-checkboxes"></div>
       </div>
@@ -158,6 +160,7 @@
     const dealCache = {}; // card_id -> { prop, terms, matched: [...buyers] }
     const activeTabByCard = {}; // card_id -> "posting" | "dealinfo" — preserved across re-renders
     let artemisByDeal = {}; // IL deal_id -> { byPhone, byEmail } of scraped Artemis engagement
+    let allBuyers = []; // every active buyer — used by the blast modal's "by method" filter
 
     // Returns this buyer's Artemis engagement on a specific IL deal, or null.
     function artemisFor(ilDealId, b) {
@@ -339,6 +342,8 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         if (em) artemisByDeal[did].byEmail[em] = l;
       }
 
+      allBuyers = buyers || [];
+
       document.getElementById("prop-count").textContent =
         `${props.length} active under-contract propert${props.length === 1 ? "y" : "ies"}`;
 
@@ -449,6 +454,11 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         })
         .sort((a, b) => b._score - a._score);
     }
+
+    // Buyer "method" = their strategy field. Used to group the blast modal's
+    // "Choose specific buyers" list so you can pick any method to send to.
+    const METHOD_LABELS = { subto: "Sub-To", morby: "Stack Method", owner_finance: "Seller Finance", cash: "Cash", all: "Open to all" };
+    const METHOD_ORDER = ["subto", "morby", "owner_finance", "cash", "all"];
 
     const STAGES = [
       { key: "new",            label: "New",             color: "#A0AEC0" },
@@ -2180,7 +2190,12 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       const deal = dealCache[cardId];
       const matched = (deal && deal.matched) || [];
       const variations = isMorbyDeck ? [] : ((deal && deal.prop && deal.prop.variations) || []);
-      activeBlast = { cardId, address, statusEl, matched, variations, isMorbyDeck, dealDeckPdf };
+      // Deal params let us score any buyer (even ones not auto-matched) when the
+      // user filters the "Choose specific buyers" list by method.
+      const dealParams = deal
+        ? { state: deal.prop.state, price: Number(deal.terms?.price) || 0, piti: Number(deal.terms?.piti) || 0, beds: Number(deal.terms?.beds) || 0, ilPropId: deal.prop.il_property_id }
+        : { state: "", price: 0, piti: 0, beds: 0, ilPropId: null };
+      activeBlast = { cardId, address, statusEl, matched, variations, isMorbyDeck, dealDeckPdf, dealParams, selectedIds: new Set() };
 
       const varSel = document.getElementById("blast-variation-select");
       const varField = document.getElementById("blast-variation-field");
@@ -2209,16 +2224,72 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       document.getElementById("blast-buyer-list").classList.add("hidden");
       document.getElementById("blast-all-count").textContent = `(${matched.length})`;
 
+      // Pre-select every deal-matched buyer (prior default). Selection is a Set
+      // so it survives switching between method groups.
+      activeBlast.selectedIds = new Set(matched.map(b => b.id));
+      renderMethodChips();
+      selectMethodGroup("__matched");
+
+      document.getElementById("blast-modal-backdrop").classList.remove("hidden");
+    }
+
+    // Score any buyer against the active deal (matched buyers arrive pre-scored).
+    function decorateBuyer(b) {
+      if (b._score !== undefined) return b;
+      const { state, price, piti, beds, ilPropId } = activeBlast.dealParams;
+      const eng = artemisFor(ilPropId, b);
+      const { score, reasons, missing } = scoreBuyerForDeal(b, state, price, piti, beds, eng);
+      return { ...b, _score: score, _reasons: reasons, _missing: missing, _engaged: !!eng };
+    }
+
+    // Method-filter chips: "Matched to this deal" plus one per buyer method that
+    // has buyers. Picking a method shows ALL active buyers of that method.
+    function renderMethodChips() {
+      const wrap = document.getElementById("blast-method-filter");
+      const groups = {};
+      for (const b of allBuyers) { const m = (b.strategy || "all").toLowerCase(); (groups[m] ||= []).push(b); }
+      activeBlast.methodGroups = groups;
+      const chips = [{ key: "__matched", label: "Matched to this deal", count: activeBlast.matched.length }];
+      for (const key of METHOD_ORDER) if (groups[key] && groups[key].length) chips.push({ key, label: METHOD_LABELS[key], count: groups[key].length });
+      wrap.innerHTML = chips.map(c =>
+        `<button type="button" class="btn btn-ghost btn-sm blast-method-chip" data-key="${c.key}" style="font-size:0.74rem">${escapeHtml(c.label)} <span class="muted">(${c.count})</span></button>`
+      ).join("");
+      wrap.querySelectorAll(".blast-method-chip").forEach(chip =>
+        chip.addEventListener("click", () => selectMethodGroup(chip.dataset.key)));
+    }
+
+    function selectMethodGroup(key) {
+      activeBlast.activeMethod = key;
+      document.querySelectorAll(".blast-method-chip").forEach(chip => {
+        const on = chip.dataset.key === key;
+        chip.style.background = on ? "var(--navy, #1B3A6B)" : "";
+        chip.style.color = on ? "#fff" : "";
+      });
+      const list = key === "__matched"
+        ? activeBlast.matched
+        : (activeBlast.methodGroups[key] || []).map(decorateBuyer).sort((a, b) => b._score - a._score);
+      renderBlastCheckboxes(list);
+    }
+
+    function updateSelectedCount() {
+      const el = document.getElementById("blast-selected-count");
+      if (el) el.textContent = `${activeBlast.selectedIds.size} selected total`;
+    }
+
+    function renderBlastCheckboxes(list) {
       const box = document.getElementById("blast-buyer-checkboxes");
-      box.innerHTML = matched.map(b => {
+      const sel = activeBlast.selectedIds;
+      box.innerHTML = list.map(raw => {
+        const b = decorateBuyer(raw);
         const score = b._score ?? 0;
         const reasons = b._reasons || [];
         const missing = b._missing || [];
         const scoreColor = score >= 70 ? "#2F855A" : score >= 45 ? "#B7791F" : "#A0AEC0";
+        const checked = sel.has(b.id) ? "checked" : "";
         return `
         <label style="display:flex;flex-direction:column;gap:2px;padding:6px 0;font-weight:400;color:var(--text-1);font-size:0.86rem;border-bottom:1px solid var(--border, #eee)${b._engaged ? ';background:#fff7ed;border-radius:6px;padding-left:6px' : ''}">
           <span style="display:flex;align-items:center;gap:8px">
-            <input type="checkbox" class="blast-buyer-cb" value="${b.id}" checked style="width:auto">
+            <input type="checkbox" class="blast-buyer-cb" value="${b.id}" ${checked} style="width:auto">
             ${b._engaged ? '<span title="Viewed this deal on InvestorLift">🔥</span>' : ''}
             <span class="pill pill-tier-${b.tier}" style="font-size:0.66rem">${escapeHtml(b.tier || "B")}</span>
             <span style="font-size:0.7rem;font-weight:700;color:${scoreColor}" title="Match score">${score}</span>
@@ -2230,12 +2301,20 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
           </span>
           ${reasons.length ? `<span class="muted" style="font-size:0.72rem;padding-left:26px">${reasons.map(escapeHtml).join(" · ")}</span>` : ""}
         </label>`;
-      }).join("") || `<span class="muted" style="font-size:0.84rem">No matching buyers found.</span>`;
+      }).join("") || `<span class="muted" style="font-size:0.84rem">No buyers in this group.</span>`;
 
+      box.querySelectorAll(".blast-buyer-cb").forEach(cb => {
+        cb.addEventListener("change", () => {
+          const id = Number(cb.value);
+          if (cb.checked) sel.add(id); else sel.delete(id);
+          updateSelectedCount();
+        });
+      });
       box.querySelectorAll(".log-outcome-btn").forEach(btn => {
         btn.addEventListener("click", (e) => {
           e.preventDefault();
           e.stopPropagation();
+          const { cardId, address } = activeBlast;
           const existing = (dealCache[cardId]?.leads || []).find(l => String(l.buyer_id) === btn.dataset.buyerId);
           if (existing) {
             openLeadModal({ cardId, address, lead: existing });
@@ -2244,8 +2323,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
           }
         });
       });
-
-      document.getElementById("blast-modal-backdrop").classList.remove("hidden");
+      updateSelectedCount();
     }
     function closeBlastModal() {
       document.getElementById("blast-modal-backdrop").classList.add("hidden");
@@ -2255,7 +2333,9 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
     function selectedBuyerIds() {
       const mode = document.querySelector('input[name="blast-recipients-mode"]:checked').value;
       if (mode === "all") return null; // null = let the server use its own "all matching" logic
-      return [...document.querySelectorAll(".blast-buyer-cb:checked")].map(cb => Number(cb.value));
+      // Selection is tracked in a Set that persists across method groups, so
+      // read it directly rather than only the currently-visible checkboxes.
+      return activeBlast && activeBlast.selectedIds ? [...activeBlast.selectedIds] : [];
     }
 
     async function runBlast({ test }) {
@@ -2329,8 +2409,16 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
 
     document.getElementById("blast-mode-all").addEventListener("change", () => document.getElementById("blast-buyer-list").classList.add("hidden"));
     document.getElementById("blast-mode-select").addEventListener("change", () => document.getElementById("blast-buyer-list").classList.remove("hidden"));
-    document.getElementById("blast-select-all").addEventListener("click", () => document.querySelectorAll(".blast-buyer-cb").forEach(cb => cb.checked = true));
-    document.getElementById("blast-select-none").addEventListener("click", () => document.querySelectorAll(".blast-buyer-cb").forEach(cb => cb.checked = false));
+    document.getElementById("blast-select-all").addEventListener("click", () => {
+      if (!activeBlast) return;
+      document.querySelectorAll(".blast-buyer-cb").forEach(cb => { cb.checked = true; activeBlast.selectedIds.add(Number(cb.value)); });
+      updateSelectedCount();
+    });
+    document.getElementById("blast-select-none").addEventListener("click", () => {
+      if (!activeBlast) return;
+      document.querySelectorAll(".blast-buyer-cb").forEach(cb => { cb.checked = false; activeBlast.selectedIds.delete(Number(cb.value)); });
+      updateSelectedCount();
+    });
     document.getElementById("blast-modal-cancel").addEventListener("click", closeBlastModal);
     document.getElementById("blast-modal-backdrop").addEventListener("click", e => { if (e.target.id === "blast-modal-backdrop") closeBlastModal(); });
     document.getElementById("blast-modal-test").addEventListener("click", () => runBlast({ test: true }));

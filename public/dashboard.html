@@ -1772,9 +1772,8 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       const GOLD = [217, 164, 65];
       const GREY = [102, 102, 102];
 
-      const original = btn.textContent;
-      btn.textContent = "Generating…";
-      btn.disabled = true;
+      const original = btn ? btn.textContent : "";
+      if (btn) { btn.textContent = "Generating…"; btn.disabled = true; }
       try {
         await loadJsPdf();
         const logoDataUrl = await loadLogoDataUrl();

@@ -421,9 +421,12 @@ exports.handler = async (event) => {
     // Morby/Stack deals email the Deal Deck PDF as an attachment. Strip the
     // data URI prefix if present so Resend gets a plain base64 content string.
     const isMorbyDeck = !!(deal_deck_pdf && dealStrategy === "morby");
+    // jsPDF's datauristring prefix is "data:application/pdf;filename=generated.pdf;base64,"
+    // — split on "base64," and take the tail to get clean base64 for Resend,
+    // robust to whatever params the data-URI carries.
     const pdfAttachments = isMorbyDeck ? [{
       filename: `Deal Deck - ${(prop.address_override || prop.name || card_id).replace(/[\\/:*?"<>|]/g, "")}.pdf`,
-      content: deal_deck_pdf.replace(/^data:[^;]+;base64,/, ""),
+      content: deal_deck_pdf.split("base64,").pop(),
     }] : null;
 
     // Helper: build email content, swapping to the Morby template when needed.

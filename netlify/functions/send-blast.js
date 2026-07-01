@@ -231,10 +231,20 @@ async function sendViaResend(to, subject, html, unsubUrl, attachments) {
   if (!r.ok) throw new Error(`Resend -> ${r.status}: ${await r.text()}`);
 }
 
+// First name for a personalized greeting. Falls back to "there" when the
+// buyer's name is missing or looks like an email address.
+function firstNameOf(buyer) {
+  const raw = (buyer && buyer.name || "").trim();
+  const first = raw.split(/\s+/)[0];
+  if (!first || first.includes("@")) return "there";
+  return first.charAt(0).toUpperCase() + first.slice(1);
+}
+
 // ── Morby / Stack Method Deal Deck email ─────────────────────────
-function buildMorbyEmail(prop, morby, unsubUrl) {
+function buildMorbyEmail(prop, morby, unsubUrl, buyer) {
   const address = prop.address_override || prop.name || "";
-  const subject = `📊 Stack Method Deal — ${address}`;
+  const subject = `Stack Method Deal: ${address}`;
+  const greeting = `Hi ${firstNameOf(buyer)},`;
   const fmtM = (n) => n ? `$${Number(n).toLocaleString()}` : "—";
   const fmtPct = (n) => n ? `${Number(n).toFixed(2)}%` : "—";
 
@@ -273,14 +283,14 @@ function buildMorbyEmail(prop, morby, unsubUrl) {
         </td></tr>
         <tr><td style="height:4px;background:${BRAND_GOLD};font-size:0;line-height:0">&nbsp;</td></tr>
         <tr><td style="padding:20px 32px 8px;color:${BRAND_NAVY};font-size:14px">
-          <p style="margin:0 0 16px">Hi — I have a new Stack Method deal I wanted to share with you. The full Deal Deck is attached as a PDF with all the financials.</p>
+          <p style="margin:0 0 16px">${escapeHtml(greeting)} I have a new Stack Method deal I wanted to share with you. The full Deal Deck is attached as a PDF with all the financials.</p>
           <p style="margin:0 0 12px;font-weight:700;color:${BRAND_NAVY}">Deal Snapshot:</p>
           <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E2E8F0;border-radius:8px;overflow:hidden">
             ${termRows}
           </table>
         </td></tr>
         <tr><td style="padding:16px 32px 20px">
-          <p style="margin:0;font-size:13px;color:#4A5568">📎 <strong>Full Deal Deck attached</strong> — review the complete financial analysis, DSCR breakdown, and property details.</p>
+          <p style="margin:0;font-size:13px;color:#4A5568"><strong>Full Deal Deck attached.</strong> Review the complete financial analysis, DSCR breakdown, and property details.</p>
           ${CONTACT_PHONE ? `<p style="margin:8px 0 0;font-size:13px;color:#4A5568">Interested? Reply to this email or call/text <strong>${escapeHtml(CONTACT_NAME)}</strong> at <strong>${escapeHtml(CONTACT_PHONE)}</strong>.</p>` : ""}
         </td></tr>
         <tr><td style="background:${BRAND_NAVY_DARK};padding:16px 32px;color:#fff">
@@ -430,8 +440,9 @@ exports.handler = async (event) => {
     }] : null;
 
     // Helper: build email content, swapping to the Morby template when needed.
-    const buildEmail = (unsubUrl) => isMorbyDeck
-      ? buildMorbyEmail(prop, morbyTerms, unsubUrl)
+    // Passes the buyer so the Morby email can greet them by first name.
+    const buildEmail = (unsubUrl, buyer) => isMorbyDeck
+      ? buildMorbyEmail(prop, morbyTerms, unsubUrl, buyer)
       : buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl);
 
     // ── TEST MODE: single preview to the caller; no real buyers, no logging ──
@@ -500,7 +511,7 @@ exports.handler = async (event) => {
             const chunk = emailBuyers.slice(i, i + EMAIL_CONCURRENCY);
             await Promise.all(chunk.map(async (b) => {
               const unsubUrl = unsubUrlFor(b.id);
-              const { subject, html } = buildEmail(unsubUrl);
+              const { subject, html } = buildEmail(unsubUrl, b);
               try {
                 if (useResend) await sendViaResend(b.email, subject, html, unsubUrl, pdfAttachments);
                 else await sendViaGmail(token, b.email, subject, html, unsubUrl);

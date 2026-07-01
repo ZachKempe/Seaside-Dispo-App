@@ -125,36 +125,36 @@ function unsubUrlFor(buyerId) {
 function fmtMoney(n) { n = Number(n) || 0; return n ? `$${n.toLocaleString()}` : "—"; }
 
 function buildDealCopyText(prop, terms) {
-  const beds = terms.beds || "—";
-  const baths = terms.baths || "—";
-  const sqft = terms.sqft ? Number(terms.sqft).toLocaleString() : "—";
-  const year = terms.year_built || "—";
+  const beds = terms.beds || "N/A";
+  const baths = terms.baths || "N/A";
+  const sqft = terms.sqft ? Number(terms.sqft).toLocaleString() : "N/A";
+  const year = terms.year_built || "N/A";
   const entryFee = Number(terms.entry_fee) || 0;
   const price = Number(terms.price) || 0;
   const loanBalance = Number(terms.mortgage) || 0;
   const piti = Number(terms.piti) || 0;
-  const rate = terms.rate || "—";
+  const rate = terms.rate || "N/A";
   const phone = CONTACT_PHONE || "630-488-5311";
 
   const addrParts = (prop.name || "").split(",").map(s => s.trim()).filter(Boolean);
   const city = addrParts.length >= 2 ? addrParts[1] : "";
   const market = city ? [city, prop.state].filter(Boolean).join(", ") : [prop.name, prop.state].filter(Boolean).join(", ");
 
-  let text = `🏠 ${prop.name || ""}
+  let text = `${prop.name || ""}
 ${beds} bd / ${baths} ba • ${sqft} sqft • ${year}
 
-💰 DEAL TERMS:
+DEAL TERMS:
 Entry Fee: $${entryFee.toLocaleString()} + TC + CC
 Purchase Price: $${price.toLocaleString()}
 Existing Loan Balance: $${loanBalance.toLocaleString()}
 PITI: $${piti.toLocaleString()}/mo
 Rate: ${rate}%
 
-📍 Market: ${market}
-🏷️ Strategy: Sub-To`;
+Market: ${market}
+Strategy: Sub-To`;
 
-  if (prop.drive_link) text += `\n📸 Photos: ${prop.drive_link}`;
-  text += `\n\nInterested? Reply here or call/text Zach @ ${phone}`;
+  if (prop.drive_link) text += `\nPhotos: ${prop.drive_link}`;
+  text += `\n\nInterested? Reply here or call/text ${CONTACT_NAME} at ${phone}`;
   return text;
 }
 
@@ -162,10 +162,11 @@ function escapeHtml(s) {
   return String(s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-function buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl) {
+function buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer) {
   const city = prop.name || "";
   const entryFee = Number(terms.entry_fee) || 0;
-  const subject = `🏡 New SubTo Deal — ${city} | ${entryFee ? "$" + entryFee.toLocaleString() : "Ask"} Entry Fee`;
+  const subject = `New Sub-To Deal: ${city} | ${entryFee ? "$" + entryFee.toLocaleString() : "Ask"} Entry Fee`;
+  const greeting = `Hi ${firstNameOf(buyer)},`;
   const dealCopy = buildDealCopyText(prop, terms);
   const coverImageTag = coverImageUrl
     ? `<img src="${escapeHtml(coverImageUrl)}" alt="${escapeHtml(city)}" width="140" style="display:block;float:right;width:140px;height:140px;object-fit:cover;border-radius:8px;margin:0 0 10px 14px">`
@@ -192,12 +193,15 @@ function buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl) {
           </tr></table>
         </td></tr>
         <tr><td style="height:4px;background:${BRAND_GOLD};font-size:0;line-height:0">&nbsp;</td></tr>
+        <tr><td style="padding:18px 32px 0;color:${BRAND_NAVY};font-size:14px">
+          <p style="margin:0">${escapeHtml(greeting)} here's a new Sub-To deal that fits your buy box:</p>
+        </td></tr>
         <tr><td style="background:#F7FAFC;padding:16px 32px;color:${BRAND_NAVY};font-size:14px;font-weight:600;border-bottom:1px solid #E2E8F0">
-          ${terms.beds ? `${terms.beds} bd / ${terms.baths || "—"} ba` : ""} ${terms.sqft ? ` · ${Number(terms.sqft).toLocaleString()} sqft` : ""}
+          ${terms.beds ? `${terms.beds} bd / ${terms.baths || "N/A"} ba` : ""} ${terms.sqft ? ` · ${Number(terms.sqft).toLocaleString()} sqft` : ""}
         </td></tr>
         ${dealCopyBlock}
         <tr><td style="padding:8px 32px 24px">
-          ${prop.drive_link ? `<div style="margin-top:10px"><a href="${escapeHtml(prop.drive_link)}" style="display:inline-block;background:${BRAND_NAVY};color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:14px;border:1px solid ${BRAND_GOLD}">📸 View Photos (Google Drive)</a></div>` : ""}
+          ${prop.drive_link ? `<div style="margin-top:10px"><a href="${escapeHtml(prop.drive_link)}" style="display:inline-block;background:${BRAND_NAVY};color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:14px;border:1px solid ${BRAND_GOLD}">View Photos (Google Drive)</a></div>` : ""}
         </td></tr>
         <tr><td style="background:${BRAND_NAVY_DARK};padding:22px 32px;color:#fff;border-top:3px solid ${BRAND_GOLD}">
           <div style="font-size:14px;font-weight:700;color:#fff">${escapeHtml(CONTACT_NAME)}</div>
@@ -443,7 +447,7 @@ exports.handler = async (event) => {
     // Passes the buyer so the Morby email can greet them by first name.
     const buildEmail = (unsubUrl, buyer) => isMorbyDeck
       ? buildMorbyEmail(prop, morbyTerms, unsubUrl, buyer)
-      : buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl);
+      : buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer);
 
     // ── TEST MODE: single preview to the caller; no real buyers, no logging ──
     if (isTest) {

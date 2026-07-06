@@ -273,10 +273,10 @@ function buildMorbyEmail(prop, morby, unsubUrl, buyer) {
   const cashAtClose = buyerCashAtClose(morby);
   const cashAtCloseBand = cashAtClose > 0 ? `
         <tr><td style="padding:18px 32px 0">
-          <div style="background:#F0FFF4;border:1px solid #9AE6B4;border-radius:8px;padding:14px 18px">
-            <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#276749;font-weight:700">Estimated Cash to Buyer at Close</div>
-            <div style="font-size:26px;font-weight:800;color:#22543D;margin-top:2px">~$${Math.round(cashAtClose).toLocaleString()}</div>
-            <div style="font-size:11px;color:#718096;margin-top:3px">Your 50% share of the assignment. Full breakdown in the attached Deal Deck.</div>
+          <div style="background:#F0FFF4;border:2px solid #48BB78;border-radius:10px;padding:20px 22px;text-align:center">
+            <div style="font-size:13px;letter-spacing:1.5px;text-transform:uppercase;color:#276749;font-weight:700">Cash to You at Close</div>
+            <div style="font-size:40px;font-weight:800;color:#22543D;margin-top:4px;line-height:1.1">~$${Math.round(cashAtClose).toLocaleString()}</div>
+            <div style="font-size:12px;color:#2F855A;margin-top:6px;font-weight:600">Estimated cash you receive at closing on this deal.</div>
           </div>
         </td></tr>` : "";
 

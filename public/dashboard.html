@@ -1672,6 +1672,11 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       const loanAmount = price * (dscrLtv / 100);
       const monthlyDebtService = dscrMonthlyPayment(price, dscrRate, dscrLtv);
 
+      // Cash the buyer receives at close (same formula as the Stack Method email):
+      //   loan proceeds − down payment − 5% closing costs, split in half.
+      // Shown as a headline figure only when positive.
+      const cashToBuyerAtClose = (loanAmount - (Number(m.down_payment) || 0) - price * 0.05) / 2;
+
       const fmt = (n) => `$${Math.round(Number(n) || 0).toLocaleString()}`;
       const fmtPct = (n) => `${Number(n) || 0}%`;
 
@@ -1877,6 +1882,27 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
           }
         });
         y += summaryBoxH + 18;
+
+        // ── Cash to Buyer at Close — headline figure ──
+        // Gold band (inverted from the navy summary box above) so the single
+        // most important number for a Stack Method buyer is unmistakable.
+        if (cashToBuyerAtClose > 0) {
+          const cbH = 56;
+          ensureSpace(cbH + 16);
+          doc.setFillColor(...GOLD);
+          doc.roundedRect(marginX, y, colW, cbH, 6, 6, "F");
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(8);
+          doc.setTextColor(...NAVY_DARK);
+          const cbLabel = "CASH TO BUYER AT CLOSE";
+          const cbLabelW = doc.getTextWidth(cbLabel);
+          doc.text(cbLabel, marginX + colW / 2 - cbLabelW / 2, y + 20);
+          doc.setFontSize(24);
+          const cbNum = `$${Math.round(cashToBuyerAtClose).toLocaleString()}`;
+          const cbNumW = doc.getTextWidth(cbNum);
+          doc.text(cbNum, marginX + colW / 2 - cbNumW / 2, y + 44);
+          y += cbH + 18;
+        }
 
         let rowIndex = 0;
         const sectionHeader = (title) => {

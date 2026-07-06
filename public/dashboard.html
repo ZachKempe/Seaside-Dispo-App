@@ -1848,15 +1848,21 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         doc.roundedRect(marginX, y, colW, summaryBoxH, 6, 6, "F");
         // Commercial deals are NOI-based (a single cash flow number), so the
         // LTR/STR side-by-side split only applies to single-family.
+        // Cash at Close is the buyer's headline number — surface it as a
+        // summary column (only when positive) instead of a separate band, so
+        // the deck stays one page.
+        const cashStat = cashToBuyerAtClose > 0 ? [["Cash at Close", fmt(cashToBuyerAtClose)]] : [];
         const summaryStats = propertyType === "commercial"
           ? [
               ["Purchase Price", fmt(m.purchase_price)],
+              ...cashStat,
               ["Seller Carry Balance", fmt(m.seller_carry_balance)],
               [cashFlowLabelLtr, cashFlowHeadlineLtr],
               ["Balloon", m.balloon_months ? `${balloonYears} yrs` : "—"],
             ]
           : [
               ["Purchase Price", fmt(m.purchase_price)],
+              ...cashStat,
               ["Seller Carry Balance", fmt(m.seller_carry_balance)],
               [cashFlowLabelLtr, cashFlowHeadlineLtr],
               [cashFlowLabelStr, cashFlowHeadlineStr],
@@ -1882,27 +1888,6 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
           }
         });
         y += summaryBoxH + 18;
-
-        // ── Cash to Buyer at Close — headline figure ──
-        // Gold band (inverted from the navy summary box above) so the single
-        // most important number for a Stack Method buyer is unmistakable.
-        if (cashToBuyerAtClose > 0) {
-          const cbH = 56;
-          ensureSpace(cbH + 16);
-          doc.setFillColor(...GOLD);
-          doc.roundedRect(marginX, y, colW, cbH, 6, 6, "F");
-          doc.setFont("helvetica", "bold");
-          doc.setFontSize(8);
-          doc.setTextColor(...NAVY_DARK);
-          const cbLabel = "CASH TO BUYER AT CLOSE";
-          const cbLabelW = doc.getTextWidth(cbLabel);
-          doc.text(cbLabel, marginX + colW / 2 - cbLabelW / 2, y + 20);
-          doc.setFontSize(24);
-          const cbNum = `$${Math.round(cashToBuyerAtClose).toLocaleString()}`;
-          const cbNumW = doc.getTextWidth(cbNum);
-          doc.text(cbNum, marginX + colW / 2 - cbNumW / 2, y + 44);
-          y += cbH + 18;
-        }
 
         let rowIndex = 0;
         const sectionHeader = (title) => {

@@ -244,6 +244,23 @@ function firstNameOf(buyer) {
   return first.charAt(0).toUpperCase() + first.slice(1);
 }
 
+// Cash the buyer receives at close = their 50% share of the assignment.
+//   Loan proceeds (Purchase × DSCR LTV: 75% SFH / 70% commercial)
+//   − Down Payment − 5% closing costs, then split in half.
+// Returns 0 when the loan doesn't cover the down payment + closing (the email
+// hides the line in that case rather than advertising a negative).
+function buyerCashAtClose(morby) {
+  const price = Number(morby.purchase_price) || 0;
+  if (!price) return 0;
+  const defaultLtv = (morby.property_type === "commercial") ? 70 : 75;
+  const ltv = morby.dscr_ltv != null ? Number(morby.dscr_ltv) : defaultLtv;
+  const loanProceeds = price * (ltv / 100);
+  const downPayment = Number(morby.down_payment) || 0;
+  const closingCosts = price * 0.05;
+  const buyerShare = (loanProceeds - downPayment - closingCosts) / 2;
+  return buyerShare > 0 ? buyerShare : 0;
+}
+
 // ── Morby / Stack Method Deal Deck email ─────────────────────────
 function buildMorbyEmail(prop, morby, unsubUrl, buyer) {
   const address = prop.address_override || prop.name || "";
@@ -251,6 +268,17 @@ function buildMorbyEmail(prop, morby, unsubUrl, buyer) {
   const greeting = `Hi ${firstNameOf(buyer)},`;
   const fmtM = (n) => n ? `$${Number(n).toLocaleString()}` : "—";
   const fmtPct = (n) => n ? `${Number(n).toFixed(2)}%` : "—";
+
+  // Headline hook: estimated cash to the buyer at close (their assignment share).
+  const cashAtClose = buyerCashAtClose(morby);
+  const cashAtCloseBand = cashAtClose > 0 ? `
+        <tr><td style="padding:18px 32px 0">
+          <div style="background:#F0FFF4;border:1px solid #9AE6B4;border-radius:8px;padding:14px 18px">
+            <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#276749;font-weight:700">Estimated Cash to Buyer at Close</div>
+            <div style="font-size:26px;font-weight:800;color:#22543D;margin-top:2px">~$${Math.round(cashAtClose).toLocaleString()}</div>
+            <div style="font-size:11px;color:#718096;margin-top:3px">Your 50% share of the assignment. Full breakdown in the attached Deal Deck.</div>
+          </div>
+        </td></tr>` : "";
 
   const rows = [
     ["Purchase Price",    fmtM(morby.purchase_price)],
@@ -286,8 +314,11 @@ function buildMorbyEmail(prop, morby, unsubUrl, buyer) {
           </tr></table>
         </td></tr>
         <tr><td style="height:4px;background:${BRAND_GOLD};font-size:0;line-height:0">&nbsp;</td></tr>
-        <tr><td style="padding:20px 32px 8px;color:${BRAND_NAVY};font-size:14px">
-          <p style="margin:0 0 16px">${escapeHtml(greeting)} I have a new Stack Method deal I wanted to share with you. The full Deal Deck is attached as a PDF with all the financials.</p>
+        <tr><td style="padding:20px 32px 0;color:${BRAND_NAVY};font-size:14px">
+          <p style="margin:0">${escapeHtml(greeting)} I have a new Stack Method deal I wanted to share with you. The full Deal Deck is attached as a PDF with all the financials.</p>
+        </td></tr>
+        ${cashAtCloseBand}
+        <tr><td style="padding:16px 32px 8px;color:${BRAND_NAVY};font-size:14px">
           <p style="margin:0 0 12px;font-weight:700;color:${BRAND_NAVY}">Deal Snapshot:</p>
           <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E2E8F0;border-radius:8px;overflow:hidden">
             ${termRows}

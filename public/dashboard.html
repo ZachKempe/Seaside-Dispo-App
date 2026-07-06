@@ -1832,13 +1832,6 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         doc.setTextColor(...NAVY_DARK);
         doc.text(`Deal Info — ${dealAddress}`, marginX, y);
         y += 14;
-        if (p.state) {
-          doc.setFont("helvetica", "normal");
-          doc.setFontSize(9.5);
-          doc.setTextColor(...GREY);
-          doc.text(p.state, marginX, y);
-          y += 12;
-        }
         y += 8;
 
         // ── Deal Summary highlight box ──

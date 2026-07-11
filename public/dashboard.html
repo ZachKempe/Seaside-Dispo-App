@@ -81,6 +81,11 @@
         <input type="email" id="blast-test-email" placeholder="you@example.com" style="margin-top:4px;width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:0.86rem">
       </div>
 
+      <div class="field" style="margin-top:4px">
+        <label style="font-weight:500;color:var(--text-1);font-size:0.86rem">Test phone number <span class="muted" style="font-weight:400">(for "Send Test" SMS — defaults to your marketing number)</span></label>
+        <input type="tel" id="blast-test-phone" placeholder="+15551234567" style="margin-top:4px;width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:0.86rem">
+      </div>
+
       <div class="flex gap-8 mt-16" style="justify-content:flex-end">
         <button type="button" class="btn btn-ghost" id="blast-modal-cancel">Cancel</button>
         <button type="button" class="btn btn-ghost" id="blast-modal-test">🧪 Send Test (to me only)</button>
@@ -2394,6 +2399,8 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         if (test) {
           const testEmail = document.getElementById("blast-test-email").value.trim();
           if (testEmail) body.test_email = testEmail;
+          const testPhone = document.getElementById("blast-test-phone").value.trim();
+          if (testPhone) body.test_phone = testPhone;
         }
         if (buyerIds) body.buyer_ids = buyerIds;
         body.channels = channels;

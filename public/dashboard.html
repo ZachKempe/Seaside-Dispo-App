@@ -52,6 +52,14 @@
         </label>
       </div>
 
+      <div class="field" style="margin-top:4px">
+        <label style="font-weight:500;color:var(--text-1);font-size:0.86rem">Channels</label>
+        <div style="display:flex;gap:18px;margin-top:4px">
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400;color:var(--text-1)"><input type="checkbox" id="blast-ch-email" checked style="width:auto"> 📧 Email</label>
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400;color:var(--text-1)"><input type="checkbox" id="blast-ch-sms" checked style="width:auto"> 💬 SMS <span class="muted" style="font-size:0.72rem">(opted-in buyers only)</span></label>
+        </div>
+      </div>
+
       <div class="field" id="blast-variation-field" style="margin-top:4px">
         <label style="font-weight:500;color:var(--text-1);font-size:0.86rem">Marketing copy variation <span class="muted" style="font-weight:400">(tracked for response-rate analytics)</span></label>
         <select id="blast-variation-select" style="margin-top:4px;width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);font-size:0.86rem"></select>
@@ -2233,6 +2241,8 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       document.getElementById("blast-mode-all").checked = true;
       document.getElementById("blast-buyer-list").classList.add("hidden");
       document.getElementById("blast-all-count").textContent = `(${matched.length})`;
+      document.getElementById("blast-ch-email").checked = true;
+      document.getElementById("blast-ch-sms").checked = true;
 
       // Pre-select every deal-matched buyer (prior default). Selection is a Set
       // so it survives switching between method groups.
@@ -2356,10 +2366,16 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
 
       if (buyerIds && !buyerIds.length) { alert("Select at least one buyer, or choose \"All matching buyers\"."); return; }
 
+      const channels = [];
+      if (document.getElementById("blast-ch-email").checked) channels.push("email");
+      if (document.getElementById("blast-ch-sms").checked) channels.push("sms");
+      if (!channels.length) { alert("Pick at least one channel — Email or SMS."); return; }
+      const chLabel = channels.map(c => c === "email" ? "email" : "text").join(" + ");
+
       if (test) {
-        if (!confirm(`Send a TEST preview for "${address}" to your own email/phone only? This will NOT reach any buyers.`)) return;
+        if (!confirm(`Send a TEST preview (${chLabel}) for "${address}" to your own email/phone only? This will NOT reach any buyers.`)) return;
       } else {
-        if (!confirm(`⚠️ LIVE SEND: email + text the deal alert for "${address}" to ${targetCount} buyer${targetCount === 1 ? "" : "s"}? This cannot be undone.`)) return;
+        if (!confirm(`⚠️ LIVE SEND: ${chLabel} the deal alert for "${address}" to ${targetCount} buyer${targetCount === 1 ? "" : "s"}? This cannot be undone.`)) return;
         if (!confirm(`Are you absolutely sure? This sends real messages to real buyers right now.`)) return;
       }
 
@@ -2380,9 +2396,10 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
           if (testEmail) body.test_email = testEmail;
         }
         if (buyerIds) body.buyer_ids = buyerIds;
+        body.channels = channels;
         if (activeBlast.isMorbyDeck) {
+          // Email carries the PDF; SMS (if selected) sends the key numbers as text.
           body.deal_deck_pdf = activeBlast.dealDeckPdf;
-          body.channels = ["email"]; // PDF attachment is email-only
         } else if (activeBlast.variations && activeBlast.variations.length) {
           const idx = Number(document.getElementById("blast-variation-select").value) || 0;
           const v = activeBlast.variations[idx] || {};

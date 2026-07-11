@@ -341,6 +341,26 @@ function buildMorbyEmail(prop, morby, unsubUrl, buyer) {
   return { subject, html };
 }
 
+// Plain-text SMS for a Stack Method deal — SMS can't carry the PDF, so this
+// texts the headline numbers (led by Cash at Close) plus a reply CTA.
+function buildMorbySms(prop, morby) {
+  const address = prop.address_override || prop.name || "";
+  const fmt = (n) => `$${Math.round(Number(n) || 0).toLocaleString()}`;
+  const cash = buyerCashAtClose(morby);
+  const lines = [`Stack Method Deal: ${address}`];
+  if (cash > 0) lines.push(`Cash to you at close: ~${fmt(cash)}`);
+  if (morby.purchase_price) lines.push(`Purchase price: ${fmt(morby.purchase_price)}`);
+  if (morby.down_payment) lines.push(`Down payment: ${fmt(morby.down_payment)}`);
+  if (morby.seller_carry_balance) {
+    const rate = morby.deferred_interest_rate ? ` at ${Number(morby.deferred_interest_rate)}% deferred` : "";
+    lines.push(`Seller carry: ${fmt(morby.seller_carry_balance)}${rate}`);
+  }
+  if (morby.balloon_months) lines.push(`Balloon: ${morby.balloon_months} months`);
+  lines.push(`Reply for the full deal deck PDF${CONTACT_PHONE ? ` or call/text ${CONTACT_NAME} at ${CONTACT_PHONE}` : ""}.`);
+  lines.push(`Reply STOP to opt out.`);
+  return lines.join("\n");
+}
+
 // ── Gmail fallback ────────────────────────────────────────────────
 async function gmailAccessToken() {
   const r = await fetch("https://oauth2.googleapis.com/token", {
@@ -506,7 +526,7 @@ exports.handler = async (event) => {
         else if (!to) result.sms = { sent: 0, failed: 1, error: "no test phone number available" };
         else {
           try {
-            await sendSms(to, `[TEST]\n${buildDealCopyText(prop, terms)}`);
+            await sendSms(to, `[TEST]\n${dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms) : buildDealCopyText(prop, terms)}`);
             const smsWouldReach = targeted
               ? matched.filter(b => b.sms_opt_in && b.phone).length
               : matched.filter(b => b.tier === "A" && b.sms_opt_in && b.phone).length;
@@ -588,7 +608,7 @@ exports.handler = async (event) => {
           result.sms = { sent: 0, failed: 0, note: retryMode ? "no failed texts to retry" : "no new opted-in buyers with a phone" };
         } else {
           let sent = 0, failed = 0;
-          const message = buildDealCopyText(prop, terms);
+          const message = dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms) : buildDealCopyText(prop, terms);
           for (const b of smsBuyers) {
             try {
               await sendSms(b.phone, message); sent++;

@@ -341,13 +341,20 @@ function buildMorbyEmail(prop, morby, unsubUrl, buyer) {
   return { subject, html };
 }
 
+// A short, readable slug from the deal address — used both as the stored PDF
+// filename and the short-link path (e.g. "4951-fm-1283-pipe-creek-tx").
+function deckSlug(prop) {
+  const base = (prop.address_override || prop.name || "deal").toLowerCase();
+  return base.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "deal";
+}
+
 // Upload the generated Deal Deck PDF to the public property-photos bucket
 // (deal-decks/ prefix) so it can be linked in an SMS. One stable file per
-// deal (x-upsert), so re-sends overwrite rather than pile up. Returns the
-// public URL.
-async function uploadDealDeckPdf(cardId, cleanBase64) {
-  const safe = String(cardId).replace(/[^a-zA-Z0-9_-]/g, "_");
-  const path = `deal-decks/${safe}.pdf`;
+// deal (x-upsert), so re-sends overwrite rather than pile up. Returns a SHORT
+// branded link (/deck/<slug>) that redirects to the PDF — not the long
+// Storage URL.
+async function uploadDealDeckPdf(slug, cleanBase64) {
+  const path = `deal-decks/${slug}.pdf`;
   const bytes = Buffer.from(cleanBase64, "base64");
   const r = await fetch(`${SB_URL}/storage/v1/object/property-photos/${path}`, {
     method: "POST",
@@ -360,12 +367,12 @@ async function uploadDealDeckPdf(cardId, cleanBase64) {
     body: bytes,
   });
   if (!r.ok) throw new Error(`deck upload -> ${r.status}: ${await r.text()}`);
-  return `${SB_URL}/storage/v1/object/public/property-photos/${path}`;
+  return `${SITE_URL}/deck/${slug}`;
 }
 
 // Plain-text SMS for a Stack Method deal — leads with the headline numbers
 // (Cash at Close first), links the hosted Deal Deck PDF when available.
-function buildMorbySms(prop, morby, deckUrl) {
+function buildMorbySms(prop, morby, deckUrl, alsoEmailed) {
   const address = prop.address_override || prop.name || "";
   const fmt = (n) => `$${Math.round(Number(n) || 0).toLocaleString()}`;
   const cash = buyerCashAtClose(morby);
@@ -378,9 +385,10 @@ function buildMorbySms(prop, morby, deckUrl) {
     lines.push(`Seller carry: ${fmt(morby.seller_carry_balance)}${rate}`);
   }
   if (morby.balloon_months) lines.push(`Balloon: ${morby.balloon_months} months`);
-  if (deckUrl) lines.push(`Full deal deck: ${deckUrl}`);
+  if (deckUrl) lines.push(`Deal deck: ${deckUrl}`);
   else lines.push(`Reply for the full deal deck PDF.`);
   lines.push(`Interested? Reply here${CONTACT_PHONE ? ` or call/text ${CONTACT_NAME} at ${CONTACT_PHONE}` : ""}.`);
+  if (alsoEmailed) lines.push(`We also emailed you this deal — check your spam folder if you don't see it.`);
   lines.push(`Reply STOP to opt out.`);
   return lines.join("\n");
 }
@@ -541,7 +549,7 @@ exports.handler = async (event) => {
     // link it. Non-fatal: if the upload fails the text just omits the link.
     let deckUrl = null;
     if (isMorbyDeck && wantSms && deal_deck_pdf) {
-      try { deckUrl = await uploadDealDeckPdf(card_id, deal_deck_pdf.split("base64,").pop()); }
+      try { deckUrl = await uploadDealDeckPdf(deckSlug(prop), deal_deck_pdf.split("base64,").pop()); }
       catch (e) { console.warn("deck PDF upload failed (SMS will omit link):", e.message); }
     }
 
@@ -570,7 +578,7 @@ exports.handler = async (event) => {
         else if (!to) result.sms = { sent: 0, failed: 1, error: "no test phone number available" };
         else {
           try {
-            await sendSms(to, `[TEST]\n${dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms, deckUrl) : buildDealCopyText(prop, terms)}`);
+            await sendSms(to, `[TEST]\n${dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms, deckUrl, wantEmail) : buildDealCopyText(prop, terms)}`);
             const smsWouldReach = targeted
               ? matched.filter(b => b.sms_opt_in && b.phone).length
               : matched.filter(b => b.tier === "A" && b.sms_opt_in && b.phone).length;
@@ -652,7 +660,7 @@ exports.handler = async (event) => {
           result.sms = { sent: 0, failed: 0, note: retryMode ? "no failed texts to retry" : "no new opted-in buyers with a phone" };
         } else {
           let sent = 0, failed = 0;
-          const message = dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms, deckUrl) : buildDealCopyText(prop, terms);
+          const message = dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms, deckUrl, wantEmail) : buildDealCopyText(prop, terms);
           for (const b of smsBuyers) {
             try {
               await sendSms(b.phone, message); sent++;

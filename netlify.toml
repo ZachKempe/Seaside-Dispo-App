@@ -2,6 +2,12 @@
   publish = "public"
   functions = "netlify/functions"
 
+# Pretty short-link for Deal Deck PDFs: /deck/<slug> -> deck function -> Storage PDF
+[[redirects]]
+  from = "/deck/*"
+  to = "/.netlify/functions/deck?slug=:splat"
+  status = 200
+
 [functions."sync-trello"]
   schedule = "*/10 * * * *"
 

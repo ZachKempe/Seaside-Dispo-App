@@ -257,7 +257,8 @@ function buyerCashAtClose(morby) {
   const loanProceeds = price * (ltv / 100);
   const downPayment = Number(morby.down_payment) || 0;
   const closingCosts = price * 0.05;
-  const buyerShare = (loanProceeds - downPayment - closingCosts) / 2;
+  const addlBrokerFee = price * ((Number(morby.additional_broker_pct) || 0) / 100);
+  const buyerShare = (loanProceeds - downPayment - closingCosts - addlBrokerFee) / 2;
   return buyerShare > 0 ? buyerShare : 0;
 }
 

@@ -1008,6 +1008,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
             <div class="acq-field"><label>Earnest money amount</label><input type="number" class="acq-input" data-field="earnest_money_amount" value="${num(m.earnest_money_amount)}"></div>
             <div class="acq-field"><label>Closing costs</label><input type="text" class="acq-input" data-field="closing_costs_note" value="${txt(m.closing_costs_note != null ? m.closing_costs_note : "Buyer pays all closing costs")}"></div>
             <div class="acq-field"><label>Broker commission</label><input type="text" class="acq-input" data-field="broker_commission" value="${txt(m.broker_commission != null ? m.broker_commission : "None")}"></div>
+            <div class="acq-field"><label>Additional broker commission (%)</label><input type="number" step="0.01" class="acq-input" data-field="additional_broker_pct" value="${num(m.additional_broker_pct)}"><p class="muted" style="font-size:0.74rem;margin-top:4px">A % of purchase price. Reduces Cash at Close.</p></div>
           </div>
         </div>
 
@@ -1673,9 +1674,11 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       const monthlyDebtService = dscrMonthlyPayment(price, dscrRate, dscrLtv);
 
       // Cash the buyer receives at close (same formula as the Stack Method email):
-      //   loan proceeds − down payment − 5% closing costs, split in half.
-      // Shown as a headline figure only when positive.
-      const cashToBuyerAtClose = (loanAmount - (Number(m.down_payment) || 0) - price * 0.05) / 2;
+      //   loan proceeds − down payment − 5% closing costs − additional broker
+      //   commission, split in half. Shown as a headline figure only when positive.
+      const addlBrokerPct = Number(m.additional_broker_pct) || 0;
+      const addlBrokerFee = price * (addlBrokerPct / 100);
+      const cashToBuyerAtClose = (loanAmount - (Number(m.down_payment) || 0) - price * 0.05 - addlBrokerFee) / 2;
 
       const fmt = (n) => `$${Math.round(Number(n) || 0).toLocaleString()}`;
       const fmtPct = (n) => `${Number(n) || 0}%`;
@@ -1691,6 +1694,9 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         ["Closing Costs", m.closing_costs_note || "Buyer pays all closing costs"],
         ["Broker Commission", m.broker_commission || "None"],
       ];
+      if (addlBrokerPct > 0) {
+        loiRows.push(["Additional Broker Commission", `${addlBrokerPct}% (${fmt(addlBrokerFee)})`]);
+      }
       // Seller-financed balance can accrue under two structures:
       //  - "deferred": interest compounds with no payments — the full
       //    principal PLUS all accrued interest is due at balloon, so the

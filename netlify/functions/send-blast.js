@@ -408,17 +408,29 @@ function normalizePhone(phone) {
   return p;
 }
 async function ghlContactId(phone) {
-  const headers = { Authorization: `Bearer ${GHL_API_KEY}`, "Content-Type": "application/json", Version: "2021-04-15" };
-  let r = await fetch(`https://services.leadconnectorhq.com/contacts/search/duplicate?phone=${encodeURIComponent(phone)}`, { headers });
+  const headers = { Authorization: `Bearer ${GHL_API_KEY}`, "Content-Type": "application/json", Version: "2021-07-28" };
+  // v2 duplicate search needs locationId + number (not "phone"). Find the
+  // existing contact first so we don't try to re-create it.
+  const searchUrl = `https://services.leadconnectorhq.com/contacts/search/duplicate?locationId=${encodeURIComponent(GHL_LOCATION_ID)}&number=${encodeURIComponent(phone)}`;
+  let r = await fetch(searchUrl, { headers });
   if (r.ok) {
     const data = await r.json();
     if (data && data.contact && data.contact.id) return data.contact.id;
   }
+  // Otherwise create. If GHL rejects it as a duplicate, it returns the existing
+  // contact's id in meta — reuse that rather than failing.
   r = await fetch(`https://services.leadconnectorhq.com/contacts/`, {
     method: "POST", headers, body: JSON.stringify({ phone, locationId: GHL_LOCATION_ID }),
   });
-  if (!r.ok) throw new Error(`GHL create contact -> ${r.status}: ${await r.text()}`);
-  const data = await r.json();
+  const bodyText = await r.text();
+  if (!r.ok) {
+    try {
+      const err = JSON.parse(bodyText);
+      if (err && err.meta && err.meta.contactId) return err.meta.contactId;
+    } catch (_) { /* fall through to throw */ }
+    throw new Error(`GHL create contact -> ${r.status}: ${bodyText}`);
+  }
+  const data = JSON.parse(bodyText);
   if (!data || !data.contact || !data.contact.id) throw new Error("GHL: no contact id returned");
   return data.contact.id;
 }
@@ -531,12 +543,7 @@ exports.handler = async (event) => {
               ? matched.filter(b => b.sms_opt_in && b.phone).length
               : matched.filter(b => b.tier === "A" && b.sms_opt_in && b.phone).length;
             result.sms = { sent: 1, failed: 0, to, would_reach: smsWouldReach };
-          } catch (e) {
-            // TEMP DIAGNOSTIC: echo the non-secret config the function actually
-            // received, so a persistent 403 tells us exactly which value is off.
-            const cfg = `cfg loc=${GHL_LOCATION_ID || "(EMPTY)"} from=${GHL_FROM_NUMBER || "(EMPTY)"} key=${(GHL_API_KEY || "").slice(0, 4) || "(EMPTY)"}…`;
-            result.sms = { sent: 0, failed: 1, error: `${e.message} · ${cfg}` };
-          }
+          } catch (e) { result.sms = { sent: 0, failed: 1, error: e.message }; }
         }
       }
       return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(result) };

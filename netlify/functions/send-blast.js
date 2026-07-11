@@ -531,7 +531,12 @@ exports.handler = async (event) => {
               ? matched.filter(b => b.sms_opt_in && b.phone).length
               : matched.filter(b => b.tier === "A" && b.sms_opt_in && b.phone).length;
             result.sms = { sent: 1, failed: 0, to, would_reach: smsWouldReach };
-          } catch (e) { result.sms = { sent: 0, failed: 1, error: e.message }; }
+          } catch (e) {
+            // TEMP DIAGNOSTIC: echo the non-secret config the function actually
+            // received, so a persistent 403 tells us exactly which value is off.
+            const cfg = `cfg loc=${GHL_LOCATION_ID || "(EMPTY)"} from=${GHL_FROM_NUMBER || "(EMPTY)"} key=${(GHL_API_KEY || "").slice(0, 4) || "(EMPTY)"}…`;
+            result.sms = { sent: 0, failed: 1, error: `${e.message} · ${cfg}` };
+          }
         }
       }
       return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(result) };

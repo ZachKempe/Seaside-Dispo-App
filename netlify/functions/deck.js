@@ -71,7 +71,15 @@ function page(title, body) {
 
 exports.handler = async (event) => {
   const q = event.queryStringParameters || {};
+  // Slug normally arrives as ?slug=<splat> from the /deck/* rewrite. But a
+  // status=200 rewrite forwards the ORIGINAL path/query to the function, so the
+  // destination's ?slug= is not reliably surfaced — fall back to parsing the
+  // request path (/deck/<slug>[.pdf]) from event.path or event.rawUrl.
   let slug = (q.slug || "").trim();
+  if (!slug) {
+    const m = String(event.path || event.rawUrl || "").match(/\/deck\/([^/?#]+)/i);
+    if (m) slug = decodeURIComponent(m[1]).trim();
+  }
   const wantsPdf = q.format === "pdf" || /\.pdf$/i.test(slug);
   slug = slug.replace(/\.pdf$/i, "");
   const cleanSlug = slug.replace(/[^a-zA-Z0-9_-]/g, "");

@@ -1067,7 +1067,8 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       });
       document.querySelectorAll(".fb-delete").forEach(btn => {
         btn.addEventListener("click", async (e) => {
-          await supa.from("facebook_posts").delete().eq("id", e.target.dataset.postId);
+          const { error } = await supa.from("facebook_posts").delete().eq("id", e.target.dataset.postId);
+          if (error) { toast(`Couldn't remove post: ${error.message}`, { type: "error" }); return; }
           loadAll();
         });
       });
@@ -1479,10 +1480,22 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       document.querySelectorAll(".morby-delete-btn").forEach(btn => {
         btn.addEventListener("click", async () => {
           const cardId = btn.dataset.cardId;
-          if (!confirm(`Remove the Morby deal "${btn.dataset.address}"? This can't be undone.`)) return;
+          const address = btn.dataset.address;
+          if (!confirm(`Remove the Morby deal "${address}"?`)) return;
           btn.disabled = true;
-          const { error } = await supa.from("properties").delete().eq("card_id", cardId);
-          if (error) { alert(`Couldn't remove: ${error.message}`); btn.disabled = false; return; }
+          // Soft delete: archive it (hidden from the dashboard) instead of a
+          // permanent delete, so it can be undone. Morby deals aren't synced
+          // from Trello, so archiving won't be re-created.
+          const { error } = await supa.from("properties")
+            .update({ archived: true, archived_at: new Date().toISOString() })
+            .eq("card_id", cardId);
+          if (error) { toast(`Couldn't remove: ${error.message}`, { type: "error" }); btn.disabled = false; return; }
+          toast(`Removed "${address}".`, { type: "success", actionLabel: "Undo", onAction: async () => {
+            const { error: e2 } = await supa.from("properties")
+              .update({ archived: false, archived_at: null }).eq("card_id", cardId);
+            if (e2) { toast(`Undo failed: ${e2.message}`, { type: "error" }); return; }
+            await loadAll();
+          }});
           await loadAll();
         });
       });
@@ -2124,7 +2137,8 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
     async function deleteLead() {
       if (!activeLead || !activeLead.lead) return;
       if (!confirm(`Remove "${activeLead.lead.name}" from this deal's pipeline?`)) return;
-      await supa.from("deal_leads").delete().eq("id", activeLead.lead.id);
+      const { error } = await supa.from("deal_leads").delete().eq("id", activeLead.lead.id);
+      if (error) { toast(`Couldn't remove lead: ${error.message}`, { type: "error" }); return; }
       closeLeadModal();
       loadAll();
     }

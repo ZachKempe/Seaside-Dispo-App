@@ -195,7 +195,7 @@
 
     async function loadBuyers() {
       const [{ data, error }, { data: activity }] = await Promise.all([
-        supa.from("buyers").select("*").order("date_added", { ascending: false }),
+        supa.from("buyers").select("*").eq("active", true).order("date_added", { ascending: false }),
         supa.from("buyer_activity").select("buyer_id,created_at"),
       ]);
       const content = document.getElementById("content");
@@ -291,14 +291,23 @@
         e.stopPropagation();
         const b = getBuyer(e);
         const next = TIER_CYCLE[b.tier] || "A";
-        await supa.from("buyers").update({ tier: next }).eq("id", b.id);
+        const { error } = await supa.from("buyers").update({ tier: next }).eq("id", b.id);
+        if (error) { toast(`Couldn't update tier: ${error.message}`, { type: "error" }); return; }
         await loadBuyers();
       }));
       content.querySelectorAll(".edit-btn").forEach(btn => btn.addEventListener("click", e => openModal(getBuyer(e))));
+      // Soft delete: deactivate (hidden from the list + all blasts/matching) with
+      // an Undo. The record is preserved, so nothing is ever truly lost.
       content.querySelectorAll(".del-btn").forEach(btn => btn.addEventListener("click", async e => {
         const b = getBuyer(e);
-        if (!confirm(`Delete ${b.name}?`)) return;
-        await supa.from("buyers").delete().eq("id", b.id);
+        if (!confirm(`Remove ${b.name} from your buyer list?`)) return;
+        const { error } = await supa.from("buyers").update({ active: false }).eq("id", b.id);
+        if (error) { toast(`Couldn't remove ${b.name}: ${error.message}`, { type: "error" }); return; }
+        toast(`Removed ${b.name}.`, { type: "success", actionLabel: "Undo", onAction: async () => {
+          const { error: e2 } = await supa.from("buyers").update({ active: true }).eq("id", b.id);
+          if (e2) { toast(`Undo failed: ${e2.message}`, { type: "error" }); return; }
+          await loadBuyers();
+        }});
         await loadBuyers();
       }));
     }
@@ -740,9 +749,12 @@
           notes: document.getElementById("b-notes").value.trim(),
           sms_opt_in: document.getElementById("b-sms").checked,
         };
-        if (id) await supa.from("buyers").update(payload).eq("id", id);
-        else await supa.from("buyers").insert({ ...payload, list_source: "direct", active: true });
+        const { error } = id
+          ? await supa.from("buyers").update(payload).eq("id", id)
+          : await supa.from("buyers").insert({ ...payload, list_source: "direct", active: true });
+        if (error) { toast(`Couldn't save buyer: ${error.message}`, { type: "error" }); return; }
         closeModal();
+        toast(id ? "Buyer saved." : "Buyer added.", { type: "success" });
         await loadBuyers();
       });
 

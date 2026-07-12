@@ -23,3 +23,42 @@ function wireLogout(buttonEl) {
     window.location.href = "/";
   });
 }
+
+// ── Toast notifications (shared) ──────────────────────────────────
+// toast("Saved", { type: "success" }) · toast("Couldn't save", { type: "error" })
+// Undo: toast("Removed", { type: "success", actionLabel: "Undo", onAction: fn })
+function toast(message, opts = {}) {
+  const { type = "info", actionLabel = null, onAction = null, duration = null } = opts;
+  let host = document.getElementById("toast-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "toast-host";
+    host.style.cssText = "position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none";
+    document.body.appendChild(host);
+  }
+  const colors = {
+    success: { bg: "#065f46", fg: "#ecfdf5" },
+    error:   { bg: "#991b1b", fg: "#fef2f2" },
+    info:    { bg: "#1B3A6B", fg: "#eef2ff" },
+  };
+  const c = colors[type] || colors.info;
+  const el = document.createElement("div");
+  el.style.cssText = "pointer-events:auto;background:" + c.bg + ";color:" + c.fg + ";padding:11px 16px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.25);font:500 0.9rem/1.35 Inter,system-ui,sans-serif;max-width:440px;display:flex;align-items:center;gap:14px;opacity:0;transform:translateY(8px);transition:opacity .18s,transform .18s";
+  const span = document.createElement("span");
+  span.textContent = message;
+  span.style.flex = "1";
+  el.appendChild(span);
+  let timer = null;
+  const dismiss = () => { clearTimeout(timer); el.style.opacity = "0"; el.style.transform = "translateY(8px)"; setTimeout(() => el.remove(), 200); };
+  if (actionLabel && onAction) {
+    const btn = document.createElement("button");
+    btn.textContent = actionLabel;
+    btn.style.cssText = "background:rgba(255,255,255,.2);color:inherit;border:none;border-radius:7px;padding:5px 12px;font-weight:700;cursor:pointer;font-size:0.85rem";
+    btn.addEventListener("click", () => { dismiss(); try { onAction(); } catch (e) { console.error(e); } });
+    el.appendChild(btn);
+  }
+  host.appendChild(el);
+  requestAnimationFrame(() => { el.style.opacity = "1"; el.style.transform = "translateY(0)"; });
+  timer = setTimeout(dismiss, duration != null ? duration : (actionLabel ? 8000 : 3500));
+  return el;
+}

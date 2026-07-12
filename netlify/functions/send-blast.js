@@ -9,6 +9,7 @@
 // Auth: requires the caller's Supabase access token (the logged-in user).
 
 const crypto = require("crypto");
+const { deckToken } = require("./lib/deck-token");
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -121,6 +122,30 @@ function unsubUrlFor(buyerId) {
   return `${SITE_URL}/.netlify/functions/unsubscribe?b=${encodeURIComponent(unsubToken(buyerId))}`;
 }
 
+// Populate properties.deck_slug lazily the first time a deal is blasted, reusing
+// the existing deckSlug(prop) (same value as the PDF filename) so the page and
+// the PDF share one slug. Handles the rare unique-index collision by suffixing.
+async function ensureDeckSlug(prop) {
+  if (prop.deck_slug) return prop.deck_slug;
+  let base = deckSlug(prop);            // reuse existing PDF-slug generator
+  let slug = base;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await sb(`/properties?card_id=eq.${encodeURIComponent(prop.card_id)}`, {
+        method: "PATCH", headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({ deck_slug: slug }),
+      });
+      prop.deck_slug = slug;
+      return slug;
+    } catch (e) {
+      // unique collision -> disambiguate with a short card-id suffix and retry
+      slug = `${base}-${String(prop.card_id).slice(-4)}${attempt || ""}`;
+    }
+  }
+  prop.deck_slug = slug;
+  return slug;
+}
+
 // ── Email content ─────────────────────────────────────────────────
 function fmtMoney(n) { n = Number(n) || 0; return n ? `$${n.toLocaleString()}` : "—"; }
 
@@ -162,7 +187,7 @@ function escapeHtml(s) {
   return String(s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-function buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer) {
+function buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer, deckUrlForBuyer) {
   const city = prop.name || "";
   const entryFee = Number(terms.entry_fee) || 0;
   const subject = `New Sub-To Deal: ${city} | ${entryFee ? "$" + entryFee.toLocaleString() : "Ask"} Entry Fee`;
@@ -201,7 +226,8 @@ function buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer) {
         </td></tr>
         ${dealCopyBlock}
         <tr><td style="padding:8px 32px 24px">
-          ${prop.drive_link ? `<div style="margin-top:10px"><a href="${escapeHtml(prop.drive_link)}" style="display:inline-block;background:${BRAND_NAVY};color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:14px;border:1px solid ${BRAND_GOLD}">View Photos (Google Drive)</a></div>` : ""}
+          ${deckUrlForBuyer ? `<div><a href="${escapeHtml(deckUrlForBuyer)}" style="display:inline-block;background:${BRAND_NAVY};color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:14px;border:1px solid ${BRAND_GOLD}">View deal &amp; respond</a></div>` : ""}
+          ${prop.drive_link ? `<div style="margin-top:10px"><a href="${escapeHtml(prop.drive_link)}" style="display:inline-block;background:#fff;color:${BRAND_NAVY};text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:14px;border:1px solid ${BRAND_NAVY}">View Photos (Google Drive)</a></div>` : ""}
         </td></tr>
         <tr><td style="background:${BRAND_NAVY_DARK};padding:22px 32px;color:#fff;border-top:3px solid ${BRAND_GOLD}">
           <div style="font-size:14px;font-weight:700;color:#fff">${escapeHtml(CONTACT_NAME)}</div>
@@ -263,7 +289,7 @@ function buyerCashAtClose(morby) {
 }
 
 // ── Morby / Stack Method Deal Deck email ─────────────────────────
-function buildMorbyEmail(prop, morby, unsubUrl, buyer) {
+function buildMorbyEmail(prop, morby, unsubUrl, buyer, deckUrlForBuyer) {
   const address = prop.address_override || prop.name || "";
   const subject = `Stack Method Deal: ${address}`;
   const greeting = `Hi ${firstNameOf(buyer)},`;
@@ -326,6 +352,7 @@ function buildMorbyEmail(prop, morby, unsubUrl, buyer) {
           </table>
         </td></tr>
         <tr><td style="padding:16px 32px 20px">
+          ${deckUrlForBuyer ? `<div style="margin:0 0 14px"><a href="${escapeHtml(deckUrlForBuyer)}" style="display:inline-block;background:${BRAND_NAVY};color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:14px;border:1px solid ${BRAND_GOLD}">View deal &amp; respond</a></div>` : ""}
           <p style="margin:0;font-size:13px;color:#4A5568"><strong>Full Deal Deck attached.</strong> Review the complete financial analysis, DSCR breakdown, and property details.</p>
           ${CONTACT_PHONE ? `<p style="margin:8px 0 0;font-size:13px;color:#4A5568">Interested? Reply to this email or call/text <strong>${escapeHtml(CONTACT_NAME)}</strong> at <strong>${escapeHtml(CONTACT_PHONE)}</strong>.</p>` : ""}
         </td></tr>
@@ -512,6 +539,8 @@ exports.handler = async (event) => {
     ]);
     const prop = (props || [])[0];
     if (!prop) return { statusCode: 404, body: "property not found" };
+    const deckSlugVal = await ensureDeckSlug(prop);
+    const deckPageUrl = (buyerId) => `${SITE_URL}/deck/${deckSlugVal}?b=${deckToken(buyerId)}`;
     const terms = (termsRows || [])[0] || {};
     const morbyTerms = (morbyRows || [])[0] || {};
     const coverImageUrl = ((acqRows || [])[0] || {}).cover_image_url || "";
@@ -541,9 +570,9 @@ exports.handler = async (event) => {
 
     // Helper: build email content, swapping to the Morby template when needed.
     // Passes the buyer so the Morby email can greet them by first name.
-    const buildEmail = (unsubUrl, buyer) => isMorbyDeck
-      ? buildMorbyEmail(prop, morbyTerms, unsubUrl, buyer)
-      : buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer);
+    const buildEmail = (unsubUrl, buyer, deckUrlForBuyer) => isMorbyDeck
+      ? buildMorbyEmail(prop, morbyTerms, unsubUrl, buyer, deckUrlForBuyer)
+      : buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer, deckUrlForBuyer);
 
     // If we're texting a Stack Method deck, host the PDF once so the SMS can
     // link it. Non-fatal: if the upload fails the text just omits the link.
@@ -557,7 +586,7 @@ exports.handler = async (event) => {
     if (isTest) {
       if (wantEmail) {
         const to = test_email || user.email;
-        const { subject, html } = buildEmail(unsubUrlFor("preview"));
+        const { subject, html } = buildEmail(unsubUrlFor("preview"), null, `${SITE_URL}/deck/${deckSlugVal}?b=preview`);
         const testSubject = `[TEST] ${subject}`;
         const banner = `<div style="background:#FEEBC8;color:#7B341E;padding:10px 16px;font:600 13px Arial;border-radius:8px 8px 0 0">⚠️ TEST SEND — preview only, sent to ${escapeHtml(to)}, would normally go to ${matched.filter(b => b.email && !b.email_opt_out).length} matching buyer(s)</div>`;
         if (!to) {
@@ -619,7 +648,7 @@ exports.handler = async (event) => {
             const chunk = emailBuyers.slice(i, i + EMAIL_CONCURRENCY);
             await Promise.all(chunk.map(async (b) => {
               const unsubUrl = unsubUrlFor(b.id);
-              const { subject, html } = buildEmail(unsubUrl, b);
+              const { subject, html } = buildEmail(unsubUrl, b, deckPageUrl(b.id));
               try {
                 if (useResend) await sendViaResend(b.email, subject, html, unsubUrl, pdfAttachments);
                 else await sendViaGmail(token, b.email, subject, html, unsubUrl);
@@ -662,8 +691,9 @@ exports.handler = async (event) => {
           let sent = 0, failed = 0;
           const message = dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms, deckUrl, wantEmail) : buildDealCopyText(prop, terms);
           for (const b of smsBuyers) {
+            const perMsg = message + `\n\nView deal & respond: ${deckPageUrl(b.id)}`;
             try {
-              await sendSms(b.phone, message); sent++;
+              await sendSms(b.phone, perMsg); sent++;
               recipientRows.push(recipientRow(card_id, b, address, "sms", b.phone, "sent", variation));
             } catch (e) {
               failed++;

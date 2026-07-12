@@ -296,7 +296,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       // blast × buyer), so pulling whole tables gets slow at scale — we only
       // ever need rows for the active cards on screen.
       const cardIds = (props || []).map(p => p.card_id);
-      const [{ data: terms }, { data: statuses }, { data: fbPosts }, { data: buyers }, { data: leads }, { data: blasts }, { data: acq }, { data: morby }, { data: recips }] = await Promise.all([
+      const [{ data: terms }, { data: statuses }, { data: fbPosts }, { data: buyers }, { data: leads }, { data: blasts }, { data: acq }, { data: morby }, { data: recips }, { data: deckViews }] = await Promise.all([
         supa.from("deal_terms").select("*").in("card_id", cardIds),
         supa.from("property_status").select("*").in("card_id", cardIds),
         supa.from("facebook_posts").select("*").in("card_id", cardIds),
@@ -306,6 +306,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         supa.from("deal_acquisition").select("*").in("card_id", cardIds),
         supa.from("morby_deals").select("*").in("card_id", cardIds),
         supa.from("blast_recipients").select("card_id,channel,status,buyer_id").in("card_id", cardIds),
+        supa.from("deck_views").select("card_id,buyer_id,viewed_at").in("card_id", cardIds),
       ]);
 
       if (pErr) {
@@ -323,6 +324,8 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       for (const b of (blasts || [])) (blastsByCard[b.card_id] ||= []).push(b);
       const recipsByCard = {};
       for (const r of (recips || [])) (recipsByCard[r.card_id] ||= []).push(r);
+      const viewsByCard = {};
+      for (const v of (deckViews || [])) (viewsByCard[v.card_id] ||= []).push(v);
       const acqByCard = Object.fromEntries((acq || []).map(a => [a.card_id, a]));
       const morbyByCard = Object.fromEntries((morby || []).map(m => [m.card_id, m]));
 
@@ -331,7 +334,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       document.getElementById("prop-count").textContent =
         `${props.length} active under-contract propert${props.length === 1 ? "y" : "ies"}`;
 
-      const renderArgs = (p) => renderCard(p, termsByCard, statusByCard, fbByCard, buyers || [], leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard);
+      const renderArgs = (p) => renderCard(p, termsByCard, statusByCard, fbByCard, buyers || [], leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard);
       const subtoProps = props.filter(p => (p.deal_type || "subto") !== "morby");
       const morbyProps = props.filter(p => p.deal_type === "morby");
 
@@ -440,7 +443,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
     const STAGE_BY_KEY = Object.fromEntries(STAGES.map((s, i) => [s.key, { ...s, rank: i }]));
     const SOURCE_LABELS = {
       buyer_blast: "Buyer list", investorlift: "InvestorLift", creativelisting: "CreativeListing",
-      fb_group: "FB group", referral: "Referral", other: "Other",
+      fb_group: "FB group", referral: "Referral", other: "Other", deck_page: "Deck page",
     };
 
     // ── Deal Info (acquisition data) — completeness + auto-flags ──
@@ -473,7 +476,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
     }
     // Hard gates that block a live Send Blast — returns list of blocking reasons.
 
-    function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard) {
+    function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard) {
       const t = termsByCard[p.card_id] || {};
       const status = (statusByCard[p.card_id] || {}).status || "active";
       const posts = fbByCard[p.card_id] || [];
@@ -514,7 +517,17 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       const flags = acqFlags(acq);
 
       // ── Pipeline: sorted by stage progression (closest-to-closing first) ──
-      const sortedLeads = [...leads].sort((a, b) => (STAGE_BY_KEY[b.stage]?.rank ?? 0) - (STAGE_BY_KEY[a.stage]?.rank ?? 0));
+      // Deck engagement (§7): views for this deal + a buyer_id -> view-count map.
+      const views = (viewsByCard && viewsByCard[p.card_id]) || [];
+      const totalViews = views.length;
+      const viewsByBuyer = new Map();
+      for (const v of views) if (v.buyer_id != null) viewsByBuyer.set(Number(v.buyer_id), (viewsByBuyer.get(Number(v.buyer_id)) || 0) + 1);
+      const interestedCount = leads.filter(l => ["interested", "offer", "under_contract"].includes(l.stage)).length;
+      // Surface deck-page "interested" leads (the call-now list) to the top, then by stage rank.
+      const isCallNow = (l) => l.source === "deck_page" && l.stage === "interested";
+      const sortedLeads = [...leads].sort((a, b) =>
+        (Number(isCallNow(b)) - Number(isCallNow(a))) ||
+        ((STAGE_BY_KEY[b.stage]?.rank ?? 0) - (STAGE_BY_KEY[a.stage]?.rank ?? 0)));
       const stageCounts = {};
       for (const l of leads) stageCounts[l.stage] = (stageCounts[l.stage] || 0) + 1;
 
@@ -675,6 +688,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
               <label style="margin:0">Pipeline (${leads.length})</label>
               <button type="button" class="btn btn-ghost btn-sm add-lead-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}">+ Add Lead</button>
             </div>
+            <div class="muted" style="font-size:0.76rem;margin:2px 0 4px">👁 ${totalViews} view${totalViews === 1 ? "" : "s"} · ${interestedCount} interested</div>
             ${leads.length ? `
               <div class="flex gap-8" style="flex-wrap:wrap;margin:6px 0 8px">
                 ${STAGES.filter(s => stageCounts[s.key]).map(s => `<span class="pill" style="background:${s.color}22;color:${s.color};font-size:0.7rem;font-weight:700">${s.label} · ${stageCounts[s.key]}</span>`).join("")}
@@ -688,7 +702,9 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
                     <span class="pill" style="background:${st.color}22;color:${st.color};font-size:0.66rem;font-weight:700;white-space:nowrap">${st.label}</span>
                     ${chIcon ? `<span title="Responded via ${escapeHtml(l.channel)}">${chIcon}</span>` : ""}
                     <strong style="white-space:nowrap">${escapeHtml(l.name)}</strong>
+                    ${l.source === "deck_page" ? `<span class="pill" style="background:#D4A03E22;color:#8a6d1f;font-size:0.66rem;font-weight:700;white-space:nowrap">deck</span>` : ""}
                     <span class="muted" style="font-size:0.76rem;white-space:nowrap">${escapeHtml(SOURCE_LABELS[l.source] || l.source)}</span>
+                    ${(l.buyer_id != null && viewsByBuyer.get(Number(l.buyer_id))) ? `<span class="muted" style="font-size:0.72rem;white-space:nowrap">· viewed ${viewsByBuyer.get(Number(l.buyer_id))}×</span>` : ""}
                     <span class="muted" style="font-size:0.76rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${escapeHtml(l.contact || "")}${l.notes ? ` — ${escapeHtml(l.notes)}` : ""}</span>
                   </div>`;
                 }).join("")}

@@ -277,7 +277,15 @@
         return (a.name || "").localeCompare(b.name || "");
       });
 
-      content.innerHTML = `<div class="grid buyer-grid">${sorted.map(b => renderCard(b)).join("")}</div>`;
+      // Cap how many cards we put in the DOM at once. Rendering thousands of
+      // cards is what makes a big list janky; showing the top slice keeps it
+      // snappy, and filters/search narrow down to what you're looking for.
+      const RENDER_CAP = 300;
+      const shown = sorted.slice(0, RENDER_CAP);
+      const capNotice = sorted.length > RENDER_CAP
+        ? `<div class="muted" style="grid-column:1/-1;padding:12px;text-align:center">Showing the first ${RENDER_CAP} of ${sorted.length}. Use search or filters to narrow down.</div>`
+        : "";
+      content.innerHTML = `<div class="grid buyer-grid">${shown.map(b => renderCard(b)).join("")}${capNotice}</div>`;
 
       content.querySelectorAll(".tier-pill").forEach(btn => btn.addEventListener("click", async (e) => {
         e.stopPropagation();
@@ -685,8 +693,12 @@
       if (!session) return;
       wireLogout(document.getElementById("logout-btn"));
 
+      // Debounce filter/search so typing doesn't re-render the whole grid on
+      // every keystroke — matters once the list is large.
+      let renderTimer = null;
+      const scheduleRender = () => { clearTimeout(renderTimer); renderTimer = setTimeout(render, 180); };
       ["search","filter-tier","filter-state","filter-strategy","filter-missing"].forEach(id =>
-        document.getElementById(id).addEventListener("input", render));
+        document.getElementById(id).addEventListener("input", scheduleRender));
 
       document.getElementById("add-btn").addEventListener("click", () => openModal(null));
       document.getElementById("copy-form-btn").addEventListener("click", () => {

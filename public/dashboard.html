@@ -291,16 +291,21 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         ({ data: props, error: pErr } = await supa.from("properties").select("*").order("synced_at", { ascending: false }));
       }
 
+      // Scope every card-keyed query to just the deals we're about to render.
+      // deal_blasts / blast_recipients / deal_leads grow forever (one row per
+      // blast × buyer), so pulling whole tables gets slow at scale — we only
+      // ever need rows for the active cards on screen.
+      const cardIds = (props || []).map(p => p.card_id);
       const [{ data: terms }, { data: statuses }, { data: fbPosts }, { data: buyers }, { data: leads }, { data: blasts }, { data: acq }, { data: morby }, { data: recips }] = await Promise.all([
-        supa.from("deal_terms").select("*"),
-        supa.from("property_status").select("*"),
-        supa.from("facebook_posts").select("*"),
+        supa.from("deal_terms").select("*").in("card_id", cardIds),
+        supa.from("property_status").select("*").in("card_id", cardIds),
+        supa.from("facebook_posts").select("*").in("card_id", cardIds),
         supa.from("buyers").select("id,name,email,phone,tier,states,strategy,sms_opt_in,max_price,max_piti,min_beds,email_opt_out").eq("active", true),
-        supa.from("deal_leads").select("*").order("updated_at", { ascending: false }),
-        supa.from("deal_blasts").select("card_id,channel,status,detail,variation_index,variation_title,blasted_at"),
-        supa.from("deal_acquisition").select("*"),
-        supa.from("morby_deals").select("*"),
-        supa.from("blast_recipients").select("card_id,channel,status,buyer_id"),
+        supa.from("deal_leads").select("*").in("card_id", cardIds).order("updated_at", { ascending: false }),
+        supa.from("deal_blasts").select("card_id,channel,status,detail,variation_index,variation_title,blasted_at").in("card_id", cardIds),
+        supa.from("deal_acquisition").select("*").in("card_id", cardIds),
+        supa.from("morby_deals").select("*").in("card_id", cardIds),
+        supa.from("blast_recipients").select("card_id,channel,status,buyer_id").in("card_id", cardIds),
       ]);
 
       if (pErr) {

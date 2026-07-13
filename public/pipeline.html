@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pipeline — Seaside Horizon</title>
+  <link rel="icon" type="image/png" href="/img/logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    /* ── Pipeline board (Trello-style) ── */
+    .pl-board {
+      display: flex; gap: 14px; align-items: flex-start;
+      overflow-x: auto; padding: 4px 4px 20px;
+      min-height: 60vh;
+    }
+    .pl-col {
+      flex: 0 0 288px; width: 288px;
+      background: #EDF1F6; border-radius: 12px;
+      display: flex; flex-direction: column; max-height: calc(100vh - 200px);
+    }
+    .pl-col-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 14px 10px; font-weight: 700; color: var(--navy-dark);
+      border-top: 4px solid var(--pl-color, #A0AEC0); border-radius: 12px 12px 0 0;
+      position: sticky; top: 0; background: #EDF1F6; z-index: 1;
+    }
+    .pl-col-head .pl-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--pl-color, #A0AEC0); }
+    .pl-col-head .pl-count { margin-left: auto; color: var(--text-3); font-weight: 600; font-size: 0.85rem; }
+    .pl-col-body { padding: 4px 10px 12px; overflow-y: auto; flex: 1; min-height: 60px; }
+    .pl-col-body.drag-over { background: #DCE5F0; border-radius: 0 0 12px 12px; outline: 2px dashed var(--navy-light); outline-offset: -6px; }
+    .pl-empty { color: var(--text-3); font-size: 0.8rem; text-align: center; padding: 14px 6px; }
+
+    .pl-card {
+      background: #fff; border: 1px solid var(--border); border-radius: 9px;
+      padding: 10px 12px; margin-bottom: 8px; cursor: pointer;
+      box-shadow: 0 1px 2px rgba(16,24,40,.06); transition: box-shadow .12s, transform .12s;
+      border-left: 4px solid var(--pl-color, #A0AEC0);
+    }
+    .pl-card:hover { box-shadow: 0 4px 12px rgba(16,24,40,.12); transform: translateY(-1px); }
+    .pl-card.dragging { opacity: .45; }
+    .pl-card-title { font-weight: 700; color: var(--navy-dark); font-size: 0.9rem; line-height: 1.3; }
+    .pl-card-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 7px; }
+    .pl-tag { font-size: 0.68rem; font-weight: 700; border-radius: 999px; padding: 2px 8px; }
+    .pl-tag-subto { background: #DBEAFE; color: var(--navy); }
+    .pl-tag-morby { background: #FEEBC8; color: #9C4221; }
+    .pl-mini { font-size: 0.7rem; color: var(--text-3); font-weight: 600; }
+
+    /* Detail modal */
+    .pl-note { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.86rem; }
+    .pl-note:last-child { border-bottom: none; }
+    .pl-note-meta { font-size: 0.72rem; color: var(--text-3); margin-top: 3px; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><img src="/img/logo.png" alt="Seaside Horizon" class="brand-logo"> Seaside Horizon</div>
+    <nav>
+      <a href="/dashboard.html">Posting</a>
+      <a href="/pipeline.html" class="active">Pipeline</a>
+      <a href="/buyers.html">Buyers</a>
+      <button class="logout" id="logout-btn">Sign Out</button>
+    </nav>
+  </div>
+
+  <div class="page">
+    <div class="page-header">
+      <div>
+        <h1>Pipeline</h1>
+        <div class="sub"><span id="deal-count"></span><span id="stale-count" style="color:#C53030;font-weight:700"></span></div>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="refresh-btn">↻ Refresh</button>
+    </div>
+
+    <div id="board" class="pl-board"><div class="spinner" style="margin:40px auto"></div></div>
+  </div>
+
+  <!-- Deal detail modal -->
+  <div id="detail-backdrop" class="hidden" style="position:fixed;inset:0;background:rgba(17,41,80,0.45);display:flex;align-items:center;justify-content:center;z-index:60;padding:16px">
+    <div class="card" style="width:100%;max-width:520px;max-height:88vh;overflow-y:auto" id="detail-card"></div>
+  </div>
+
+  <script src="/js/supa.js"></script>
+  <script src="/js/dispo.js"></script>
+  <script>
+    let session;
+
+    function escapeHtml(s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+    function fmtMoney(n) { n = Number(n) || 0; return n ? `$${n.toLocaleString()}` : ""; }
+
+    // Module-level cache so the detail modal + drag handlers read fresh data.
+    let PROPS = [];             // all active properties
+    const propById = {};        // card_id -> property
+    const notesByCard = {};     // card_id -> [notes] (newest first)
+    const leadsByCard = {};     // card_id -> [deal_leads]
+    const blastsByCard = {};    // card_id -> [deal_blasts]
+    const recipsByCard = {};    // card_id -> [blast_recipients]
+    const termsByCard = {};     // card_id -> deal_terms
+    let openCardId = null;      // detail modal target, if open
+
+    async function loadBoard() {
+      const board = document.getElementById("board");
+
+      let { data: props, error: pErr } = await supa.from("properties").select("*").eq("archived", false).order("synced_at", { ascending: false });
+      if (pErr) {
+        // `archived` column may not exist on older DBs — fall back unfiltered.
+        ({ data: props, error: pErr } = await supa.from("properties").select("*").order("synced_at", { ascending: false }));
+      }
+      if (pErr) { board.innerHTML = `<div class="empty">Couldn't load deals: ${escapeHtml(pErr.message)}</div>`; return; }
+
+      const cardIds = (props || []).map(p => p.card_id);
+      const [{ data: notes }, { data: leads }, { data: blasts }, { data: recips }, { data: terms }] = await Promise.all([
+        supa.from("deal_notes").select("*").in("card_id", cardIds).order("created_at", { ascending: false }),
+        supa.from("deal_leads").select("card_id,stage").in("card_id", cardIds),
+        supa.from("deal_blasts").select("card_id,status").in("card_id", cardIds),
+        supa.from("blast_recipients").select("card_id,status").in("card_id", cardIds),
+        supa.from("deal_terms").select("card_id,price").in("card_id", cardIds),
+      ]);
+
+      // Reset + rebuild caches
+      PROPS = props || [];
+      for (const k of Object.keys(propById)) delete propById[k];
+      for (const o of [notesByCard, leadsByCard, blastsByCard, recipsByCard, termsByCard]) for (const k of Object.keys(o)) delete o[k];
+      for (const p of PROPS) propById[p.card_id] = p;
+      for (const n of (notes || [])) (notesByCard[n.card_id] ||= []).push(n);
+      for (const l of (leads || [])) (leadsByCard[l.card_id] ||= []).push(l);
+      for (const b of (blasts || [])) (blastsByCard[b.card_id] ||= []).push(b);
+      for (const r of (recips || [])) (recipsByCard[r.card_id] ||= []).push(r);
+      for (const t of (terms || [])) termsByCard[t.card_id] = t;
+
+      renderBoard();
+
+      document.getElementById("deal-count").textContent =
+        `${PROPS.length} active deal${PROPS.length === 1 ? "" : "s"}`;
+      const staleCount = PROPS.filter(isStaleDeal).length;
+      document.getElementById("stale-count").textContent = staleCount ? ` · 🕓 ${staleCount} stale` : "";
+
+      // Keep the detail modal in sync if it's open (after a move / note add).
+      if (openCardId && propById[openCardId]) openDetail(openCardId);
+    }
+
+    function renderBoard() {
+      const byStage = Object.fromEntries(DISPO_STAGES.map(s => [s.key, []]));
+      for (const p of PROPS) {
+        const stage = p.dispo_stage || "prep";
+        (byStage[stage] || byStage.prep).push(p);
+      }
+      document.getElementById("board").innerHTML = DISPO_STAGES.map(s => {
+        const cards = byStage[s.key] || [];
+        return `
+        <div class="pl-col" style="--pl-color:${s.color}">
+          <div class="pl-col-head"><span class="pl-dot"></span>${escapeHtml(s.label)}<span class="pl-count">${cards.length}</span></div>
+          <div class="pl-col-body" data-stage="${s.key}">
+            ${cards.map(renderPlCard).join("") || `<div class="pl-empty">Drop a deal here</div>`}
+          </div>
+        </div>`;
+      }).join("");
+    }
+
+    function renderPlCard(p) {
+      const stage = p.dispo_stage || "prep";
+      const color = (DISPO_BY_KEY[stage] || DISPO_BY_KEY.prep).color;
+      const dealType = p.deal_type === "morby" ? "morby" : "subto";
+      const notes = notesByCard[p.card_id] || [];
+      const stale = isStaleDeal(p);
+      const implied = DISPO_TERMINAL.has(stage) ? null : impliedDispoStage(leadsByCard[p.card_id], blastsByCard[p.card_id], recipsByCard[p.card_id]);
+      const suggests = implied && DISPO_BY_KEY[implied].rank > (DISPO_BY_KEY[stage] || DISPO_BY_KEY.prep).rank;
+      const price = fmtMoney((termsByCard[p.card_id] || {}).price);
+      return `
+      <div class="pl-card" draggable="true" data-card-id="${escapeHtml(p.card_id)}" style="--pl-color:${color}">
+        <div class="pl-card-title">${escapeHtml(p.name)}</div>
+        <div class="pl-card-meta">
+          <span class="pl-tag pl-tag-${dealType}">${dealType === "morby" ? "Morby" : "Sub-To"}</span>
+          ${p.state ? `<span class="pill pill-state" style="font-size:0.68rem">${escapeHtml(p.state)}</span>` : ""}
+          ${price ? `<span class="pl-mini">${price}</span>` : ""}
+          ${notes.length ? `<span class="pl-mini" title="${notes.length} note${notes.length === 1 ? "" : "s"}">💬 ${notes.length}</span>` : ""}
+          ${stale ? `<span class="pl-mini" style="color:var(--red)" title="No stage change in ${STALE_DAYS}+ days">🕓 Stale</span>` : ""}
+          ${suggests ? `<span class="pl-mini" style="color:${DISPO_BY_KEY[implied].color}" title="Signals suggest ${escapeHtml(DISPO_BY_KEY[implied].label)}">⚠️</span>` : ""}
+        </div>
+      </div>`;
+    }
+
+    // ── Stage move (shared by drag-drop, the accept button, and the dropdown) ──
+    async function moveStage(cardId, stage) {
+      const p = propById[cardId];
+      if (!p || (p.dispo_stage || "prep") === stage) return;
+      const email = session?.user?.email || "";
+      // Optimistic: update the cache + repaint so the card jumps immediately.
+      p.dispo_stage = stage; p.stage_moved_at = new Date().toISOString(); p.stage_moved_by = email;
+      renderBoard();
+      const { error } = await supa.from("properties")
+        .update({ dispo_stage: stage, stage_moved_at: p.stage_moved_at, stage_moved_by: email })
+        .eq("card_id", cardId);
+      if (error) { toast(`Couldn't move deal: ${error.message}`, { type: "error" }); loadBoard(); return; }
+      toast(`Moved to ${DISPO_BY_KEY[stage]?.label || stage}`, { type: "success" });
+      if (openCardId === cardId) openDetail(cardId);
+      // Refresh counts + stale rollup without a full spinner.
+      const staleCount = PROPS.filter(isStaleDeal).length;
+      document.getElementById("stale-count").textContent = staleCount ? ` · 🕓 ${staleCount} stale` : "";
+    }
+
+    // ── Detail modal ──
+    function openDetail(cardId) {
+      const p = propById[cardId];
+      if (!p) return;
+      openCardId = cardId;
+      const stage = p.dispo_stage || "prep";
+      const cur = DISPO_BY_KEY[stage] || DISPO_BY_KEY.prep;
+      const dealType = p.deal_type === "morby" ? "Morby" : "Sub-To";
+      const notes = notesByCard[cardId] || [];
+      const implied = DISPO_TERMINAL.has(stage) ? null : impliedDispoStage(leadsByCard[cardId], blastsByCard[cardId], recipsByCard[cardId]);
+      const suggests = implied && DISPO_BY_KEY[implied].rank > cur.rank;
+      const price = fmtMoney((termsByCard[cardId] || {}).price);
+      const movedMeta = p.stage_moved_at
+        ? `Moved ${new Date(p.stage_moved_at).toLocaleDateString()}${p.stage_moved_by ? " · " + escapeHtml(p.stage_moved_by) : ""}`
+        : "Not moved yet";
+
+      const noteList = notes.map(n => `
+        <div class="pl-note">
+          <div>${escapeHtml(n.body)}</div>
+          <div class="pl-note-meta">${escapeHtml(n.author_email || "unknown")} · ${new Date(n.created_at).toLocaleString()}</div>
+        </div>`).join("") || `<p class="muted" style="font-size:0.84rem">No notes yet.</p>`;
+
+      document.getElementById("detail-card").innerHTML = `
+        <div class="flex-between" style="align-items:flex-start;gap:10px">
+          <div>
+            <h2 style="margin:0 0 4px;font-size:1.15rem;color:var(--navy-dark)">${escapeHtml(p.name)}</h2>
+            <div class="flex gap-8" style="align-items:center;flex-wrap:wrap">
+              <span class="pl-tag pl-tag-${p.deal_type === "morby" ? "morby" : "subto"}">${dealType}</span>
+              ${p.state ? `<span class="pill pill-state">${escapeHtml(p.state)}</span>` : ""}
+              ${price ? `<span class="muted" style="font-size:0.82rem">${price}</span>` : ""}
+              ${p.trello_url ? `<a href="${escapeHtml(p.trello_url)}" target="_blank" rel="noopener" style="font-size:0.82rem">Trello ↗</a>` : ""}
+            </div>
+          </div>
+          <button type="button" class="btn btn-ghost btn-sm" id="detail-close">✕</button>
+        </div>
+
+        <div style="margin:16px 0;padding:12px 14px;background:${cur.color}0f;border-left:3px solid ${cur.color};border-radius:9px">
+          <div class="flex gap-8" style="align-items:center;flex-wrap:wrap">
+            <label style="margin:0">Stage</label>
+            <select id="detail-stage" style="width:auto;font-weight:700;color:${cur.color}">
+              ${DISPO_STAGES.map(s => `<option value="${s.key}" ${s.key === stage ? "selected" : ""}>${escapeHtml(s.label)}</option>`).join("")}
+            </select>
+            ${isStaleDeal(p) ? `<span class="pill" style="background:#C5303022;color:#C53030;font-size:0.7rem;font-weight:700">🕓 Stale</span>` : ""}
+          </div>
+          ${suggests ? `
+            <div style="margin-top:8px;font-size:0.8rem;color:${DISPO_BY_KEY[implied].color};display:flex;align-items:center;gap:8px">
+              ⚠️ signals suggest <b>${escapeHtml(DISPO_BY_KEY[implied].label)}</b>
+              <button type="button" class="btn btn-ghost btn-sm" id="detail-accept" data-stage="${implied}" style="padding:1px 10px">Move</button>
+            </div>` : ""}
+          <div class="muted" style="font-size:0.72rem;margin-top:8px">${movedMeta}</div>
+        </div>
+
+        <h3 style="margin:0 0 6px;font-size:0.95rem;color:var(--navy-dark)">Notes &amp; updates (${notes.length})</h3>
+        <div style="max-height:240px;overflow-y:auto;margin-bottom:10px">${noteList}</div>
+        <div class="flex gap-8">
+          <textarea id="detail-note" rows="2" placeholder="Add an update…" style="flex:1;font-family:inherit;font-size:0.86rem"></textarea>
+          <button type="button" class="btn btn-primary btn-sm" id="detail-note-add">Add</button>
+        </div>`;
+
+      document.getElementById("detail-backdrop").classList.remove("hidden");
+
+      document.getElementById("detail-close").onclick = closeDetail;
+      document.getElementById("detail-stage").onchange = (e) => moveStage(cardId, e.target.value);
+      const acceptBtn = document.getElementById("detail-accept");
+      if (acceptBtn) acceptBtn.onclick = () => moveStage(cardId, acceptBtn.dataset.stage);
+      document.getElementById("detail-note-add").onclick = () => addNote(cardId);
+    }
+
+    function closeDetail() {
+      openCardId = null;
+      document.getElementById("detail-backdrop").classList.add("hidden");
+    }
+
+    async function addNote(cardId) {
+      const ta = document.getElementById("detail-note");
+      const body = (ta?.value || "").trim();
+      if (!body) return;
+      const email = session?.user?.email || "";
+      const { error } = await supa.from("deal_notes").insert({ card_id: cardId, body, author_email: email });
+      if (error) { toast(`Couldn't save note: ${error.message}`, { type: "error" }); return; }
+      toast("Note added", { type: "success" });
+      await loadBoard(); // re-opens the modal with the new note (openCardId still set)
+    }
+
+    // ── Drag & drop (delegated on the board) ──
+    function wireBoardDnD() {
+      const board = document.getElementById("board");
+      let draggingId = null;
+
+      board.addEventListener("dragstart", (e) => {
+        const card = e.target.closest(".pl-card");
+        if (!card) return;
+        draggingId = card.dataset.cardId;
+        card.classList.add("dragging");
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", draggingId);
+      });
+      board.addEventListener("dragend", (e) => {
+        const card = e.target.closest(".pl-card");
+        if (card) card.classList.remove("dragging");
+        draggingId = null;
+        document.querySelectorAll(".pl-col-body.drag-over").forEach(el => el.classList.remove("drag-over"));
+      });
+      board.addEventListener("dragover", (e) => {
+        const body = e.target.closest(".pl-col-body");
+        if (!body) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        document.querySelectorAll(".pl-col-body.drag-over").forEach(el => { if (el !== body) el.classList.remove("drag-over"); });
+        body.classList.add("drag-over");
+      });
+      board.addEventListener("dragleave", (e) => {
+        const body = e.target.closest(".pl-col-body");
+        if (body && !body.contains(e.relatedTarget)) body.classList.remove("drag-over");
+      });
+      board.addEventListener("drop", (e) => {
+        const body = e.target.closest(".pl-col-body");
+        if (!body) return;
+        e.preventDefault();
+        body.classList.remove("drag-over");
+        const cardId = draggingId || e.dataTransfer.getData("text/plain");
+        if (cardId) moveStage(cardId, body.dataset.stage);
+      });
+      // Click a card (that wasn't a drag) → open detail.
+      board.addEventListener("click", (e) => {
+        const card = e.target.closest(".pl-card");
+        if (card) openDetail(card.dataset.cardId);
+      });
+    }
+
+    // Close modal on backdrop click / Escape.
+    document.getElementById("detail-backdrop").addEventListener("click", (e) => { if (e.target.id === "detail-backdrop") closeDetail(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && openCardId) closeDetail(); });
+
+    (async () => {
+      session = await requireAuth();
+      if (!session) return;
+      wireLogout(document.getElementById("logout-btn"));
+      wireBoardDnD();
+      document.getElementById("refresh-btn").addEventListener("click", loadBoard);
+      await loadBoard();
+    })();
+  </script>
+</body>
+</html>

@@ -47,6 +47,7 @@
     .pl-tag-subto { background: #DBEAFE; color: var(--navy); }
     .pl-tag-morby { background: #FEEBC8; color: #9C4221; }
     .pl-mini { font-size: 0.7rem; color: var(--text-3); font-weight: 600; }
+    .pl-last-update { margin-top: 7px; font-size: 0.7rem; color: var(--text-2); font-weight: 600; }
 
     /* Detail modal */
     .pl-note { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.86rem; }
@@ -91,6 +92,19 @@
       return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     }
     function fmtMoney(n) { n = Number(n) || 0; return n ? `$${n.toLocaleString()}` : ""; }
+    // Compact relative time for the "Last update" line, e.g. "just now", "3h ago", "2d ago".
+    function timeAgo(iso) {
+      if (!iso) return "";
+      const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+      if (secs < 60) return "just now";
+      const mins = Math.floor(secs / 60);
+      if (mins < 60) return `${mins}m ago`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return `${hrs}h ago`;
+      const days = Math.floor(hrs / 24);
+      if (days < 7) return `${days}d ago`;
+      return new Date(iso).toLocaleDateString();
+    }
 
     // Module-level cache so the detail modal + drag handlers read fresh data.
     let PROPS = [];             // all active properties
@@ -170,6 +184,7 @@
       const implied = DISPO_TERMINAL.has(stage) ? null : impliedDispoStage(leadsByCard[p.card_id], blastsByCard[p.card_id], recipsByCard[p.card_id]);
       const suggests = implied && DISPO_BY_KEY[implied].rank > (DISPO_BY_KEY[stage] || DISPO_BY_KEY.prep).rank;
       const price = fmtMoney((termsByCard[p.card_id] || {}).price);
+      const lastNote = notes[0]; // notes are newest-first
       return `
       <div class="pl-card" draggable="true" data-card-id="${escapeHtml(p.card_id)}" style="--pl-color:${color}">
         <div class="pl-card-title">${escapeHtml(p.name)}</div>
@@ -181,6 +196,7 @@
           ${stale ? `<span class="pl-mini" style="color:var(--red)" title="No stage change in ${STALE_DAYS}+ days">🕓 Stale</span>` : ""}
           ${suggests ? `<span class="pl-mini" style="color:${DISPO_BY_KEY[implied].color}" title="Signals suggest ${escapeHtml(DISPO_BY_KEY[implied].label)}">⚠️</span>` : ""}
         </div>
+        ${lastNote ? `<div class="pl-last-update" title="${escapeHtml(new Date(lastNote.created_at).toLocaleString())}">🗒 Last update ${escapeHtml(timeAgo(lastNote.created_at))}</div>` : ""}
       </div>`;
     }
 

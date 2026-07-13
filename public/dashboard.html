@@ -24,7 +24,7 @@
     <div class="page-header">
       <div>
         <h1>Posting Dashboard</h1>
-        <div class="sub" id="prop-count"></div>
+        <div class="sub"><span id="prop-count"></span><span id="stale-count" style="color:#C53030;font-weight:700"></span></div>
       </div>
       <button class="btn btn-ghost btn-sm" id="refresh-btn">↻ Refresh</button>
     </div>
@@ -296,7 +296,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       // blast × buyer), so pulling whole tables gets slow at scale — we only
       // ever need rows for the active cards on screen.
       const cardIds = (props || []).map(p => p.card_id);
-      const [{ data: terms }, { data: statuses }, { data: fbPosts }, { data: buyers }, { data: leads }, { data: blasts }, { data: acq }, { data: morby }, { data: recips }, { data: deckViews }] = await Promise.all([
+      const [{ data: terms }, { data: statuses }, { data: fbPosts }, { data: buyers }, { data: leads }, { data: blasts }, { data: acq }, { data: morby }, { data: recips }, { data: deckViews }, { data: notes }] = await Promise.all([
         supa.from("deal_terms").select("*").in("card_id", cardIds),
         supa.from("property_status").select("*").in("card_id", cardIds),
         supa.from("facebook_posts").select("*").in("card_id", cardIds),
@@ -307,6 +307,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         supa.from("morby_deals").select("*").in("card_id", cardIds),
         supa.from("blast_recipients").select("card_id,channel,status,buyer_id").in("card_id", cardIds),
         supa.from("deck_views").select("card_id,buyer_id,viewed_at").in("card_id", cardIds),
+        supa.from("deal_notes").select("*").in("card_id", cardIds).order("created_at", { ascending: false }),
       ]);
 
       if (pErr) {
@@ -328,13 +329,18 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       for (const v of (deckViews || [])) (viewsByCard[v.card_id] ||= []).push(v);
       const acqByCard = Object.fromEntries((acq || []).map(a => [a.card_id, a]));
       const morbyByCard = Object.fromEntries((morby || []).map(m => [m.card_id, m]));
+      const notesByCard = {};
+      for (const n of (notes || [])) (notesByCard[n.card_id] ||= []).push(n);
 
       allBuyers = buyers || [];
 
       document.getElementById("prop-count").textContent =
         `${props.length} active under-contract propert${props.length === 1 ? "y" : "ies"}`;
+      const staleCount = (props || []).filter(isStaleDeal).length;
+      const staleEl = document.getElementById("stale-count");
+      if (staleEl) staleEl.textContent = staleCount ? ` · 🕓 ${staleCount} stale` : "";
 
-      const renderArgs = (p) => renderCard(p, termsByCard, statusByCard, fbByCard, buyers || [], leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard);
+      const renderArgs = (p) => renderCard(p, termsByCard, statusByCard, fbByCard, buyers || [], leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard, notesByCard);
       const subtoProps = props.filter(p => (p.deal_type || "subto") !== "morby");
       const morbyProps = props.filter(p => p.deal_type === "morby");
 
@@ -441,6 +447,53 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       { key: "dead",           label: "Dead / passed",   color: "#C53030" },
     ];
     const STAGE_BY_KEY = Object.fromEntries(STAGES.map((s, i) => [s.key, { ...s, rank: i }]));
+
+    // ── Dispo stages (property-level, manual) ──────────────────────────────
+    const DISPO_STAGES = [
+      { key: "prep",      label: "Prep / Not Live", color: "#A0AEC0" },
+      { key: "live",      label: "Live / Marketing", color: "#3182CE" },
+      { key: "interest",  label: "Interest",         color: "#6B46C1" },
+      { key: "committed", label: "Committed",        color: "#DD6B20" },
+      { key: "closed",    label: "Closed 🎉",        color: "#2F855A" },
+      { key: "dead",      label: "Dead",             color: "#C53030" },
+    ];
+    const DISPO_BY_KEY   = Object.fromEntries(DISPO_STAGES.map((s, i) => [s.key, { ...s, rank: i }]));
+    const DISPO_TERMINAL = new Set(["closed", "dead"]);
+    const STALE_DAYS     = 7;
+
+    // deal_leads stage → the dispo stage it implies (dead leads are ignored).
+    const LEAD_TO_DISPO = {
+      new: "live", responded: "live",
+      interested: "interest", offer: "interest",
+      under_contract: "committed", closed: "closed",
+    };
+
+    // Highest dispo stage the deal's OWN signals imply — used only to *suggest*,
+    // never to move. "Marketed" (any sent blast/deck) implies at least `live`;
+    // this covers both subto blasts and Morby deck-sends (same send-blast path).
+    function impliedDispoStage(leads, blasts, recips) {
+      let bestRank = -1;
+      const marketed = (blasts || []).some(b => b.status === "sent")
+                    || (recips || []).some(r => r.status === "sent");
+      if (marketed) bestRank = Math.max(bestRank, DISPO_BY_KEY.live.rank);
+      for (const l of (leads || [])) {
+        if (l.stage === "dead") continue;
+        const implied = LEAD_TO_DISPO[l.stage];
+        if (implied) bestRank = Math.max(bestRank, DISPO_BY_KEY[implied].rank);
+      }
+      return bestRank >= 0 ? DISPO_STAGES[bestRank].key : null;
+    }
+
+    // True when a non-terminal deal hasn't been touched in STALE_DAYS.
+    function isStaleDeal(p) {
+      const stage = p.dispo_stage || "prep";
+      if (DISPO_TERMINAL.has(stage)) return false;
+      const clock = p.stage_moved_at || p.synced_at;
+      if (!clock) return false;
+      const days = (Date.now() - new Date(clock).getTime()) / 86400000;
+      return days >= STALE_DAYS;
+    }
+
     const SOURCE_LABELS = {
       buyer_blast: "Buyer list", investorlift: "InvestorLift", creativelisting: "CreativeListing",
       fb_group: "FB group", referral: "Referral", other: "Other", deck_page: "Deck page",
@@ -476,7 +529,67 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
     }
     // Hard gates that block a live Send Blast — returns list of blocking reasons.
 
-    function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard) {
+    function renderDispoBar(p, leads, blasts, recips, notes) {
+      const stage   = p.dispo_stage || "prep";
+      const cur     = DISPO_BY_KEY[stage] || DISPO_BY_KEY.prep;
+      const stale   = isStaleDeal(p);
+      const cardId  = escapeHtml(p.card_id);
+
+      // Shoulder-tap: only suggest an UPGRADE, only on non-terminal manual stages,
+      // never move anything automatically.
+      let suggestHtml = "";
+      if (!DISPO_TERMINAL.has(stage)) {
+        const impliedKey = impliedDispoStage(leads, blasts, recips);
+        if (impliedKey && DISPO_BY_KEY[impliedKey].rank > cur.rank) {
+          const sug = DISPO_BY_KEY[impliedKey];
+          suggestHtml = `
+            <span class="dispo-suggest" style="display:inline-flex;align-items:center;gap:6px;font-size:0.74rem;color:${sug.color}">
+              ⚠️ signals suggest <b>${escapeHtml(sug.label)}</b>
+              <button type="button" class="btn btn-ghost btn-sm dispo-accept-btn"
+                      data-card-id="${cardId}" data-stage="${sug.key}"
+                      style="font-size:0.7rem;padding:1px 8px">Move</button>
+            </span>`;
+        }
+      }
+
+      const noteList = (notes || []).map(n => `
+        <div class="dispo-note" style="padding:6px 0;border-bottom:1px solid var(--border,#eee);font-size:0.82rem">
+          <div>${escapeHtml(n.body)}</div>
+          <div class="muted" style="font-size:0.7rem;margin-top:2px">
+            ${escapeHtml(n.author_email || "unknown")} · ${new Date(n.created_at).toLocaleString()}
+          </div>
+        </div>`).join("") || `<p class="muted" style="font-size:0.8rem;margin:4px 0">No notes yet.</p>`;
+
+      const movedMeta = p.stage_moved_at
+        ? `moved ${new Date(p.stage_moved_at).toLocaleDateString()}${p.stage_moved_by ? " · " + escapeHtml(p.stage_moved_by) : ""}`
+        : "";
+
+      return `
+      <div class="dispo-bar" data-card-id="${cardId}" style="margin:10px 0;padding:10px 12px;background:${cur.color}0f;border-left:3px solid ${cur.color};border-radius:8px">
+        <div class="flex-between" style="flex-wrap:wrap;gap:8px">
+          <div class="flex gap-8" style="align-items:center;flex-wrap:wrap">
+            <label style="margin:0;font-size:0.74rem;color:var(--text-2)">Stage</label>
+            <select class="dispo-stage-select" data-card-id="${cardId}" style="width:auto;font-weight:700;color:${cur.color}">
+              ${DISPO_STAGES.map(s => `<option value="${s.key}" ${s.key === stage ? "selected" : ""}>${s.label}</option>`).join("")}
+            </select>
+            ${stale ? `<span class="pill" style="background:#C5303022;color:#C53030;font-size:0.7rem;font-weight:700" title="No stage change in ${STALE_DAYS}+ days">🕓 Stale</span>` : ""}
+            ${suggestHtml}
+          </div>
+          <span class="muted" style="font-size:0.7rem">${movedMeta}</span>
+        </div>
+        <details style="margin-top:8px">
+          <summary style="cursor:pointer;font-size:0.78rem;color:var(--text-2)">Notes (${(notes || []).length})</summary>
+          <div style="max-height:200px;overflow-y:auto;margin-top:6px">${noteList}</div>
+          <div class="flex gap-8 mt-8">
+            <textarea class="dispo-note-input" data-card-id="${cardId}" rows="2"
+                      placeholder="Add an update…" style="flex:1;font-family:inherit;font-size:0.82rem"></textarea>
+            <button type="button" class="btn btn-primary btn-sm dispo-note-add-btn" data-card-id="${cardId}">Add</button>
+          </div>
+        </details>
+      </div>`;
+    }
+
+    function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard, notesByCard) {
       const t = termsByCard[p.card_id] || {};
       const status = (statusByCard[p.card_id] || {}).status || "active";
       const posts = fbByCard[p.card_id] || [];
@@ -507,6 +620,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
               <button class="btn btn-ghost btn-sm morby-delete-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Remove this Morby deal">🗑 Remove</button>
             </div>
           </div>
+          ${renderDispoBar(p, leads, [], recips, notesByCard[p.card_id] || [])}
           ${renderMorbyPanel(p, morby, t)}
         </div>`;
       }
@@ -577,6 +691,8 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
               <span class="blast-status muted" style="font-size:0.74rem;text-align:right;max-width:220px"></span>
             </div>
           </div>
+
+          ${renderDispoBar(p, leads, blasts, recips, notesByCard[p.card_id] || [])}
 
           ${(() => {
             const activeTab = activeTabByCard[p.card_id] || "posting";
@@ -1069,6 +1185,35 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
     }
 
     function wireCardEvents() {
+      // ── Dispo stage tracker: manual stage moves, shoulder-tap, notes ──
+      const moveStage = async (cardId, stage) => {
+        const email = session?.user?.email || "";
+        const { error } = await supa.from("properties")
+          .update({ dispo_stage: stage, stage_moved_at: new Date().toISOString(), stage_moved_by: email })
+          .eq("card_id", cardId);
+        if (error) { toast(`Couldn't move deal: ${error.message}`, { type: "error" }); return; }
+        toast(`Moved to ${DISPO_BY_KEY[stage]?.label || stage}`, { type: "success" });
+        loadAll();
+      };
+      document.querySelectorAll(".dispo-stage-select").forEach(sel => {
+        sel.addEventListener("change", (e) => moveStage(e.target.dataset.cardId, e.target.value));
+      });
+      document.querySelectorAll(".dispo-accept-btn").forEach(btn => {
+        btn.addEventListener("click", () => moveStage(btn.dataset.cardId, btn.dataset.stage));
+      });
+      document.querySelectorAll(".dispo-note-add-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const cardId = btn.dataset.cardId;
+          const ta = document.querySelector(`.dispo-note-input[data-card-id="${CSS.escape(cardId)}"]`);
+          const body = (ta?.value || "").trim();
+          if (!body) return;
+          const email = session?.user?.email || "";
+          const { error } = await supa.from("deal_notes").insert({ card_id: cardId, body, author_email: email });
+          if (error) { toast(`Couldn't save note: ${error.message}`, { type: "error" }); return; }
+          toast("Note added", { type: "success" });
+          loadAll();
+        });
+      });
       document.querySelectorAll(".fb-group-select").forEach(sel => {
         sel.addEventListener("change", async (e) => {
           const groupName = e.target.value;

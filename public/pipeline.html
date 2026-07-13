@@ -72,7 +72,10 @@
         <h1>Pipeline</h1>
         <div class="sub"><span id="deal-count"></span><span id="stale-count" style="color:#C53030;font-weight:700"></span></div>
       </div>
-      <button class="btn btn-ghost btn-sm" id="refresh-btn">↻ Refresh</button>
+      <div class="flex gap-8">
+        <button class="btn btn-ghost btn-sm" id="stages-btn">⚙ Manage stages</button>
+        <button class="btn btn-ghost btn-sm" id="refresh-btn">↻ Refresh</button>
+      </div>
     </div>
 
     <div id="board" class="pl-board"><div class="spinner" style="margin:40px auto"></div></div>
@@ -81,6 +84,11 @@
   <!-- Deal detail modal -->
   <div id="detail-backdrop" class="hidden" style="position:fixed;inset:0;background:rgba(17,41,80,0.45);display:flex;align-items:center;justify-content:center;z-index:60;padding:16px">
     <div class="card" style="width:100%;max-width:520px;max-height:88vh;overflow-y:auto" id="detail-card"></div>
+  </div>
+
+  <!-- Manage stages modal -->
+  <div id="stages-backdrop" class="hidden" style="position:fixed;inset:0;background:rgba(17,41,80,0.45);display:flex;align-items:center;justify-content:center;z-index:60;padding:16px">
+    <div class="card" style="width:100%;max-width:560px;max-height:88vh;overflow-y:auto" id="stages-card"></div>
   </div>
 
   <script src="/js/supa.js"></script>
@@ -147,21 +155,26 @@
       for (const t of (terms || [])) termsByCard[t.card_id] = t;
 
       renderBoard();
-
-      document.getElementById("deal-count").textContent =
-        `${PROPS.length} active deal${PROPS.length === 1 ? "" : "s"}`;
-      const staleCount = PROPS.filter(isStaleDeal).length;
-      document.getElementById("stale-count").textContent = staleCount ? ` · 🕓 ${staleCount} stale` : "";
+      updateHeaderCounts();
 
       // Keep the detail modal in sync if it's open (after a move / note add).
       if (openCardId && propById[openCardId]) openDetail(openCardId);
     }
 
+    function updateHeaderCounts() {
+      document.getElementById("deal-count").textContent =
+        `${PROPS.length} active deal${PROPS.length === 1 ? "" : "s"}`;
+      const staleCount = PROPS.filter(isStaleDeal).length;
+      document.getElementById("stale-count").textContent = staleCount ? ` · 🕓 ${staleCount} stale` : "";
+    }
+
     function renderBoard() {
       const byStage = Object.fromEntries(DISPO_STAGES.map(s => [s.key, []]));
+      const firstKey = DISPO_STAGES[0] && DISPO_STAGES[0].key;
       for (const p of PROPS) {
-        const stage = p.dispo_stage || "prep";
-        (byStage[stage] || byStage.prep).push(p);
+        const stage = p.dispo_stage || firstKey;
+        // Deals whose stage was deleted/renamed fall into the first column.
+        (byStage[stage] || byStage[firstKey]).push(p);
       }
       document.getElementById("board").innerHTML = DISPO_STAGES.map(s => {
         const cards = byStage[s.key] || [];
@@ -214,9 +227,7 @@
       if (error) { toast(`Couldn't move deal: ${error.message}`, { type: "error" }); loadBoard(); return; }
       toast(`Moved to ${DISPO_BY_KEY[stage]?.label || stage}`, { type: "success" });
       if (openCardId === cardId) openDetail(cardId);
-      // Refresh counts + stale rollup without a full spinner.
-      const staleCount = PROPS.filter(isStaleDeal).length;
-      document.getElementById("stale-count").textContent = staleCount ? ` · 🕓 ${staleCount} stale` : "";
+      updateHeaderCounts(); // refresh count + stale rollup without a full spinner
     }
 
     // ── Detail modal ──
@@ -349,9 +360,128 @@
       });
     }
 
-    // Close modal on backdrop click / Escape.
+    // ── Manage stages modal ──
+    let stagesOpen = false;
+
+    function openStages() { stagesOpen = true; renderStages(); document.getElementById("stages-backdrop").classList.remove("hidden"); }
+    function closeStages() { stagesOpen = false; document.getElementById("stages-backdrop").classList.add("hidden"); }
+
+    // How many active deals sit in each stage (unknown stages counted in the first).
+    function dealCountByStage() {
+      const counts = {};
+      const firstKey = DISPO_STAGES[0] && DISPO_STAGES[0].key;
+      for (const p of PROPS) {
+        const s = DISPO_BY_KEY[p.dispo_stage] ? p.dispo_stage : firstKey;
+        counts[s] = (counts[s] || 0) + 1;
+      }
+      return counts;
+    }
+
+    function renderStages() {
+      const counts = dealCountByStage();
+      const rows = DISPO_STAGES.map((s, i) => `
+        <div class="stage-row" data-key="${escapeHtml(s.key)}" style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;flex-direction:column;gap:2px">
+            <button type="button" class="stage-up" ${i === 0 ? "disabled" : ""} style="border:none;background:none;cursor:pointer;color:var(--text-2);line-height:1;padding:0;font-size:0.8rem;${i === 0 ? "opacity:.25;cursor:default" : ""}">▲</button>
+            <button type="button" class="stage-down" ${i === DISPO_STAGES.length - 1 ? "disabled" : ""} style="border:none;background:none;cursor:pointer;color:var(--text-2);line-height:1;padding:0;font-size:0.8rem;${i === DISPO_STAGES.length - 1 ? "opacity:.25;cursor:default" : ""}">▼</button>
+          </div>
+          <input type="color" class="stage-color" value="${escapeHtml(s.color)}" style="width:34px;height:34px;padding:2px;border:1px solid var(--border);border-radius:6px;cursor:pointer" title="Column color">
+          <input type="text" class="stage-label" value="${escapeHtml(s.label)}" placeholder="Stage name" style="flex:1;font-weight:600">
+          <label class="flex gap-8" style="align-items:center;font-size:0.72rem;color:var(--text-2);white-space:nowrap;margin:0" title="Final stage — deals here never show a stale flag or shoulder-tap">
+            <input type="checkbox" class="stage-terminal" ${s.is_terminal ? "checked" : ""} style="width:auto"> final
+          </label>
+          <span class="muted" style="font-size:0.72rem;width:52px;text-align:right">${counts[s.key] || 0} deal${(counts[s.key] || 0) === 1 ? "" : "s"}</span>
+          <button type="button" class="stage-del" ${DISPO_STAGES.length <= 1 ? "disabled" : ""} style="border:none;background:none;cursor:pointer;color:var(--red);font-size:0.95rem;${DISPO_STAGES.length <= 1 ? "opacity:.25;cursor:default" : ""}" title="Delete stage">🗑</button>
+        </div>`).join("");
+
+      document.getElementById("stages-card").innerHTML = `
+        <div class="flex-between" style="align-items:center">
+          <h2 style="margin:0;font-size:1.15rem;color:var(--navy-dark)">Manage stages</h2>
+          <button type="button" class="btn btn-ghost btn-sm" id="stages-close">✕</button>
+        </div>
+        <p class="muted" style="font-size:0.82rem;margin:6px 0 12px">Rename, recolor, reorder, add, or remove your pipeline columns. Renaming keeps deals in place; deleting a stage moves its deals to the first column. "Final" stages never show a stale flag.</p>
+        <div id="stage-rows">${rows}</div>
+        <button type="button" class="btn btn-ghost btn-sm" id="stage-add" style="margin-top:12px">+ Add stage</button>`;
+
+      document.getElementById("stages-close").onclick = closeStages;
+      document.getElementById("stage-add").onclick = addStage;
+      document.querySelectorAll("#stage-rows .stage-row").forEach(row => {
+        const key = row.dataset.key;
+        const label = row.querySelector(".stage-label");
+        label.addEventListener("change", (e) => updateStage(key, { label: e.target.value.trim() || "Untitled" }));
+        label.addEventListener("keydown", (e) => { if (e.key === "Enter") e.target.blur(); });
+        row.querySelector(".stage-color").addEventListener("change", (e) => updateStage(key, { color: e.target.value }));
+        row.querySelector(".stage-terminal").addEventListener("change", (e) => updateStage(key, { is_terminal: e.target.checked }));
+        const up = row.querySelector(".stage-up"); if (!up.disabled) up.onclick = () => reorderStage(key, -1);
+        const dn = row.querySelector(".stage-down"); if (!dn.disabled) dn.onclick = () => reorderStage(key, 1);
+        const del = row.querySelector(".stage-del"); if (!del.disabled) del.onclick = () => deleteStage(key);
+      });
+    }
+
+    // Reload stage defs, repaint board + modal, refresh header. Cheap: reuses
+    // in-memory PROPS (no deal refetch) since stage edits don't change deals.
+    async function refreshStages() {
+      await loadDispoStages();
+      renderBoard();
+      updateHeaderCounts();
+      if (stagesOpen) renderStages();
+    }
+
+    async function updateStage(key, patch) {
+      const { error } = await supa.from("dispo_stages").update(patch).eq("key", key);
+      if (error) { toast(`Couldn't update stage: ${error.message}`, { type: "error" }); return; }
+      await refreshStages();
+    }
+
+    async function addStage() {
+      const key = "stage_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      const { error } = await supa.from("dispo_stages").insert({ key, label: "New stage", color: "#718096", position: DISPO_STAGES.length, is_terminal: false });
+      if (error) { toast(`Couldn't add stage: ${error.message}`, { type: "error" }); return; }
+      toast("Stage added", { type: "success" });
+      await refreshStages();
+    }
+
+    async function reorderStage(key, dir) {
+      const idx = DISPO_STAGES.findIndex(s => s.key === key);
+      const swap = idx + dir;
+      if (idx < 0 || swap < 0 || swap >= DISPO_STAGES.length) return;
+      const a = DISPO_STAGES[idx], b = DISPO_STAGES[swap];
+      const [{ error: e1 }, { error: e2 }] = await Promise.all([
+        supa.from("dispo_stages").update({ position: swap }).eq("key", a.key),
+        supa.from("dispo_stages").update({ position: idx }).eq("key", b.key),
+      ]);
+      if (e1 || e2) { toast("Couldn't reorder stages", { type: "error" }); return; }
+      await refreshStages();
+    }
+
+    async function deleteStage(key) {
+      if (DISPO_STAGES.length <= 1) return;
+      const stage = DISPO_BY_KEY[key];
+      const n = dealCountByStage()[key] || 0;
+      const firstOther = DISPO_STAGES.find(s => s.key !== key);
+      const msg = n > 0
+        ? `"${stage.label}" has ${n} deal${n === 1 ? "" : "s"}. Deleting it will move ${n === 1 ? "it" : "them"} to "${firstOther.label}". Continue?`
+        : `Delete the "${stage.label}" stage?`;
+      if (!confirm(msg)) return;
+      // Reassign deals out of this stage first so none orphan.
+      if (n > 0) {
+        const { error: rErr } = await supa.from("properties").update({ dispo_stage: firstOther.key }).eq("dispo_stage", key);
+        if (rErr) { toast(`Couldn't move deals: ${rErr.message}`, { type: "error" }); return; }
+        PROPS.forEach(p => { if (p.dispo_stage === key) p.dispo_stage = firstOther.key; });
+      }
+      const { error } = await supa.from("dispo_stages").delete().eq("key", key);
+      if (error) { toast(`Couldn't delete stage: ${error.message}`, { type: "error" }); return; }
+      // Re-sequence remaining positions to stay 0..n-1.
+      const remaining = DISPO_STAGES.filter(s => s.key !== key);
+      await Promise.all(remaining.map((s, i) => supa.from("dispo_stages").update({ position: i }).eq("key", s.key)));
+      toast("Stage deleted", { type: "success" });
+      await refreshStages();
+    }
+
+    // Close modals on backdrop click / Escape.
     document.getElementById("detail-backdrop").addEventListener("click", (e) => { if (e.target.id === "detail-backdrop") closeDetail(); });
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && openCardId) closeDetail(); });
+    document.getElementById("stages-backdrop").addEventListener("click", (e) => { if (e.target.id === "stages-backdrop") closeStages(); });
+    document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (stagesOpen) closeStages(); else if (openCardId) closeDetail(); });
 
     (async () => {
       session = await requireAuth();
@@ -359,6 +489,8 @@
       wireLogout(document.getElementById("logout-btn"));
       wireBoardDnD();
       document.getElementById("refresh-btn").addEventListener("click", loadBoard);
+      document.getElementById("stages-btn").addEventListener("click", openStages);
+      await loadDispoStages();
       await loadBoard();
     })();
   </script>

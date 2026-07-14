@@ -827,11 +827,11 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
           <h4>🎬 Media Checklist</h4>
           <div class="acq-media-row">
             <span class="acq-media-icon">${a.cover_image_url ? "✅" : "❌"}</span>
-            <span class="acq-media-label">Cover photo (email)</span>
+            <span class="acq-media-label">Cover photo (email + deck link)</span>
             <input type="text" class="acq-input" data-field="cover_image_url" placeholder="Paste direct image URL, or upload →" value="${txt(a.cover_image_url)}">
             <button type="button" class="btn btn-ghost btn-sm cover-photo-upload-btn" data-card-id="${cardId}">📤 Upload photo</button>
             <input type="file" accept="image/*" class="cover-photo-file hidden" data-card-id="${cardId}">
-            ${!a.cover_image_url ? `<span class="acq-media-status bad">Blank in emails</span>` : `<span class="acq-media-status ok">Set</span>`}
+            ${!a.cover_image_url ? `<span class="acq-media-status bad">No banner on deck link</span>` : `<span class="acq-media-status ok">Set — shows on deck</span>`}
             ${a.cover_image_url ? `<img src="${escapeHtml(a.cover_image_url)}" alt="" style="width:48px;height:48px;object-fit:cover;border-radius:6px;margin-left:6px">` : ""}
           </div>
           <div class="acq-media-row">

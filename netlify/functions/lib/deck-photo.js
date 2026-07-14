@@ -1,6 +1,6 @@
 // Resolve the best available photo for a deal, in priority order:
-//   1. fb_photos[0]        — photos already attached to the property (best: real listing photos)
-//   2. cover_image_url     — acquisition cover image
+//   1. cover_image_url     — the URL Zach pastes on the posting dashboard (explicit choice: always wins)
+//   2. fb_photos[0]        — photos already attached to the property (legacy scraper field)
 //   3. Google Street View  — automatic street-level photo of the exact address (universal fallback)
 //   4. null                — caller renders the styled navy banner
 //
@@ -37,9 +37,9 @@ async function streetViewFor(address, { w = 640, h = 400 } = {}) {
 // render. `photos` is an array of {url,name} (may be empty); `hero` is a single
 // best URL for a full-bleed banner (may be "").
 async function resolveDealPhotos(prop, cover, address) {
+  if (cover) return { photos: [{ url: cover, name: address }], hero: cover, source: "cover" };
   const fb = Array.isArray(prop.fb_photos) ? prop.fb_photos.filter(p => p && p.url).slice(0, 6) : [];
   if (fb.length) return { photos: fb, hero: fb[0].url, source: "listing" };
-  if (cover) return { photos: [{ url: cover, name: address }], hero: cover, source: "cover" };
 
   const sv = await streetViewFor(address);
   if (sv) return { photos: [{ url: sv, name: address }], hero: sv, source: "streetview" };

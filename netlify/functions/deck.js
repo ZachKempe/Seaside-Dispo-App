@@ -30,6 +30,18 @@ async function sb(path, opts = {}) {
   const t = await r.text();
   return t ? JSON.parse(t) : null;
 }
+// Exact row count via PostgREST HEAD + content-range. Fails soft to 0 so the
+// activity strip simply hides if the query errors (e.g. migration not run yet).
+async function sbCount(path) {
+  try {
+    const r = await fetch(`${SB_URL}/rest/v1${path}`, {
+      method: "HEAD",
+      headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, Prefer: "count=exact" },
+    });
+    const n = Number((r.headers.get("content-range") || "").split("/")[1]);
+    return Number.isFinite(n) ? n : 0;
+  } catch { return 0; }
+}
 function esc(s) {
   return String(s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -50,6 +62,7 @@ function page(title, body) {
  a{color:${NAVY};text-decoration:none}
  ::selection{background:${GOLD};color:${NAVY_DARK}}
  @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+ @keyframes glow{0%,100%{box-shadow:0 0 0 0 rgba(31,122,84,.45)}50%{box-shadow:0 0 0 5px rgba(31,122,84,0)}}
  dialog{border:none;background:transparent;padding:0;max-width:600px;width:100%;margin:auto auto 0}
  dialog::backdrop{background:rgba(17,41,80,.5);backdrop-filter:blur(3px)}
  .sheet{background:${PAPER};border-radius:22px 22px 0 0;padding:26px 24px calc(26px + env(safe-area-inset-bottom));box-shadow:0 -20px 60px rgba(17,41,80,.4);animation:rise .18s ease}
@@ -71,6 +84,7 @@ function page(title, body) {
   .greeting{padding:24px 0 0!important;margin:0 auto!important;width:calc(100% - 96px);max-width:700px}
   .hero-card{margin:30px auto 0!important;width:calc(100% - 96px);max-width:700px;padding:40px 36px 34px!important}
   .money{font-size:76px!important}
+  .activity{margin:16px auto 0!important;width:calc(100% - 96px);max-width:700px}
   .terms-sec{margin:26px auto 0!important;width:calc(100% - 96px);max-width:700px}
   .term-cell{padding:17px 22px!important}
   .term-cell .term-v{font-size:19px!important}
@@ -98,6 +112,14 @@ exports.handler = async (event) => {
 
   if (wantsPdf) {
     if (!cleanSlug || !SB_URL) return { statusCode: 404, body: "Not found" };
+    // Log the download (fail-soft) so the deal page can show a real PDF-download count.
+    try {
+      const p = await sb(`/properties?deck_slug=eq.${encodeURIComponent(cleanSlug)}&select=card_id&limit=1`);
+      if (p && p[0]) {
+        await sb(`/deck_views`, { method: "POST", headers: { Prefer: "return=minimal" },
+          body: JSON.stringify({ card_id: p[0].card_id, buyer_id: verifyDeckToken(q.b) || null, kind: "pdf", user_agent: (event.headers["user-agent"] || "").slice(0, 300) }) });
+      }
+    } catch (e) { console.warn("pdf download log failed:", e.message); }
     const url = `${SB_URL}/storage/v1/object/public/property-photos/deal-decks/${cleanSlug}.pdf`;
     return { statusCode: 302, headers: { Location: url }, body: "" };
   }
@@ -109,11 +131,17 @@ exports.handler = async (event) => {
     if (!prop) return { statusCode: 404, headers: { "Content-Type": "text/html" }, body: page("Not found", `<div class="wrap"><div style="padding:60px 24px;text-align:center;color:${MUTED}">This deal is no longer available.</div></div>`) };
 
     const cardId = prop.card_id;
-    const [termsRows, morbyRows, acqRows, statusRows] = await Promise.all([
-      sb(`/deal_terms?card_id=eq.${encodeURIComponent(cardId)}&select=*&limit=1`),
-      sb(`/morby_deals?card_id=eq.${encodeURIComponent(cardId)}&select=*&limit=1`),
-      sb(`/deal_acquisition?card_id=eq.${encodeURIComponent(cardId)}&select=cover_image_url&limit=1`),
-      sb(`/property_status?card_id=eq.${encodeURIComponent(cardId)}&select=status&limit=1`),
+    const encCard = encodeURIComponent(cardId);
+    const iso = (ms) => encodeURIComponent(new Date(Date.now() - ms).toISOString());
+    // Counts run BEFORE this visitor's own view is logged, so they only reflect others.
+    const [termsRows, morbyRows, acqRows, statusRows, views24, views7d, pdfCount] = await Promise.all([
+      sb(`/deal_terms?card_id=eq.${encCard}&select=*&limit=1`),
+      sb(`/morby_deals?card_id=eq.${encCard}&select=*&limit=1`),
+      sb(`/deal_acquisition?card_id=eq.${encCard}&select=cover_image_url&limit=1`),
+      sb(`/property_status?card_id=eq.${encCard}&select=status&limit=1`),
+      sbCount(`/deck_views?card_id=eq.${encCard}&kind=eq.view&viewed_at=gte.${iso(24 * 3600e3)}`),
+      sbCount(`/deck_views?card_id=eq.${encCard}&kind=eq.view&viewed_at=gte.${iso(7 * 24 * 3600e3)}`),
+      sbCount(`/deck_views?card_id=eq.${encCard}&kind=eq.pdf`),
     ]);
     const terms = (termsRows || [])[0] || {};
     const morby = (morbyRows || [])[0] || {};
@@ -190,6 +218,17 @@ exports.handler = async (event) => {
         <div class="money" style="margin:10px 0 0;font-weight:800;font-size:60px;line-height:.95;color:${NAVY};letter-spacing:-.03em;font-variant-numeric:tabular-nums">${esc(heroValue)}</div>
         <p style="margin:16px 4px 0;font-size:13.5px;line-height:1.5;color:#718096">${esc(heroSub)}</p>
       </div>`;
+
+    // Activity strip — real engagement counts only (no fabricated numbers).
+    // Hides entirely when a deal is too quiet to be persuasive.
+    const chipStyle = `display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:#5A6B85;background:#fff;border:1px solid ${LINE};padding:7px 13px;border-radius:999px;box-shadow:0 6px 16px -12px rgba(17,41,80,.4)`;
+    const pulseDot = `<span style="width:7px;height:7px;border-radius:50%;background:#1F7A54;animation:glow 1.8s ease-in-out infinite"></span>`;
+    const chips = [];
+    if (views24 >= 2) chips.push(`<span style="${chipStyle}">${pulseDot}<b style="color:${INK};font-weight:800">${views24}</b>&nbsp;views in the last 24 hours</span>`);
+    else if (views7d >= 3) chips.push(`<span style="${chipStyle}">${pulseDot}<b style="color:${INK};font-weight:800">${views7d}</b>&nbsp;views this week</span>`);
+    if (pdfCount >= 2) chips.push(`<span style="${chipStyle}">📄&nbsp;<b style="color:${INK};font-weight:800">${pdfCount}</b>&nbsp;PDF downloads</span>`);
+    const activity = chips.length ? `
+      <div class="activity" style="margin:14px 20px 0;display:flex;justify-content:center;align-items:center;gap:9px;flex-wrap:wrap">${chips.join("")}</div>` : "";
 
     // Deal terms grid
     const rows = isMorby ? morbyTermRows(morby) : subtoSummaryRows(terms);
@@ -290,6 +329,7 @@ exports.handler = async (event) => {
         ${banner}
         ${greeting}
         ${heroCard}
+        ${activity}
         ${termsSec}
         ${contactSec}
         <div class="foot" style="text-align:center;padding:26px 24px 10px;color:#A6AEBC;font-size:11.5px;line-height:1.6">

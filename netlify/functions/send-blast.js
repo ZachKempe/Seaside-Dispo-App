@@ -72,8 +72,10 @@ async function verifyUser(authHeader) {
 // A buyer matches a deal if their strategy is "all" or equals the deal's
 // strategy (subto / morby). State/price/PITI/beds filters unchanged.
 function matches(buyer, dealStrategy, state, price, piti, beds) {
-  const strat = (buyer.strategy || "all").toLowerCase();
-  if (strat !== "all" && dealStrategy && strat !== dealStrategy) return false;
+  // Buyers can hold multiple strategies (comma-separated, e.g. "subto,morby").
+  // "all"/empty matches any deal strategy.
+  const strats = String(buyer.strategy || "").toLowerCase().split(",").map(s => s.trim()).filter(Boolean);
+  if (strats.length && !strats.includes("all") && dealStrategy && !strats.includes(dealStrategy)) return false;
   const states = (buyer.states || "").trim();
   if (states && state && !states.split(",").map(s => s.trim().toUpperCase()).includes(state.toUpperCase())) return false;
   if (buyer.max_price > 0 && price > 0 && price > buyer.max_price) return false;

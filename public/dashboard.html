@@ -367,8 +367,8 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
 
     // Mirrors the server-side matching logic in send-blast.js (R2: strategy-aware).
     function matchesDeal(b, dealStrategy, state, price, piti, beds) {
-      const strat = (b.strategy || "all").toLowerCase();
-      if (strat !== "all" && dealStrategy && strat !== dealStrategy) return false;
+      const strats = String(b.strategy || "").toLowerCase().split(",").map(s => s.trim()).filter(Boolean);
+      if (strats.length && !strats.includes("all") && dealStrategy && !strats.includes(dealStrategy)) return false;
       const states = (b.states || "").trim();
       if (states && state && !states.split(",").map(s => s.trim().toUpperCase()).includes(state.toUpperCase())) return false;
       if (b.max_price > 0 && price > 0 && price > b.max_price) return false;
@@ -2228,7 +2228,10 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
     function renderMethodChips() {
       const wrap = document.getElementById("blast-method-filter");
       const groups = {};
-      for (const b of allBuyers) { const m = (b.strategy || "all").toLowerCase(); (groups[m] ||= []).push(b); }
+      for (const b of allBuyers) {
+        const methods = String(b.strategy || "").toLowerCase().split(",").map(s => s.trim()).filter(Boolean);
+        for (const m of (methods.length ? methods : ["all"])) (groups[m] ||= []).push(b);
+      }
       activeBlast.methodGroups = groups;
       const chips = [{ key: "__matched", label: "Matched to this deal", count: activeBlast.matched.length }];
       for (const key of METHOD_ORDER) if (groups[key] && groups[key].length) chips.push({ key, label: METHOD_LABELS[key], count: groups[key].length });

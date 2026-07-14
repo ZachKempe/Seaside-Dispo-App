@@ -90,12 +90,14 @@
           <div class="field"><label>Email</label><input type="email" id="b-email"></div>
           <div class="field"><label>Phone</label><input id="b-phone"></div>
           <div class="field"><label>States (comma-separated)</label><input id="b-states" placeholder="FL, TX, MN"></div>
-          <div class="field"><label>Strategy</label>
-            <select id="b-strategy">
-              <option value="all">All</option><option value="subto">Subject To</option>
-              <option value="owner_finance">Owner Finance</option><option value="cash">Cash</option>
-              <option value="morby">Morby/Stack</option>
-            </select>
+          <div class="field"><label>Strategies <span class="muted" style="font-weight:400">(check all that apply)</span></label>
+            <div id="b-strategy" class="flex gap-8" style="flex-wrap:wrap;padding-top:4px">
+              <label class="flex gap-8" style="font-weight:500;color:var(--text-2);white-space:nowrap"><input type="checkbox" class="b-strat-cb" value="subto" style="width:auto"> Subject To</label>
+              <label class="flex gap-8" style="font-weight:500;color:var(--text-2);white-space:nowrap"><input type="checkbox" class="b-strat-cb" value="owner_finance" style="width:auto"> Owner Finance</label>
+              <label class="flex gap-8" style="font-weight:500;color:var(--text-2);white-space:nowrap"><input type="checkbox" class="b-strat-cb" value="cash" style="width:auto"> Cash</label>
+              <label class="flex gap-8" style="font-weight:500;color:var(--text-2);white-space:nowrap"><input type="checkbox" class="b-strat-cb" value="morby" style="width:auto"> Morby/Stack</label>
+            </div>
+            <p class="muted" style="font-size:0.76rem;margin:4px 0 0">Leave all unchecked to match every strategy.</p>
           </div>
           <div class="field"><label>Max PITI</label><input type="number" id="b-piti"></div>
           <div class="field"><label>Min Beds</label><input type="number" id="b-beds"></div>
@@ -239,6 +241,13 @@
       sel.dataset.populated = "1";
     }
 
+    // A buyer's strategies are stored comma-separated in the `strategy` column
+    // (e.g. "subto,morby"). Empty or "all" means "matches every strategy".
+    const STRATEGY_LABELS = { subto: "Subject To", owner_finance: "Owner Finance", cash: "Cash", morby: "Morby/Stack", all: "All" };
+    function buyerStrategies(s) {
+      return String(s || "").toLowerCase().split(",").map(x => x.trim()).filter(Boolean);
+    }
+
     function applyFilters() {
       const q = document.getElementById("search").value.trim().toLowerCase();
       const tier = document.getElementById("filter-tier").value;
@@ -249,7 +258,7 @@
       return allBuyers.filter(b => {
         if (tier && b.tier !== tier) return false;
         if (state && !(b.states || "").split(",").map(s => s.trim()).includes(state)) return false;
-        if (strategy && b.strategy !== strategy) return false;
+        if (strategy && !buyerStrategies(b.strategy).includes(strategy)) return false;
         if (missingOnly && !missingInfo(b).any) return false;
         if (q) {
           const hay = `${b.name} ${b.email} ${b.phone}`.toLowerCase();
@@ -327,7 +336,7 @@
 
       const chips = [
         ...states.map(s => `<span class="pill pill-state" style="font-size:0.7rem">${escapeHtml(s)}</span>`),
-        b.strategy ? `<span class="chip-mini">${escapeHtml((b.strategy || "").replace(/_/g, " "))}</span>` : "",
+        ...buyerStrategies(b.strategy).map(s => `<span class="chip-mini">${escapeHtml(STRATEGY_LABELS[s] || s.replace(/_/g, " "))}</span>`),
         b.max_price ? `<span class="chip-mini">Max Entry ${fmtMoney(b.max_price)}</span>` : "",
         b.max_piti ? `<span class="chip-mini">Max PITI ${fmtMoney(b.max_piti)}/mo</span>` : "",
       ].filter(Boolean).join(" ");
@@ -384,7 +393,8 @@
       document.getElementById("b-email").value = b ? (b.email || "") : "";
       document.getElementById("b-phone").value = b ? (b.phone || "") : "";
       document.getElementById("b-states").value = b ? (b.states || "") : "";
-      document.getElementById("b-strategy").value = b ? b.strategy : "all";
+      const stratSet = new Set(buyerStrategies(b ? b.strategy : ""));
+      document.querySelectorAll(".b-strat-cb").forEach(cb => { cb.checked = stratSet.has(cb.value); });
       document.getElementById("b-piti").value = b ? (b.max_piti || "") : "";
       document.getElementById("b-beds").value = b ? (b.min_beds || "") : "";
       document.getElementById("b-notes").value = b ? (b.notes || "") : "";
@@ -744,7 +754,7 @@
           email: document.getElementById("b-email").value.trim(),
           phone: document.getElementById("b-phone").value.trim(),
           states: document.getElementById("b-states").value.split(",").map(s => s.trim().toUpperCase()).filter(Boolean).join(","),
-          strategy: document.getElementById("b-strategy").value,
+          strategy: [...document.querySelectorAll(".b-strat-cb:checked")].map(cb => cb.value).join(",") || "all",
           max_piti: Number(document.getElementById("b-piti").value) || 0,
           min_beds: Number(document.getElementById("b-beds").value) || 0,
           notes: document.getElementById("b-notes").value.trim(),

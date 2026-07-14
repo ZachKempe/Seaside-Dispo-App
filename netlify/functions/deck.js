@@ -56,12 +56,15 @@ function page(title, body) {
  .sheet input{width:100%;padding:14px 15px;margin-bottom:10px;border:1px solid #D8CFB8;border-radius:11px;font-size:15px;font-family:Inter,sans-serif;background:#fff}
  .sheet input:focus{border-color:${GOLD};outline:none}
  @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+ .banner-blur{display:none}
  /* ---- Desktop (≥1100px): full-screen split layout — photo fills the left half,
     content on the right. Everything below 1100px is untouched (mobile design). ---- */
  @media(min-width:1100px){
   .wrap{max-width:none;display:grid;grid-template-columns:46% 54%;align-content:start;overflow:visible;box-shadow:none;padding-bottom:200px}
   .wrap>*{grid-column:2}
   .wrap>.banner{position:fixed!important;top:0;left:0;width:46%;height:100vh!important;box-shadow:34px 0 70px -34px rgba(17,41,80,.45)}
+  .banner-blur{display:block;position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scale(1.12);filter:blur(26px) saturate(1.15) brightness(.82)}
+  .banner-img{object-fit:contain!important}
   .banner h1{font-size:clamp(36px,3.2vw,50px)!important}
   .banner-inner{padding:42px 48px!important;gap:13px!important}
   .topbar{padding:20px 44px!important}
@@ -153,7 +156,7 @@ exports.handler = async (event) => {
     const bannerBg = heroPhoto ? `` : `background:linear-gradient(150deg,${NAVY_DARK} 0%,${NAVY} 45%,#20406f 100%);`;
     const banner = `
       <div class="banner" style="position:relative;height:230px;overflow:hidden;${bannerBg}">
-        ${heroPhoto ? `<img src="${esc(heroPhoto)}" alt="${esc(address)}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">` : ""}
+        ${heroPhoto ? `<img class="banner-blur" src="${esc(heroPhoto)}" alt="" aria-hidden="true"><img class="banner-img" src="${esc(heroPhoto)}" alt="${esc(address)}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">` : ""}
         ${!heroPhoto ? `<div style="position:absolute;inset:0;background-image:repeating-linear-gradient(0deg,transparent 0,transparent 33px,rgba(255,255,255,.04) 33px,rgba(255,255,255,.04) 34px),repeating-linear-gradient(90deg,transparent 0,transparent 33px,rgba(255,255,255,.04) 33px,rgba(255,255,255,.04) 34px)"></div>` : ""}
         ${photoSource === "streetview" ? `<span style="position:absolute;top:12px;right:12px;font-size:10px;font-weight:600;color:#fff;background:rgba(17,41,80,.6);border:1px solid rgba(255,255,255,.25);padding:4px 9px;border-radius:6px">Street View · Google</span>` : ""}
         <div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(17,41,80,.15) 0%,rgba(17,41,80,.35) 55%,rgba(17,41,80,.88) 100%)"></div>

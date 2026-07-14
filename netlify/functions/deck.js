@@ -59,17 +59,20 @@ function page(title, body) {
  /* ---- Desktop (≥1100px): full-screen split layout — photo fills the left half,
     content on the right. Everything below 1100px is untouched (mobile design). ---- */
  @media(min-width:1100px){
-  .wrap{max-width:none;display:grid;grid-template-columns:46% 54%;align-content:start;overflow:visible;box-shadow:none}
+  .wrap{max-width:none;display:grid;grid-template-columns:46% 54%;align-content:start;overflow:visible;box-shadow:none;padding-bottom:200px}
   .wrap>*{grid-column:2}
-  .wrap>.banner{position:fixed!important;top:0;left:0;width:46%;height:100vh!important}
+  .wrap>.banner{position:fixed!important;top:0;left:0;width:46%;height:100vh!important;box-shadow:34px 0 70px -34px rgba(17,41,80,.45)}
   .banner h1{font-size:clamp(36px,3.2vw,50px)!important}
   .banner-inner{padding:42px 48px!important;gap:13px!important}
   .topbar{padding:20px 44px!important}
-  .greeting{padding:26px 0 0!important;margin:0 auto!important;width:calc(100% - 96px);max-width:700px}
-  .hero-card{margin:36px auto 0!important;width:calc(100% - 96px);max-width:700px;padding:42px 36px 36px!important}
+  .greeting{padding:24px 0 0!important;margin:0 auto!important;width:calc(100% - 96px);max-width:700px}
+  .hero-card{margin:30px auto 0!important;width:calc(100% - 96px);max-width:700px;padding:40px 36px 34px!important}
   .money{font-size:76px!important}
-  .terms-sec{margin:32px auto 0!important;width:calc(100% - 96px);max-width:700px}
-  .contact-sec{margin:28px auto 0!important;width:calc(100% - 96px);max-width:700px}
+  .terms-sec{margin:26px auto 0!important;width:calc(100% - 96px);max-width:700px}
+  .term-cell{padding:17px 22px!important}
+  .term-cell .term-v{font-size:19px!important}
+  .term-cell:last-child:nth-child(odd){grid-column:1/-1}
+  .contact-sec{margin:24px auto 0!important;width:calc(100% - 96px);max-width:700px}
   .foot{max-width:700px;margin:0 auto}
   .action-bar{left:46%!important;padding-left:48px!important;padding-right:48px!important}
   .action-bar>div{max-width:700px!important}
@@ -191,7 +194,7 @@ exports.handler = async (event) => {
       <div class="terms-sec" style="margin:24px 20px 0">
         <div style="display:flex;align-items:center;gap:10px;margin:0 4px 12px"><span style="font-size:11.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:${NAVY}">Deal Terms</span><span style="flex:1;height:1px;background:linear-gradient(90deg,#E0D9C9,transparent)"></span></div>
         <div style="background:#fff;border:1px solid ${LINE};border-radius:16px;overflow:hidden;display:grid;grid-template-columns:1fr 1fr">
-          ${rows.map(([k, v]) => `<div style="padding:15px 18px;border-bottom:1px solid #F0EBDF;border-right:1px solid #F0EBDF"><div style="font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#94A0B2;margin-bottom:5px">${esc(k)}</div><div style="font-size:17px;font-weight:700;color:${INK};letter-spacing:-.01em;font-variant-numeric:tabular-nums">${esc(v)}</div></div>`).join("")}
+          ${rows.map(([k, v]) => `<div class="term-cell" style="padding:15px 18px;border-bottom:1px solid #F0EBDF;border-right:1px solid #F0EBDF"><div style="font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#94A0B2;margin-bottom:5px">${esc(k)}</div><div class="term-v" style="font-size:17px;font-weight:700;color:${INK};letter-spacing:-.01em;font-variant-numeric:tabular-nums">${esc(v)}</div></div>`).join("")}
         </div>
       </div>` : "";
 

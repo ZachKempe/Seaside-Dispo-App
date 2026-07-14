@@ -508,7 +508,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
               <button class="btn btn-ghost btn-sm morby-delete-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Remove this Morby deal">🗑 Remove</button>
             </div>
           </div>
-          ${renderMorbyPanel(p, morby, t)}
+          ${renderMorbyPanel(p, morby, t, acq)}
         </div>`;
       }
 
@@ -927,8 +927,9 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       return m;
     }
 
-    function renderMorbyPanel(p, morby, terms) {
+    function renderMorbyPanel(p, morby, terms, acq) {
       const m = morby || {};
+      const ac = acq || {};
       const cardId = escapeHtml(p.card_id);
       const num = (v) => (v === null || v === undefined) ? "" : v;
       const txt = (v) => escapeHtml(v == null ? "" : String(v));
@@ -948,6 +949,20 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
           <p class="muted" style="font-size:0.78rem;margin-top:-4px">Used as the property address on the Deal Deck PDF. Defaults to the Trello card name — correct it here if that's wrong, without renaming the card.</p>
           <div class="acq-field">
             <input type="text" class="acq-input" data-field="address_override" placeholder="${escapeHtml(p.name || "")}" value="${txt(m.address_override)}">
+          </div>
+        </div>
+
+        <!-- Section: Deal Deck Photo -->
+        <div class="acq-section">
+          <h4>🖼️ Deal Deck Photo</h4>
+          <p class="muted" style="font-size:0.78rem;margin-top:-4px">Paste a direct image URL (or upload) — this photo becomes the banner on the SMS/email deck link. Leave blank for the styled navy banner.</p>
+          <div class="acq-media-row">
+            <span class="acq-media-icon">${ac.cover_image_url ? "✅" : "❌"}</span>
+            <input type="text" class="acq-input morby-cover-input" data-field="cover_image_url" placeholder="Paste direct image URL, or upload →" value="${txt(ac.cover_image_url)}">
+            <button type="button" class="btn btn-ghost btn-sm morby-cover-upload-btn" data-card-id="${cardId}">📤 Upload photo</button>
+            <input type="file" accept="image/*" class="morby-cover-file hidden" data-card-id="${cardId}">
+            ${!ac.cover_image_url ? `<span class="acq-media-status bad">No banner on deck link</span>` : `<span class="acq-media-status ok">Set — shows on deck</span>`}
+            ${ac.cover_image_url ? `<img src="${escapeHtml(ac.cover_image_url)}" alt="" style="width:48px;height:48px;object-fit:cover;border-radius:6px;margin-left:6px">` : ""}
           </div>
         </div>
 
@@ -1389,7 +1404,42 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
           showSaved();
         }
 
-        panel.querySelectorAll(".acq-input").forEach(input => {
+        // Deal Deck Photo saves to deal_acquisition (not morby_deals) — that's the
+        // table the deck page reads cover_image_url from.
+        async function saveCoverToAcq(value) {
+          const row = { card_id: cardId, cover_image_url: value, updated_at: new Date().toISOString() };
+          const { error } = await supa.from("deal_acquisition").upsert(row, { onConflict: "card_id" });
+          if (error) { alert(`Couldn't save photo: ${error.message}`); return; }
+          const deal = dealCache[cardId];
+          if (deal) deal.acq = { ...(deal.acq || {}), cover_image_url: value };
+          showSaved();
+        }
+        panel.querySelectorAll(".morby-cover-input").forEach(input => {
+          const handler = async () => { await saveCoverToAcq(input.value === "" ? null : input.value); };
+          input.addEventListener("blur", handler);
+          input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+        });
+        panel.querySelectorAll(".morby-cover-upload-btn").forEach(btn => {
+          btn.addEventListener("click", () => panel.querySelector(".morby-cover-file").click());
+        });
+        panel.querySelectorAll(".morby-cover-file").forEach(input => {
+          input.addEventListener("change", async () => {
+            const file = input.files && input.files[0];
+            if (!file) return;
+            const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+            const path = `${cardId}/cover-${Date.now()}.${ext}`;
+            const { error: upErr } = await supa.storage.from("property-photos").upload(path, file, { upsert: true });
+            if (upErr) { alert(`Upload failed: ${upErr.message}`); return; }
+            const { data } = supa.storage.from("property-photos").getPublicUrl(path);
+            const url = data.publicUrl;
+            const textInput = panel.querySelector(".morby-cover-input");
+            if (textInput) textInput.value = url;
+            await saveCoverToAcq(url);
+            await loadAll();
+          });
+        });
+
+        panel.querySelectorAll(".acq-input:not(.morby-cover-input)").forEach(input => {
           const field = input.dataset.field;
           const isNumeric = input.type === "number";
           const isSelectOrDate = input.tagName === "SELECT" || input.type === "date";

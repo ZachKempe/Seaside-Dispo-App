@@ -56,6 +56,26 @@ function page(title, body) {
  .sheet input{width:100%;padding:14px 15px;margin-bottom:10px;border:1px solid #D8CFB8;border-radius:11px;font-size:15px;font-family:Inter,sans-serif;background:#fff}
  .sheet input:focus{border-color:${GOLD};outline:none}
  @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+ /* ---- Desktop (≥1100px): full-screen split layout — photo fills the left half,
+    content on the right. Everything below 1100px is untouched (mobile design). ---- */
+ @media(min-width:1100px){
+  .wrap{max-width:none;display:grid;grid-template-columns:46% 54%;align-content:start;overflow:visible;box-shadow:none}
+  .wrap>*{grid-column:2}
+  .wrap>.banner{position:fixed!important;top:0;left:0;width:46%;height:100vh!important}
+  .banner h1{font-size:clamp(36px,3.2vw,50px)!important}
+  .banner-inner{padding:42px 48px!important;gap:13px!important}
+  .topbar{padding:20px 44px!important}
+  .greeting{padding:26px 0 0!important;margin:0 auto!important;width:calc(100% - 96px);max-width:700px}
+  .hero-card{margin:36px auto 0!important;width:calc(100% - 96px);max-width:700px;padding:42px 36px 36px!important}
+  .money{font-size:76px!important}
+  .terms-sec{margin:32px auto 0!important;width:calc(100% - 96px);max-width:700px}
+  .contact-sec{margin:28px auto 0!important;width:calc(100% - 96px);max-width:700px}
+  .foot{max-width:700px;margin:0 auto}
+  .action-bar{left:46%!important;padding-left:48px!important;padding-right:48px!important}
+  .action-bar>div{max-width:700px!important}
+  dialog{margin:auto}
+  .sheet{border-radius:22px}
+ }
 </style></head><body>${body}</body></html>`;
 }
 
@@ -129,12 +149,12 @@ exports.handler = async (event) => {
 
     const bannerBg = heroPhoto ? `` : `background:linear-gradient(150deg,${NAVY_DARK} 0%,${NAVY} 45%,#20406f 100%);`;
     const banner = `
-      <div style="position:relative;height:230px;overflow:hidden;${bannerBg}">
+      <div class="banner" style="position:relative;height:230px;overflow:hidden;${bannerBg}">
         ${heroPhoto ? `<img src="${esc(heroPhoto)}" alt="${esc(address)}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">` : ""}
         ${!heroPhoto ? `<div style="position:absolute;inset:0;background-image:repeating-linear-gradient(0deg,transparent 0,transparent 33px,rgba(255,255,255,.04) 33px,rgba(255,255,255,.04) 34px),repeating-linear-gradient(90deg,transparent 0,transparent 33px,rgba(255,255,255,.04) 33px,rgba(255,255,255,.04) 34px)"></div>` : ""}
         ${photoSource === "streetview" ? `<span style="position:absolute;top:12px;right:12px;font-size:10px;font-weight:600;color:#fff;background:rgba(17,41,80,.6);border:1px solid rgba(255,255,255,.25);padding:4px 9px;border-radius:6px">Street View · Google</span>` : ""}
         <div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(17,41,80,.15) 0%,rgba(17,41,80,.35) 55%,rgba(17,41,80,.88) 100%)"></div>
-        <div style="position:absolute;left:0;right:0;bottom:0;padding:22px 24px;display:flex;flex-direction:column;gap:9px">
+        <div class="banner-inner" style="position:absolute;left:0;right:0;bottom:0;padding:22px 24px;display:flex;flex-direction:column;gap:9px">
           <span style="align-self:flex-start;font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:${NAVY_DARK};background:${GOLD_LT};padding:4px 10px;border-radius:4px">${esc(dealTypeLabel)}</span>
           <h1 style="margin:0;font-family:'Source Serif 4',Georgia,serif;font-weight:600;font-size:29px;line-height:1.1;color:#fff;letter-spacing:-.01em;text-shadow:0 2px 18px rgba(0,0,0,.35)">${esc(street)}</h1>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
@@ -158,17 +178,17 @@ exports.handler = async (event) => {
       heroSub = "What it takes to step into this position, plus transaction and closing costs.";
     }
     const heroCard = `
-      <div style="margin:22px 20px 0;background:#fff;border:1px solid ${LINE};border-radius:18px;padding:30px 26px 26px;text-align:center;position:relative;overflow:hidden;box-shadow:0 18px 40px -26px rgba(17,41,80,.4)">
+      <div class="hero-card" style="margin:22px 20px 0;background:#fff;border:1px solid ${LINE};border-radius:18px;padding:30px 26px 26px;text-align:center;position:relative;overflow:hidden;box-shadow:0 18px 40px -26px rgba(17,41,80,.4)">
         <div style="position:absolute;top:0;left:0;right:0;height:4px;background:linear-gradient(90deg,${GOLD},${GOLD_LT},${GOLD})"></div>
         <div style="font-size:11.5px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:${MUTED}">${esc(heroLabel)}</div>
-        <div style="margin:10px 0 0;font-weight:800;font-size:60px;line-height:.95;color:${NAVY};letter-spacing:-.03em;font-variant-numeric:tabular-nums">${esc(heroValue)}</div>
+        <div class="money" style="margin:10px 0 0;font-weight:800;font-size:60px;line-height:.95;color:${NAVY};letter-spacing:-.03em;font-variant-numeric:tabular-nums">${esc(heroValue)}</div>
         <p style="margin:16px 4px 0;font-size:13.5px;line-height:1.5;color:#718096">${esc(heroSub)}</p>
       </div>`;
 
     // Deal terms grid
     const rows = isMorby ? morbyTermRows(morby) : subtoSummaryRows(terms);
     const termsSec = rows.length ? `
-      <div style="margin:24px 20px 0">
+      <div class="terms-sec" style="margin:24px 20px 0">
         <div style="display:flex;align-items:center;gap:10px;margin:0 4px 12px"><span style="font-size:11.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:${NAVY}">Deal Terms</span><span style="flex:1;height:1px;background:linear-gradient(90deg,#E0D9C9,transparent)"></span></div>
         <div style="background:#fff;border:1px solid ${LINE};border-radius:16px;overflow:hidden;display:grid;grid-template-columns:1fr 1fr">
           ${rows.map(([k, v]) => `<div style="padding:15px 18px;border-bottom:1px solid #F0EBDF;border-right:1px solid #F0EBDF"><div style="font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#94A0B2;margin-bottom:5px">${esc(k)}</div><div style="font-size:17px;font-weight:700;color:${INK};letter-spacing:-.01em;font-variant-numeric:tabular-nums">${esc(v)}</div></div>`).join("")}
@@ -180,21 +200,21 @@ exports.handler = async (event) => {
     const cPhone = process.env.MARKETING_CONTACT_PHONE || "";
     const telHref = "tel:" + cPhone.replace(/[^0-9+]/g, "");
     const contactSec = `
-      <div style="margin:22px 20px 0;display:flex;align-items:center;gap:14px;padding:16px 18px;background:#F4F1E8;border:1px solid ${LINE};border-radius:14px">
+      <div class="contact-sec" style="margin:22px 20px 0;display:flex;align-items:center;gap:14px;padding:16px 18px;background:#F4F1E8;border:1px solid ${LINE};border-radius:14px">
         <div style="width:42px;height:42px;border-radius:50%;background:${NAVY};color:${GOLD_LT};display:flex;align-items:center;justify-content:center;font-family:'Source Serif 4',serif;font-weight:600;font-size:18px;flex-shrink:0">${esc((cName.trim()[0] || "S").toUpperCase())}</div>
         <div style="line-height:1.35"><div style="font-size:14px;font-weight:700;color:${INK}">${esc(cName)}</div><div style="font-size:12.5px;color:${MUTED}">Your Seaside acquisitions contact</div></div>
         ${cPhone ? `<a href="${esc(telHref)}" style="margin-left:auto;font-size:13px;font-weight:700;color:${NAVY};border:1px solid #D8CFB8;background:#fff;padding:9px 14px;border-radius:10px;white-space:nowrap">${esc(cPhone)}</a>` : ""}
       </div>`;
 
     const greeting = buyer && buyer.name
-      ? `<p style="margin:0;padding:18px 24px 0;font-size:15px;color:#4A5568">Hi ${esc(String(buyer.name).split(/\s+/)[0])}, here's the full deal.</p>`
+      ? `<p class="greeting" style="margin:0;padding:18px 24px 0;font-size:15px;color:#4A5568">Hi ${esc(String(buyer.name).split(/\s+/)[0])}, here's the full deal.</p>`
       : "";
 
     const pdfBtn = `<a href="${SITE_URL}/deck/${esc(cleanSlug)}.pdf" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:${NAVY};background:#fff;border:1px solid #D8CFB8;border-radius:13px;padding:0 18px;white-space:nowrap">PDF</a>`;
     const callBtn = cPhone ? `<a href="${esc(telHref)}" style="display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:#fff;background:${NAVY};border-radius:13px;padding:0 20px;white-space:nowrap">Call</a>` : "";
 
     const actionBar = canInterest
-      ? `<div style="position:fixed;left:0;right:0;bottom:0;background:rgba(251,250,246,.9);backdrop-filter:blur(12px);border-top:1px solid #E7E1D3;padding:13px 20px calc(13px + env(safe-area-inset-bottom));box-shadow:0 -12px 30px -18px rgba(17,41,80,.3)">
+      ? `<div class="action-bar" style="position:fixed;left:0;right:0;bottom:0;background:rgba(251,250,246,.9);backdrop-filter:blur(12px);border-top:1px solid #E7E1D3;padding:13px 20px calc(13px + env(safe-area-inset-bottom));box-shadow:0 -12px 30px -18px rgba(17,41,80,.3)">
            <div style="max-width:600px;margin:0 auto">
              <div class="inner" style="display:flex;gap:11px;align-items:stretch">
                <button class="primary" id="interestBtn" style="flex:1;font:800 16px Inter,sans-serif;color:${NAVY_DARK};background:linear-gradient(180deg,${GOLD_LT},${GOLD});border:none;border-radius:13px;padding:16px;cursor:pointer;box-shadow:0 8px 20px -8px rgba(212,160,62,.7)">I'm interested</button>
@@ -203,7 +223,7 @@ exports.handler = async (event) => {
              <div style="text-align:center;font-size:11px;color:#A6AEBC;margin-top:9px">No obligation — this just tells us to send you the full details.</div>
            </div>
          </div>`
-      : `<div style="position:fixed;left:0;right:0;bottom:0;background:rgba(251,250,246,.9);backdrop-filter:blur(12px);border-top:1px solid #E7E1D3;padding:13px 20px calc(13px + env(safe-area-inset-bottom))">
+      : `<div class="action-bar" style="position:fixed;left:0;right:0;bottom:0;background:rgba(251,250,246,.9);backdrop-filter:blur(12px);border-top:1px solid #E7E1D3;padding:13px 20px calc(13px + env(safe-area-inset-bottom))">
            <div style="max-width:600px;margin:0 auto;display:flex;gap:11px"><div style="flex:1;text-align:center;font:700 14px Inter,sans-serif;color:#8A6D1F;background:#FaF3DC;border:1px solid #EAD9A0;border-radius:13px;padding:15px">This deal is ${status === "sold" || status === "closed" ? "sold" : "pending"}</div>${callBtn}${pdfBtn}</div>
          </div>`;
 
@@ -255,7 +275,7 @@ exports.handler = async (event) => {
 
     const body = `
       <div class="wrap">
-        <div style="display:flex;align-items:center;gap:12px;padding:16px 22px;background:#fff;border-bottom:1px solid #ECE7DC">
+        <div class="topbar" style="display:flex;align-items:center;gap:12px;padding:16px 22px;background:#fff;border-bottom:1px solid #ECE7DC">
           <img src="${LOGO_URL}" alt="Seaside Horizon" style="width:38px;height:38px;object-fit:contain">
           <span style="font-size:13px;font-weight:800;letter-spacing:.14em;color:${NAVY};text-transform:uppercase">Seaside Horizon</span>
           <span style="margin-left:auto">${badge}</span>
@@ -266,7 +286,7 @@ exports.handler = async (event) => {
         ${heroCard}
         ${termsSec}
         ${contactSec}
-        <div style="text-align:center;padding:26px 24px 10px;color:#A6AEBC;font-size:11.5px;line-height:1.6">
+        <div class="foot" style="text-align:center;padding:26px 24px 10px;color:#A6AEBC;font-size:11.5px;line-height:1.6">
           Seaside Horizon${cPhone ? " · " + esc(cPhone) : ""}<br>Figures are estimates for evaluation and not a guarantee of returns.
         </div>
       </div>

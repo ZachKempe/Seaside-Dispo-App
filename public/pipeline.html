@@ -70,7 +70,7 @@
     <div class="page-header">
       <div>
         <h1>Pipeline</h1>
-        <div class="sub"><span id="deal-count"></span><span id="stale-count" style="color:#C53030;font-weight:700"></span></div>
+        <div class="sub"><span id="deal-count"></span><span id="stale-count" style="color:#C53030;font-weight:700"></span><span id="task-count" style="color:#B7791F;font-weight:700"></span></div>
       </div>
       <div class="flex gap-8">
         <button class="btn btn-ghost btn-sm" id="stages-btn">⚙ Manage stages</button>
@@ -118,6 +118,7 @@
     let PROPS = [];             // all active properties
     const propById = {};        // card_id -> property
     const notesByCard = {};     // card_id -> [notes] (newest first)
+    const tasksByCard = {};     // card_id -> [deal_tasks] (due-date ascending)
     const leadsByCard = {};     // card_id -> [deal_leads]
     const blastsByCard = {};    // card_id -> [deal_blasts]
     const recipsByCard = {};    // card_id -> [blast_recipients]
@@ -135,20 +136,24 @@
       if (pErr) { board.innerHTML = `<div class="empty">Couldn't load deals: ${escapeHtml(pErr.message)}</div>`; return; }
 
       const cardIds = (props || []).map(p => p.card_id);
-      const [{ data: notes }, { data: leads }, { data: blasts }, { data: recips }, { data: terms }] = await Promise.all([
+      // deal_tasks fails soft (027 migration may not have run yet) — the tasks
+      // UI simply stays empty until the table exists.
+      const [{ data: notes }, { data: leads }, { data: blasts }, { data: recips }, { data: terms }, { data: tasks }] = await Promise.all([
         supa.from("deal_notes").select("*").in("card_id", cardIds).order("created_at", { ascending: false }),
         supa.from("deal_leads").select("card_id,stage").in("card_id", cardIds),
         supa.from("deal_blasts").select("card_id,status").in("card_id", cardIds),
         supa.from("blast_recipients").select("card_id,status").in("card_id", cardIds),
         supa.from("deal_terms").select("card_id,price").in("card_id", cardIds),
+        supa.from("deal_tasks").select("*").in("card_id", cardIds).order("due_date", { ascending: true }),
       ]);
 
       // Reset + rebuild caches
       PROPS = props || [];
       for (const k of Object.keys(propById)) delete propById[k];
-      for (const o of [notesByCard, leadsByCard, blastsByCard, recipsByCard, termsByCard]) for (const k of Object.keys(o)) delete o[k];
+      for (const o of [notesByCard, tasksByCard, leadsByCard, blastsByCard, recipsByCard, termsByCard]) for (const k of Object.keys(o)) delete o[k];
       for (const p of PROPS) propById[p.card_id] = p;
       for (const n of (notes || [])) (notesByCard[n.card_id] ||= []).push(n);
+      for (const t of (tasks || [])) (tasksByCard[t.card_id] ||= []).push(t);
       for (const l of (leads || [])) (leadsByCard[l.card_id] ||= []).push(l);
       for (const b of (blasts || [])) (blastsByCard[b.card_id] ||= []).push(b);
       for (const r of (recips || [])) (recipsByCard[r.card_id] ||= []).push(r);
@@ -166,6 +171,9 @@
         `${PROPS.length} active deal${PROPS.length === 1 ? "" : "s"}`;
       const staleCount = PROPS.filter(isStaleDeal).length;
       document.getElementById("stale-count").textContent = staleCount ? ` · 🕓 ${staleCount} stale` : "";
+      const overdue = Object.values(tasksByCard).flat().filter(isOverdueTask).length;
+      const taskEl = document.getElementById("task-count");
+      if (taskEl) taskEl.textContent = overdue ? ` · ⏰ ${overdue} overdue` : "";
     }
 
     function renderBoard() {
@@ -210,7 +218,51 @@
           ${suggests ? `<span class="pl-mini" style="color:${DISPO_BY_KEY[implied].color}" title="Signals suggest ${escapeHtml(DISPO_BY_KEY[implied].label)}">⚠️</span>` : ""}
         </div>
         ${lastNote ? `<div class="pl-last-update" title="${escapeHtml(new Date(lastNote.created_at).toLocaleString())}">🗒 Last update ${escapeHtml(timeAgo(lastNote.created_at))}</div>` : ""}
+        ${(() => {
+          const t = nextOpenTask(p.card_id);
+          if (!t) return "";
+          const late = isOverdueTask(t);
+          return `<div class="pl-last-update" style="${late ? "color:var(--red);font-weight:700" : ""}" title="Next action${t.due_date ? " · due " + escapeHtml(t.due_date) : ""}">⏰ ${escapeHtml(t.title)}${t.due_date ? ` · ${late ? "overdue" : "due"} ${escapeHtml(fmtDue(t.due_date))}` : ""}</div>`;
+        })()}
       </div>`;
+    }
+
+    // ── Tasks: next action per deal ──
+    function isOverdueTask(t) {
+      return !t.done && t.due_date && new Date(t.due_date + "T23:59:59") < new Date();
+    }
+    // Open tasks arrive due-date ascending (nulls last), so the first is "next".
+    function nextOpenTask(cardId) {
+      return (tasksByCard[cardId] || []).find(t => !t.done) || null;
+    }
+    function fmtDue(d) {
+      if (!d) return "";
+      const date = new Date(d + "T00:00:00");
+      return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    }
+
+    async function addTask(cardId) {
+      const title = (document.getElementById("task-title")?.value || "").trim();
+      const due = document.getElementById("task-due")?.value || null;
+      if (!title) return;
+      const { error } = await supa.from("deal_tasks")
+        .insert({ card_id: cardId, title, due_date: due, created_by: session?.user?.email || "" });
+      if (error) { toast(`Couldn't add task: ${error.message}`, { type: "error" }); return; }
+      toast("Task added", { type: "success" });
+      await loadBoard();
+    }
+    async function toggleTask(taskId, done) {
+      const { error } = await supa.from("deal_tasks")
+        .update({ done, done_at: done ? new Date().toISOString() : null })
+        .eq("id", taskId);
+      if (error) { toast(`Couldn't update task: ${error.message}`, { type: "error" }); return; }
+      await loadBoard();
+    }
+    async function deleteTask(taskId) {
+      const { error } = await supa.from("deal_tasks").delete().eq("id", taskId);
+      if (error) { toast(`Couldn't delete task: ${error.message}`, { type: "error" }); return; }
+      toast("Task deleted", { type: "success" });
+      await loadBoard();
     }
 
     // ── Stage move (shared by drag-drop, the accept button, and the dropdown) ──
@@ -282,6 +334,28 @@
           <div class="muted" style="font-size:0.72rem;margin-top:8px">${movedMeta}</div>
         </div>
 
+        ${(() => {
+          const tasks = tasksByCard[cardId] || [];
+          const open = tasks.filter(t => !t.done);
+          const doneTasks = tasks.filter(t => t.done);
+          const row = (t) => `
+            <div style="display:flex;align-items:center;gap:9px;padding:6px 0;border-bottom:1px solid #F1F5F9;font-size:0.86rem">
+              <input type="checkbox" class="task-toggle" data-task-id="${t.id}" ${t.done ? "checked" : ""} style="width:auto;margin:0;cursor:pointer">
+              <span style="flex:1;${t.done ? "text-decoration:line-through;color:var(--text-3)" : ""}">${escapeHtml(t.title)}</span>
+              ${t.due_date ? `<span class="pill" style="font-size:0.68rem;font-weight:700;${isOverdueTask(t) ? "background:#C5303022;color:#C53030" : "background:#EDF2F7;color:#4A5568"}">${isOverdueTask(t) ? "⏰ overdue · " : ""}${escapeHtml(fmtDue(t.due_date))}</span>` : ""}
+              <button type="button" class="task-del" data-task-id="${t.id}" title="Delete task" style="border:none;background:none;color:var(--text-3);cursor:pointer;font-size:0.9rem;line-height:1">×</button>
+            </div>`;
+          return `
+        <h3 style="margin:0 0 6px;font-size:0.95rem;color:var(--navy-dark)">Next actions${open.length ? ` (${open.length})` : ""}</h3>
+        <div style="margin-bottom:6px">${open.map(row).join("") || `<p class="muted" style="font-size:0.82rem;margin:4px 0">Nothing scheduled — add the next step so this deal can't stall silently.</p>`}</div>
+        ${doneTasks.length ? `<details style="margin-bottom:8px"><summary class="muted" style="cursor:pointer;font-size:0.78rem">Completed (${doneTasks.length})</summary>${doneTasks.map(row).join("")}</details>` : ""}
+        <div class="flex gap-8" style="margin-bottom:16px;flex-wrap:wrap">
+          <input id="task-title" placeholder="Next action… e.g. Call top 3 interested buyers" style="flex:2;min-width:180px;font-size:0.86rem">
+          <input id="task-due" type="date" style="width:auto;font-size:0.86rem">
+          <button type="button" class="btn btn-primary btn-sm" id="task-add-btn">Add</button>
+        </div>`;
+        })()}
+
         <h3 style="margin:0 0 6px;font-size:0.95rem;color:var(--navy-dark)">Notes &amp; updates (${notes.length})</h3>
         <div style="max-height:240px;overflow-y:auto;margin-bottom:10px">${noteList}</div>
         <div class="flex gap-8">
@@ -296,6 +370,14 @@
       const acceptBtn = document.getElementById("detail-accept");
       if (acceptBtn) acceptBtn.onclick = () => moveStage(cardId, acceptBtn.dataset.stage);
       document.getElementById("detail-note-add").onclick = () => addNote(cardId);
+      const taskAdd = document.getElementById("task-add-btn");
+      if (taskAdd) taskAdd.onclick = () => addTask(cardId);
+      const taskTitle = document.getElementById("task-title");
+      if (taskTitle) taskTitle.addEventListener("keydown", (e) => { if (e.key === "Enter") addTask(cardId); });
+      document.querySelectorAll("#detail-card .task-toggle").forEach(cb =>
+        cb.addEventListener("change", () => toggleTask(Number(cb.dataset.taskId), cb.checked)));
+      document.querySelectorAll("#detail-card .task-del").forEach(btn =>
+        btn.addEventListener("click", () => deleteTask(Number(btn.dataset.taskId))));
     }
 
     function closeDetail() {

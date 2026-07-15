@@ -18,18 +18,20 @@ async function sb(path, opts = {}) {
   return t ? JSON.parse(t) : null;
 }
 
-const ADVANCEABLE = new Set(["new", "responded"]); // don't downgrade offer/UC/closed
+const ADVANCEABLE = new Set(["new", "responded"]);              // plain interest never downgrades offer/UC/closed
+const OFFER_ADVANCEABLE = new Set(["new", "responded", "interested"]); // a real offer beats mere interest
 
-async function notify(address, who) {
+async function notify(address, who, offer) {
   if (!RESEND_API_KEY || !RESEND_FROM || !NOTIFY_EMAIL) return;
   try {
+    const what = offer ? `Offer ~$${offer.toLocaleString()}` : "Interested";
     await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         from: RESEND_FROM, to: [NOTIFY_EMAIL],
-        subject: `🔥 Interested: ${who} — ${address}`,
-        html: `<p><b>${who}</b> tapped Interested on <b>${address}</b> via the deck page. Call them now.</p>`,
+        subject: `🔥 ${what}: ${who} — ${address}`,
+        html: `<p><b>${who}</b> ${offer ? `made an offer of <b>~$${offer.toLocaleString()}</b> on` : "tapped Interested on"} <b>${address}</b> via the deck page. Call them now.</p>`,
       }),
     });
   } catch (e) { console.warn("notify failed:", e.message); }
@@ -38,9 +40,18 @@ async function notify(address, who) {
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method not allowed" };
   try {
-    const { slug, token, name, contact } = JSON.parse(event.body || "{}");
+    const { slug, token, name, contact, offer_amount } = JSON.parse(event.body || "{}");
     const cleanSlug = String(slug || "").replace(/[^a-zA-Z0-9_-]/g, "");
     if (!cleanSlug) return { statusCode: 400, body: "slug required" };
+
+    // Optional soft offer. Sanity-banded so junk input degrades to plain interest.
+    const offer = Math.round(Number(offer_amount) || 0);
+    const hasOffer = offer >= 1000 && offer <= 100000000;
+    const stage = hasOffer ? "offer" : "interested";
+    const noteFor = (suffix) => hasOffer
+      ? `Offered ~$${offer.toLocaleString()} via deck page${suffix}`
+      : `Tapped Interested on deck page${suffix}`;
+    const canAdvance = hasOffer ? OFFER_ADVANCEABLE : ADVANCEABLE;
 
     // NOTE: properties has no address_override column (it lives on morby_deals);
     // select only real columns so PostgREST doesn't 400. address falls back to name.
@@ -60,21 +71,22 @@ exports.handler = async (event) => {
       // Upsert deal_leads (dedupe on card_id+buyer_id).
       const existing = await sb(`/deal_leads?card_id=eq.${encodeURIComponent(cardId)}&buyer_id=eq.${buyerId}&select=id,stage&limit=1`);
       if (existing && existing[0]) {
-        if (ADVANCEABLE.has(existing[0].stage)) {
+        if (canAdvance.has(existing[0].stage)) {
           await sb(`/deal_leads?id=eq.${existing[0].id}`, { method: "PATCH", headers: { Prefer: "return=minimal" },
-            body: JSON.stringify({ stage: "interested", notes: "Tapped Interested on deck page" }) });
+            body: JSON.stringify({ stage, notes: noteFor("") }) });
         }
       } else {
         await sb(`/deal_leads`, { method: "POST", headers: { Prefer: "return=minimal" },
           body: JSON.stringify({ card_id: cardId, address, buyer_id: buyerId, name: buyer.name || "Buyer",
             contact: buyer.email || buyer.phone || "", source: "deck_page", channel: "deck",
-            stage: "interested", notes: "Tapped Interested on deck page" }) });
+            stage, notes: noteFor("") }) });
       }
       // Activity touch (works with existing buyer_activity table).
       await sb(`/buyer_activity`, { method: "POST", headers: { Prefer: "return=minimal" },
-        body: JSON.stringify({ buyer_id: buyerId, card_id: cardId, address, channel: "deck", detail: "Interested via deck page" }) });
+        body: JSON.stringify({ buyer_id: buyerId, card_id: cardId, address, channel: "deck",
+          detail: hasOffer ? `Offered ~$${offer.toLocaleString()} via deck page` : "Interested via deck page" }) });
 
-      await notify(address, buyer.name || `Buyer #${buyerId}`);
+      await notify(address, buyer.name || `Buyer #${buyerId}`, hasOffer ? offer : 0);
       return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ok: true, attributed: true }) };
     }
 
@@ -83,13 +95,18 @@ exports.handler = async (event) => {
     const ct = String(contact || "").trim().slice(0, 200);
     if (!nm || !ct) return { statusCode: 400, body: "name and contact required for untokenized interest" };
 
-    const dupe = await sb(`/deal_leads?card_id=eq.${encodeURIComponent(cardId)}&contact=eq.${encodeURIComponent(ct)}&select=id&limit=1`);
-    if (!(dupe && dupe[0])) {
+    const dupe = await sb(`/deal_leads?card_id=eq.${encodeURIComponent(cardId)}&contact=eq.${encodeURIComponent(ct)}&select=id,stage&limit=1`);
+    if (dupe && dupe[0]) {
+      if (canAdvance.has(dupe[0].stage)) {
+        await sb(`/deal_leads?id=eq.${dupe[0].id}`, { method: "PATCH", headers: { Prefer: "return=minimal" },
+          body: JSON.stringify({ stage, notes: noteFor(" (untokenized)") }) });
+      }
+    } else {
       await sb(`/deal_leads`, { method: "POST", headers: { Prefer: "return=minimal" },
         body: JSON.stringify({ card_id: cardId, address, buyer_id: null, name: nm, contact: ct,
-          source: "deck_page", channel: "deck", stage: "interested", notes: "Interested via deck page (untokenized)" }) });
+          source: "deck_page", channel: "deck", stage, notes: noteFor(" (untokenized)") }) });
     }
-    await notify(address, `${nm} (${ct})`);
+    await notify(address, `${nm} (${ct})`, hasOffer ? offer : 0);
     return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ok: true, attributed: false }) };
   } catch (err) {
     console.error("deck-interest error:", err.message);

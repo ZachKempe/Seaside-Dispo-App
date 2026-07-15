@@ -6,10 +6,30 @@
 // where YOUR_SECRET matches the CAPTURE_WEBHOOK_SECRET env var. Until that's set
 // up no SMS is captured, but email replies still flow via capture-replies.js.
 //
-// Inbound SMS has no deal subject line, so we capture the buyer + activity touch
-// (future-blastable) but don't attach a pipeline lead to a specific deal.
+// Inbound SMS has no deal subject line, so we attribute it by recency: the
+// deal we most recently texted this phone number about (7-day window, via
+// blast_recipients). Falls back to a deal-less capture when there's no match.
 
-const { markSeen, captureResponder } = require("./lib/capture");
+const { sb, markSeen, captureResponder, digitsOnly } = require("./lib/capture");
+
+// Most recent SMS blast sent to this phone in the last 7 days -> its deal.
+// Phones are stored in varied formats, so match on digits in code.
+async function dealRecentlyTexted(phone) {
+  const pd = digitsOnly(phone);
+  if (!pd) return null;
+  try {
+    const since = new Date(Date.now() - 7 * 24 * 3600e3).toISOString();
+    const rows = await sb(
+      `/blast_recipients?channel=eq.sms&status=eq.sent&blasted_at=gte.${encodeURIComponent(since)}` +
+      `&select=card_id,address,recipient,blasted_at&order=blasted_at.desc&limit=300`,
+      { method: "GET" }
+    );
+    return (rows || []).find(r => digitsOnly(r.recipient) === pd) || null;
+  } catch (e) {
+    console.warn("dealRecentlyTexted lookup failed:", e.message);
+    return null;
+  }
+}
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method not allowed" };
@@ -33,7 +53,12 @@ exports.handler = async (event) => {
     const fresh = await markSeen(messageId, "sms");
     if (!fresh) return { statusCode: 200, body: "duplicate — ignored" };
 
-    const res = await captureResponder({ channel: "sms", name, phone, snippet: text });
+    const recent = await dealRecentlyTexted(phone);
+    const res = await captureResponder({
+      channel: "sms", name, phone, snippet: text,
+      cardId: recent ? recent.card_id : null,
+      address: recent ? recent.address : "",
+    });
     return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(res) };
   } catch (err) {
     console.error("ghl-inbound error:", err.message);

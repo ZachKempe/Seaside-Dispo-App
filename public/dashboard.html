@@ -402,7 +402,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       // blast × buyer), so pulling whole tables gets slow at scale — we only
       // ever need rows for the active cards on screen.
       const cardIds = (props || []).map(p => p.card_id);
-      const [{ data: terms }, { data: statuses }, { data: fbPosts }, { data: buyers }, { data: leads }, { data: blasts }, { data: acq }, { data: morby }, { data: recips }, { data: deckViews }] = await Promise.all([
+      const [{ data: terms }, { data: statuses }, { data: fbPosts }, { data: buyers }, { data: leads }, { data: blasts }, { data: acq }, { data: morby }, { data: recips }, { data: deckViews }, { data: emailEvents }] = await Promise.all([
         supa.from("deal_terms").select("*").in("card_id", cardIds),
         supa.from("property_status").select("*").in("card_id", cardIds),
         supa.from("facebook_posts").select("*").in("card_id", cardIds),
@@ -413,6 +413,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
         supa.from("morby_deals").select("*").in("card_id", cardIds),
         supa.from("blast_recipients").select("card_id,channel,status,buyer_id").in("card_id", cardIds),
         supa.from("deck_views").select("card_id,buyer_id,viewed_at").in("card_id", cardIds),
+        supa.from("email_events").select("card_id,buyer_id,event").in("card_id", cardIds),
       ]);
 
       if (pErr) {
@@ -432,6 +433,8 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       for (const r of (recips || [])) (recipsByCard[r.card_id] ||= []).push(r);
       const viewsByCard = {};
       for (const v of (deckViews || [])) (viewsByCard[v.card_id] ||= []).push(v);
+      const eventsByCard = {}; // email opens/clicks; empty until 026 migration runs
+      for (const e of (emailEvents || [])) (eventsByCard[e.card_id] ||= []).push(e);
       const acqByCard = Object.fromEntries((acq || []).map(a => [a.card_id, a]));
       const morbyByCard = Object.fromEntries((morby || []).map(m => [m.card_id, m]));
 
@@ -440,7 +443,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       document.getElementById("prop-count").textContent =
         `${props.length} active under-contract propert${props.length === 1 ? "y" : "ies"}`;
 
-      const renderArgs = (p) => renderCard(p, termsByCard, statusByCard, fbByCard, buyers || [], leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard);
+      const renderArgs = (p) => renderCard(p, termsByCard, statusByCard, fbByCard, buyers || [], leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard, eventsByCard);
       const subtoProps = props.filter(p => (p.deal_type || "subto") !== "morby");
       const morbyProps = props.filter(p => p.deal_type === "morby");
 
@@ -544,6 +547,29 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       fb_group: "FB group", referral: "Referral", other: "Other", deck_page: "Deck page",
     };
 
+    // ── Follow-up nudge: who got the blast 48h+ ago and never engaged ──
+    // "Engaged" = opened/clicked the email, viewed the deck page, or already
+    // sits in the pipeline. One follow-up per deal (marked by [follow-up] in
+    // deal_blasts.detail); a human always pulls the trigger.
+    const FOLLOWUP_HOURS = 48;
+    function followUpInfo(blasts, recips, views, leads, events) {
+      const emailBlasts = (blasts || []).filter(b => b.channel === "email" && b.status === "sent");
+      if (!emailBlasts.length) return null;
+      if (emailBlasts.some(b => (b.detail || "").includes("[follow-up]"))) return null;
+      const lastAt = Math.max(...emailBlasts.map(b => new Date(b.blasted_at).getTime()));
+      const hours = (Date.now() - lastAt) / 3600e3;
+      if (hours < FOLLOWUP_HOURS) return null;
+      const sentTo = new Set((recips || []).filter(r => r.channel === "email" && r.status === "sent" && r.buyer_id != null).map(r => Number(r.buyer_id)));
+      if (!sentTo.size) return null;
+      const engaged = new Set();
+      for (const e of (events || [])) if (e.buyer_id != null && (e.event === "opened" || e.event === "clicked")) engaged.add(Number(e.buyer_id));
+      for (const v of (views || [])) if (v.buyer_id != null) engaged.add(Number(v.buyer_id));
+      for (const l of (leads || [])) if (l.buyer_id != null) engaged.add(Number(l.buyer_id));
+      const cold = [...sentTo].filter(id => !engaged.has(id));
+      if (!cold.length) return null;
+      return { ids: cold, total: sentTo.size, days: Math.max(2, Math.floor(hours / 24)) };
+    }
+
     // ── Deal Info (acquisition data) — completeness + auto-flags ──
     const ACQ_CORE_FIELDS = [
       "hoa", "roof_age", "hvac_age", "water_heater_age", "condition",
@@ -574,7 +600,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
     }
     // Hard gates that block a live Send Blast — returns list of blocking reasons.
 
-    function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard) {
+    function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard, eventsByCard) {
       const t = termsByCard[p.card_id] || {};
       const status = (statusByCard[p.card_id] || {}).status || "active";
       const posts = fbByCard[p.card_id] || [];
@@ -675,6 +701,16 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
               <span class="blast-status muted" style="font-size:0.74rem;text-align:right;max-width:220px"></span>
             </div>
           </div>
+
+          ${(() => {
+            const fu = followUpInfo(blasts, recips, views, leads, (eventsByCard && eventsByCard[p.card_id]) || []);
+            if (!fu || blockSend) return "";
+            return `
+          <div class="followup-nudge" style="margin:10px 0 0;padding:9px 13px;background:#FFFAF0;border:1px solid #F6C468;border-radius:9px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:0.82rem;color:#7B5A16">
+            ⏰ <b>${fu.ids.length} of ${fu.total}</b> recipients haven't opened, clicked, or viewed after ${fu.days} day${fu.days === 1 ? "" : "s"}.
+            <button type="button" class="btn btn-primary btn-sm followup-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" data-buyer-ids="${fu.ids.join(",")}" style="font-size:0.74rem;padding:3px 12px;margin-left:auto">📨 Send follow-up</button>
+          </div>`;
+          })()}
 
           ${(() => {
             const activeTab = activeTabByCard[p.card_id] || "posting";
@@ -1318,6 +1354,11 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       });
       document.querySelectorAll(".send-blast-btn, .test-blast-btn").forEach(btn => {
         btn.addEventListener("click", () => openBlastModal(btn));
+      });
+      document.querySelectorAll(".followup-btn").forEach(btn => {
+        btn.addEventListener("click", () => openBlastModal(btn, {
+          followUpIds: (btn.dataset.buyerIds || "").split(",").map(Number).filter(Boolean),
+        }));
       });
       document.querySelectorAll(".retry-failed-btn").forEach(btn => {
         btn.addEventListener("click", () => retryFailed(btn));
@@ -2298,7 +2339,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
 
     let activeBlast = null; // { cardId, address, statusEl, matched, isMorbyDeck?, dealDeckPdf? }
 
-    function openBlastModal(btn, { isMorbyDeck = false, dealDeckPdf = null } = {}) {
+    function openBlastModal(btn, { isMorbyDeck = false, dealDeckPdf = null, followUpIds = null } = {}) {
       const cardId = btn.dataset.cardId;
       const address = btn.dataset.address;
       // Morby cards don't have a .blast-status el in the same .flex-between — use card header
@@ -2347,6 +2388,21 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       activeBlast.selectedIds = new Set(matched.map(b => b.id));
       renderMethodChips();
       selectMethodGroup("__matched");
+
+      // Follow-up mode: target exactly the non-engaged recipients, email-only
+      // by default, and lead with a different copy variation for the 2nd touch.
+      if (followUpIds && followUpIds.length) {
+        activeBlast.followUp = true;
+        activeBlast.selectedIds = new Set(followUpIds);
+        document.getElementById("blast-mode-select").checked = true;
+        document.getElementById("blast-buyer-list").classList.remove("hidden");
+        document.getElementById("blast-ch-sms").checked = false;
+        document.getElementById("blast-modal-title").textContent = `Follow-up — ${address}`;
+        document.getElementById("blast-modal-sub").textContent =
+          `${followUpIds.length} recipient${followUpIds.length === 1 ? "" : "s"} never opened, clicked, or viewed the first blast. Only they will get this.`;
+        if (variations.length > 1) { varSel.value = "1"; varSel.onchange && varSel.onchange(); }
+        selectMethodGroup("__matched");
+      }
 
       document.getElementById("blast-modal-backdrop").classList.remove("hidden");
     }
@@ -2497,6 +2553,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
           if (testPhone) body.test_phone = testPhone;
         }
         if (buyerIds) body.buyer_ids = buyerIds;
+        if (activeBlast.followUp) body.follow_up = true;
         body.channels = channels;
         if (activeBlast.isMorbyDeck) {
           // Email carries the PDF; SMS (if selected) sends the key numbers as text.

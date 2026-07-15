@@ -27,7 +27,8 @@ use the service-role key via env vars.
 - `send-blast.js` — email (Resend, Gmail fallback) + SMS (GoHighLevel) blasts. Recipient-level
   idempotency via `blast_recipients` (full blasts skip prior `sent`; retry mode targets `failed`).
 - `deck.js` / `deck-interest.js` — render the deal page, log `deck_views`, capture interest
-  into `deal_leads` (`source='deck_page'`).
+  AND soft offers into `deal_leads` (`source='deck_page'`; an offer amount sets
+  `stage='offer'`, plain interest never downgrades an existing offer).
 - `resend-events.js` — Resend webhook (svix-verified) for email opens/clicks/bounces/
   complaints → `email_events`, attributed via the buyer_id/card_id tags send-blast sets;
   complaints auto-set `email_opt_out`. Needs `RESEND_WEBHOOK_SECRET` + a webhook configured
@@ -37,7 +38,8 @@ use the service-role key via env vars.
 - `parse-loi.js` — sends an LOI PDF to the Claude API, extracts Morby deal terms.
 - `onboard-buyers.js` — one-time buy-box request email to new buyers (`onboarded_at` gate).
 - `unsubscribe.js` — HMAC-tokenized opt-out.
-- `ghl-inbound.js` — webhook for inbound GHL SMS (buyer captured, not deal-attributed).
+- `ghl-inbound.js` — webhook for inbound GHL SMS; attributes the text to the deal most
+  recently SMS-blasted to that phone (7-day window via `blast_recipients`).
 - Scheduled (see `netlify.toml`): `sync-trello` (10 min, Trello cards → `properties`/`deal_terms`),
   `sync-buyers` (5 min, Netlify Forms buyer intake → `buyers`), `capture-replies`
   (15 min, Gmail replies → buyers + leads).
@@ -53,8 +55,11 @@ the term-row builders locally — past drift between copies caused real bugs.
 
 Engagement data model: `deck_views` (page views + PDF downloads + dwell), `email_events`
 (opens/clicks from Resend), `buyer_activity` (inbound replies + manual touches),
-`deal_leads` (pipeline stages). buyers.html aggregates these into the per-buyer score and
-timeline; dashboard.html builds the "Call today" strip from leads + recent deck views. Other cross-function helpers live in `netlify/functions/lib/` (`capture.js`,
+`deal_leads` (pipeline stages), `deal_tasks` (next actions with due dates, pipeline page).
+buyers.html aggregates these into the per-buyer score and timeline; dashboard.html builds
+the "Call today" strip from leads + recent deck views, and the follow-up nudge
+(`followUpInfo`) from non-engaged blast recipients 48h+ after a send. A follow-up send is
+marked `[follow-up]` in `deal_blasts.detail` — that marker is what caps it at one per deal. Other cross-function helpers live in `netlify/functions/lib/` (`capture.js`,
 `deck-token.js`, `deck-photo.js`, `heartbeat.js`).
 
 Scheduled functions must log every run through `lib/heartbeat.js` → `sync_runs` (powers the

@@ -483,7 +483,7 @@ exports.handler = async (event) => {
     const user = await verifyUser(event.headers.authorization || event.headers.Authorization);
     if (!user) return { statusCode: 401, body: "Unauthorized" };
 
-    const { card_id, channels, test, test_email, test_phone, buyer_ids, retry_failed,
+    const { card_id, channels, test, test_email, test_phone, buyer_ids, retry_failed, follow_up,
             variation_index, variation_title, variation_body,
             deal_deck_pdf } = JSON.parse(event.body || "{}");
     if (!card_id) return { statusCode: 400, body: "card_id required" };
@@ -589,7 +589,9 @@ exports.handler = async (event) => {
     }
 
     // ── LIVE MODE ──
-    const tag = (targeted ? ` [targeted: ${matched.length}]` : "") + (retryMode ? " [retry-failed]" : "") + variationTag;
+    // [follow-up] in the deal_blasts detail is what the dashboard's nudge
+    // checks to offer at most one follow-up per deal.
+    const tag = (targeted ? ` [targeted: ${matched.length}]` : "") + (retryMode ? " [retry-failed]" : "") + (follow_up ? " [follow-up]" : "") + variationTag;
 
     // ── EMAIL ──
     if (wantEmail) {

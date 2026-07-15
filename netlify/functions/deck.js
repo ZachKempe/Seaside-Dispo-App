@@ -270,7 +270,7 @@ exports.handler = async (event) => {
                <button class="primary" id="interestBtn" style="flex:1;font:800 16px Inter,sans-serif;color:${NAVY_DARK};background:linear-gradient(180deg,${GOLD_LT},${GOLD});border:none;border-radius:13px;padding:16px;cursor:pointer;box-shadow:0 8px 20px -8px rgba(212,160,62,.7)">I'm interested</button>
                ${callBtn}${pdfBtn}
              </div>
-             <div style="text-align:center;font-size:11px;color:#A6AEBC;margin-top:9px">No obligation — this just tells us to send you the full details.</div>
+             <div style="text-align:center;font-size:11px;color:#A6AEBC;margin-top:9px">No obligation — this just tells us to send you the full details. · <a href="#" id="offerLink" style="color:${NAVY};font-weight:700;text-decoration:underline">Have a number? Make an offer</a></div>
            </div>
          </div>`
       : `<div class="action-bar" style="position:fixed;left:0;right:0;bottom:0;background:rgba(251,250,246,.9);backdrop-filter:blur(12px);border-top:1px solid #E7E1D3;padding:13px 20px calc(13px + env(safe-area-inset-bottom))">
@@ -280,8 +280,9 @@ exports.handler = async (event) => {
     const dialog = `
       <dialog id="dlg"><div class="sheet">
         <div style="width:40px;height:4px;border-radius:2px;background:#DDD5C4;margin:0 auto 18px"></div>
-        <div style="font-family:'Source Serif 4',serif;font-size:21px;font-weight:600;color:${INK};margin-bottom:4px">Great — how should we reach you?</div>
-        <div style="font-size:13.5px;color:${MUTED};margin-bottom:16px">We'll text you the full details on ${esc(street)}.</div>
+        <div id="dlgTitle" style="font-family:'Source Serif 4',serif;font-size:21px;font-weight:600;color:${INK};margin-bottom:4px">Great — how should we reach you?</div>
+        <div id="dlgSub" style="font-size:13.5px;color:${MUTED};margin-bottom:16px">We'll text you the full details on ${esc(street)}.</div>
+        <input id="dlgAmount" inputmode="numeric" placeholder="Your offer — e.g. 250000" style="display:none">
         <input id="dlgName" placeholder="Your name" autocomplete="name">
         <input id="dlgContact" placeholder="Phone or email" autocomplete="tel" style="margin-bottom:16px">
         <div style="display:flex;gap:10px">
@@ -316,26 +317,48 @@ exports.handler = async (event) => {
           const r = await fetch("/.netlify/functions/deck-interest",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
           return r.ok;
         }
-        function markDone(){
+        function markDone(msg){
           const bar=document.querySelector(".inner");
-          if(bar) bar.innerHTML='<div style="flex:1;text-align:center;font:800 15px Inter,sans-serif;color:#1F7A54;background:#E4F4EC;border:1px solid #B7E3CC;border-radius:13px;padding:15px">✓ Got it — we\\'ll be in touch shortly</div>';
+          if(bar) bar.innerHTML='<div style="flex:1;text-align:center;font:800 15px Inter,sans-serif;color:#1F7A54;background:#E4F4EC;border:1px solid #B7E3CC;border-radius:13px;padding:15px">'+(msg||"✓ Got it — we\\'ll be in touch shortly")+'</div>';
+        }
+        let offerMode=false;
+        function openDialog(asOffer){
+          offerMode=asOffer;
+          const amt=document.getElementById("dlgAmount");
+          amt.style.display=asOffer?"block":"none";
+          document.getElementById("dlgTitle").textContent=asOffer?"Make an offer":"Great — how should we reach you?";
+          document.getElementById("dlgSub").textContent=asOffer
+            ? "A soft number is fine — it just starts the conversation."
+            : "We'll text you the full details on "+${JSON.stringify(street)}+".";
+          // Tokenized buyers are already identified; only ask for the number.
+          document.getElementById("dlgName").style.display=HAS_BUYER&&asOffer?"none":"block";
+          document.getElementById("dlgContact").style.display=HAS_BUYER&&asOffer?"none":"block";
+          document.getElementById("dlgSend").textContent=asOffer?"Send offer":"Send it over";
+          document.getElementById("dlg").showModal();
         }
         const btn=document.getElementById("interestBtn");
         if(btn){
           btn.addEventListener("click", async ()=>{
             if(HAS_BUYER){ btn.disabled=true; btn.textContent="Sending…";
               const ok=await post({slug:SLUG,token:TOKEN}); ok?markDone():(btn.disabled=false,btn.textContent="Try again");
-            } else { document.getElementById("dlg").showModal(); }
+            } else { openDialog(false); }
           });
         }
+        const offerLink=document.getElementById("offerLink");
+        if(offerLink) offerLink.addEventListener("click",(e)=>{ e.preventDefault(); openDialog(true); });
         const dlg=document.getElementById("dlg");
         if(dlg){
           document.getElementById("dlgCancel").onclick=()=>dlg.close();
           document.getElementById("dlgSend").onclick=async()=>{
             const name=document.getElementById("dlgName").value.trim();
             const contact=document.getElementById("dlgContact").value.trim();
-            if(!name||!contact) return;
-            const ok=await post({slug:SLUG,name,contact}); dlg.close(); if(ok) markDone();
+            const amount=Number((document.getElementById("dlgAmount").value||"").replace(/[^0-9]/g,""));
+            const payload={slug:SLUG};
+            if(offerMode){ if(!amount) return; payload.offer_amount=amount; }
+            if(HAS_BUYER){ payload.token=TOKEN; }
+            else { if(!name||!contact) return; payload.name=name; payload.contact=contact; }
+            const ok=await post(payload); dlg.close();
+            if(ok) markDone(offerMode?"✓ Offer sent — we\\'ll be in touch shortly":null);
           };
         }
       </script>`;

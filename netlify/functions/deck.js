@@ -7,7 +7,7 @@
 // hero, banner photo w/ Street View fallback, property-details section, sticky CTA).
 // All data queries, token handling, view logging and interest posting are UNCHANGED.
 // New dependency: ./lib/deck-photo.js  +  env GOOGLE_MAPS_API_KEY (optional).
-const { verifyDeckToken } = require("./lib/deck-token");
+const { verifyDeckToken, viewToken } = require("./lib/deck-token");
 const { fmtMoney, buyerCashAtClose, subtoSummaryRows, morbyTermRows } = require("../../public/js/deal-shared");
 const { resolveDealPhotos } = require("./lib/deck-photo");
 
@@ -163,10 +163,15 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: { "Content-Type": "text/html" }, body: page(address, `<div class="wrap"><div style="padding:60px 24px;text-align:center;color:${MUTED}">Please use the link from your email or text to view this deal.</div></div>`) };
     }
 
-    // View log (fire-and-forget)
-    sb(`/deck_views`, { method: "POST", headers: { Prefer: "return=minimal" },
-      body: JSON.stringify({ card_id: cardId, buyer_id: buyerId || null, user_agent: (event.headers["user-agent"] || "").slice(0, 300) }) })
-      .catch(e => console.warn("deck_view log failed:", e.message));
+    // View log. We wait for the row id so the page can report dwell time to
+    // deck-dwell.js on exit; if the insert fails the page still renders, just
+    // without dwell tracking.
+    let viewId = null;
+    try {
+      const vRows = await sb(`/deck_views`, { method: "POST", headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ card_id: cardId, buyer_id: buyerId || null, user_agent: (event.headers["user-agent"] || "").slice(0, 300) }) });
+      viewId = vRows && vRows[0] && vRows[0].id;
+    } catch (e) { console.warn("deck_view log failed:", e.message); }
 
     // ---- Photo (listing -> cover -> Street View -> none) ----
     const { hero: heroPhoto, source: photoSource } = await resolveDealPhotos(prop, cover, address);
@@ -290,6 +295,23 @@ exports.handler = async (event) => {
         const HAS_BUYER = ${buyerId ? "true" : "false"};
         const SLUG = ${JSON.stringify(cleanSlug)};
         const TOKEN = ${JSON.stringify(q.b || "")};
+        // ── Dwell tracking: accumulate visible time, beacon it out on exit ──
+        const VIEW_TOKEN = ${JSON.stringify(viewId ? viewToken(viewId) : "")};
+        let dwellStart = Date.now(), dwellAcc = 0, dwellSent = 0; // dwellStart null = paused
+        function flushDwell(){
+          if(dwellStart){ dwellAcc += Date.now() - dwellStart; dwellStart = null; }
+          if(!VIEW_TOKEN || !navigator.sendBeacon) return;
+          const secs = Math.min(1800, Math.round(dwellAcc / 1000));
+          if(secs > dwellSent && secs >= 3){
+            dwellSent = secs;
+            navigator.sendBeacon("/.netlify/functions/deck-dwell", JSON.stringify({ v: VIEW_TOKEN, s: secs }));
+          }
+        }
+        document.addEventListener("visibilitychange", () => {
+          if(document.visibilityState === "hidden") flushDwell();
+          else if(!dwellStart) dwellStart = Date.now();
+        });
+        window.addEventListener("pagehide", flushDwell);
         async function post(payload){
           const r = await fetch("/.netlify/functions/deck-interest",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
           return r.ok;

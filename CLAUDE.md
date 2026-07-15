@@ -28,6 +28,12 @@ use the service-role key via env vars.
   idempotency via `blast_recipients` (full blasts skip prior `sent`; retry mode targets `failed`).
 - `deck.js` / `deck-interest.js` — render the deal page, log `deck_views`, capture interest
   into `deal_leads` (`source='deck_page'`).
+- `resend-events.js` — Resend webhook (svix-verified) for email opens/clicks/bounces/
+  complaints → `email_events`, attributed via the buyer_id/card_id tags send-blast sets;
+  complaints auto-set `email_opt_out`. Needs `RESEND_WEBHOOK_SECRET` + a webhook configured
+  in the Resend dashboard.
+- `deck-dwell.js` — sendBeacon target that fills `deck_views.dwell_seconds` (view-token
+  signed, only-increases).
 - `parse-loi.js` — sends an LOI PDF to the Claude API, extracts Morby deal terms.
 - `onboard-buyers.js` — one-time buy-box request email to new buyers (`onboarded_at` gate).
 - `unsubscribe.js` — HMAC-tokenized opt-out.
@@ -38,12 +44,17 @@ use the service-role key via env vars.
 
 ### Shared logic — the one rule that matters
 
-**Buyer matching and deal money math live ONLY in `public/js/deal-shared.js`** (UMD: browser
-gets `window.DealShared`, functions `require("../../public/js/deal-shared")`). The dashboard
-blast preview, `send-blast.js`, the emails, and the deck page all import from it, so what you
-preview is what sends. Never re-implement `matchesDeal`, `buyerCashAtClose`,
-`dscrMonthlyPayment`, or the term-row builders locally — past drift between copies caused real
-bugs. Other cross-function helpers live in `netlify/functions/lib/` (`capture.js`,
+**Buyer matching, deal money math, and engagement scoring live ONLY in
+`public/js/deal-shared.js`** (UMD: browser gets `window.DealShared`, functions
+`require("../../public/js/deal-shared")`). The dashboard blast preview, `send-blast.js`, the
+emails, and the deck page all import from it, so what you preview is what sends. Never
+re-implement `matchesDeal`, `buyerCashAtClose`, `dscrMonthlyPayment`, `engagementScore`, or
+the term-row builders locally — past drift between copies caused real bugs.
+
+Engagement data model: `deck_views` (page views + PDF downloads + dwell), `email_events`
+(opens/clicks from Resend), `buyer_activity` (inbound replies + manual touches),
+`deal_leads` (pipeline stages). buyers.html aggregates these into the per-buyer score and
+timeline; dashboard.html builds the "Call today" strip from leads + recent deck views. Other cross-function helpers live in `netlify/functions/lib/` (`capture.js`,
 `deck-token.js`, `deck-photo.js`, `heartbeat.js`).
 
 Scheduled functions must log every run through `lib/heartbeat.js` → `sync_runs` (powers the

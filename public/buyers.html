@@ -87,6 +87,11 @@
           <div class="buyer-list-head">
             <span>Buyers</span>
             <input type="search" id="list-search" placeholder="Search name, email, phone…">
+            <select id="list-sort" title="Sort buyers" style="width:auto;font-size:0.78rem;padding:4px 6px;border-radius:8px;border:1px solid var(--border)">
+              <option value="engagement">🔥 Engagement</option>
+              <option value="name">A–Z</option>
+              <option value="newest">Newest</option>
+            </select>
             <span class="list-count" id="list-count"></span>
           </div>
           <div id="buyer-rows"></div>
@@ -205,6 +210,7 @@
   </div>
 
   <script src="/js/supa.js"></script>
+  <script src="/js/deal-shared.js"></script>
   <script>
     let allBuyers = [];
     let lastContactByBuyer = {};
@@ -269,6 +275,80 @@
       };
     }
 
+    // ── Engagement (score + per-buyer timeline), from /js/deal-shared.js ──
+    // engByBuyer[id] = { score, counts, lastTouchAt, events: [{icon,label,at}] }
+    let engByBuyer = {};
+    const INTEREST_STAGES = new Set(["interested", "offer", "under_contract", "closed"]);
+
+    function buildEngagement(activity, dViews, dLeads, eEvents, propNames) {
+      const nameByCard = Object.fromEntries((propNames || []).map(p => [p.card_id, p.name]));
+      const dealName = (cardId, fallback) => {
+        const n = nameByCard[cardId] || fallback || "";
+        return n ? ` — ${n.split(",")[0]}` : "";
+      };
+      engByBuyer = {};
+      const ensure = (id) => (engByBuyer[id] ||= { counts: {}, lastTouchAt: null, events: [] });
+      const bump = (id, key) => { const e = ensure(id); e.counts[key] = (e.counts[key] || 0) + 1; };
+      const touch = (id, at) => {
+        const e = ensure(id);
+        if (at && (!e.lastTouchAt || new Date(at) > new Date(e.lastTouchAt))) e.lastTouchAt = at;
+      };
+      const log = (id, icon, label, at) => ensure(id).events.push({ icon, label, at });
+
+      for (const v of dViews) {
+        if (v.kind === "pdf") { bump(v.buyer_id, "pdf"); log(v.buyer_id, "📄", `Downloaded deck PDF${dealName(v.card_id)}`, v.viewed_at); }
+        else {
+          bump(v.buyer_id, "view");
+          if ((v.dwell_seconds || 0) >= 60) bump(v.buyer_id, "longDwell");
+          const dwell = (v.dwell_seconds || 0) >= 60 ? ` (${Math.round(v.dwell_seconds / 60)}m on page)` : "";
+          log(v.buyer_id, "👀", `Viewed deck${dealName(v.card_id)}${dwell}`, v.viewed_at);
+        }
+        touch(v.buyer_id, v.viewed_at);
+      }
+      for (const ev of eEvents) {
+        if (ev.event === "opened") { bump(ev.buyer_id, "open"); log(ev.buyer_id, "✉️", `Opened email${dealName(ev.card_id)}`, ev.created_at); touch(ev.buyer_id, ev.created_at); }
+        else if (ev.event === "clicked") { bump(ev.buyer_id, "click"); log(ev.buyer_id, "🔗", `Clicked email link${dealName(ev.card_id)}`, ev.created_at); touch(ev.buyer_id, ev.created_at); }
+        else if (ev.event === "bounced") log(ev.buyer_id, "⚠️", "Email bounced", ev.created_at);
+        else if (ev.event === "complained") log(ev.buyer_id, "🚫", "Marked email as spam (opted out)", ev.created_at);
+      }
+      for (const a of activity) {
+        if (!a.buyer_id) continue;
+        if (a.channel === "email" || a.channel === "sms") {
+          bump(a.buyer_id, "reply"); touch(a.buyer_id, a.created_at);
+          log(a.buyer_id, "💬", `Replied by ${a.channel}${dealName(a.card_id, a.address)}${a.detail ? ` — “${a.detail.slice(0, 80)}”` : ""}`, a.created_at);
+        } else {
+          // manual/note = our outbound touch; shown in the timeline, not scored
+          log(a.buyer_id, "📝", a.detail ? a.detail.slice(0, 100) : "Activity logged", a.created_at);
+        }
+      }
+      for (const l of dLeads) {
+        if (INTEREST_STAGES.has(l.stage)) bump(l.buyer_id, "interest");
+        touch(l.buyer_id, l.updated_at || l.created_at);
+        const via = l.source === "deck_page" ? " via deck page" : "";
+        log(l.buyer_id, "⭐", `Pipeline: ${l.stage.replace(/_/g, " ")}${via}${dealName(l.card_id, l.address)}`, l.updated_at || l.created_at);
+      }
+
+      for (const id in engByBuyer) {
+        const e = engByBuyer[id];
+        e.events.sort((a, b) => new Date(b.at) - new Date(a.at));
+        e.score = DealShared.engagementScore(e.counts, e.lastTouchAt);
+      }
+    }
+
+    function engInfo(id) { return engByBuyer[id] || { score: 0, counts: {}, lastTouchAt: null, events: [] }; }
+    const ENG_BADGE = {
+      hot:   { bg: "#FEEBC8", fg: "#C05621", icon: "🔥" },
+      warm:  { bg: "#FEFCBF", fg: "#975A16", icon: "⚡" },
+      quiet: { bg: "#EDF2F7", fg: "#718096", icon: "·" },
+    };
+    function engBadgeHtml(id) {
+      const { score } = engInfo(id);
+      const level = DealShared.engagementLevel(score);
+      if (level === "none") return "";
+      const s = ENG_BADGE[level];
+      return `<span title="Engagement ${score}/100 — deck views, opens, clicks, replies, recency" style="display:inline-flex;align-items:center;gap:4px;background:${s.bg};color:${s.fg};font-size:0.72rem;font-weight:800;border-radius:999px;padding:2px 9px">${s.icon} ${score}</span>`;
+    }
+
     // ── Match scoring (0–100, clamped) ──
     // State: +50 in-market / −40 out. Strategy: +30 match, +15 if no deal
     // strategy set. Price: +20 within (or no) budget, −60 over.
@@ -294,9 +374,17 @@
     }
 
     async function loadBuyers() {
-      const [{ data, error }, { data: activity }] = await Promise.all([
+      // Engagement sources are fetched alongside the buyers. Each is scoped to
+      // attributed rows (buyer_id set) and capped newest-first — plenty for
+      // scoring/timelines without pulling unbounded history. email_events may
+      // not exist yet (026 migration); its error fails soft to an empty list.
+      const [{ data, error }, { data: activity }, { data: dViews }, { data: dLeads }, { data: eEvents }, { data: propNames }] = await Promise.all([
         supa.from("buyers").select("*").eq("active", true).order("date_added", { ascending: false }),
-        supa.from("buyer_activity").select("buyer_id,created_at"),
+        supa.from("buyer_activity").select("buyer_id,channel,detail,card_id,address,created_at").order("created_at", { ascending: false }).limit(4000),
+        supa.from("deck_views").select("buyer_id,card_id,kind,dwell_seconds,viewed_at").not("buyer_id", "is", null).order("viewed_at", { ascending: false }).limit(4000),
+        supa.from("deal_leads").select("buyer_id,card_id,address,stage,source,created_at,updated_at").not("buyer_id", "is", null).order("updated_at", { ascending: false }).limit(4000),
+        supa.from("email_events").select("buyer_id,card_id,event,link_url,created_at").not("buyer_id", "is", null).order("created_at", { ascending: false }).limit(4000),
+        supa.from("properties").select("card_id,name"),
       ]);
       const loading = document.getElementById("loading");
       if (error) { loading.innerHTML = `<div class="empty">Couldn't load buyers: ${escapeHtml(error.message)}</div>`; return; }
@@ -306,6 +394,7 @@
         const cur = lastContactByBuyer[a.buyer_id];
         if (!cur || new Date(a.created_at) > new Date(cur)) lastContactByBuyer[a.buyer_id] = a.created_at;
       }
+      buildEngagement(activity || [], dViews || [], dLeads || [], eEvents || [], propNames || []);
       hasBuyboxCols = allBuyers.length > 0 && Object.prototype.hasOwnProperty.call(allBuyers[0], "close_speed");
       document.querySelectorAll(".buybox-col-field").forEach(el => el.classList.toggle("hidden", !hasBuyboxCols));
       document.getElementById("buybox-note").classList.toggle("hidden", hasBuyboxCols);
@@ -353,7 +442,10 @@
       let list = allBuyers;
       if (q) list = list.filter(b => `${b.name} ${b.email} ${b.phone}`.toLowerCase().includes(q));
       const scored = list.map(b => ({ b, info: matchActive ? matchInfo(b) : null }));
+      const sortMode = document.getElementById("list-sort").value;
       if (matchActive) scored.sort((x, y) => (y.info.score - x.info.score) || (x.b.name || "").localeCompare(y.b.name || ""));
+      else if (sortMode === "engagement") scored.sort((x, y) => (engInfo(y.b.id).score - engInfo(x.b.id).score) || (x.b.name || "").localeCompare(y.b.name || ""));
+      else if (sortMode === "newest") scored.sort((x, y) => new Date(y.b.date_added || 0) - new Date(x.b.date_added || 0));
       else scored.sort((x, y) => (x.b.name || "").localeCompare(y.b.name || ""));
       return scored;
     }
@@ -421,7 +513,9 @@
               </div>
               ${chips ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">${chips}</div>` : ""}
             </div>
-            ${matchActive ? `<div style="align-self:center"><span class="match-badge ${matchBadgeCls(info.score)}">${info.score}%</span></div>` : ""}
+            <div style="align-self:center;display:flex;gap:6px;align-items:center">
+              ${matchActive ? `<span class="match-badge ${matchBadgeCls(info.score)}">${info.score}%</span>` : engBadgeHtml(b.id)}
+            </div>
           </div>`;
       }).join("") + capNotice;
     }
@@ -436,10 +530,48 @@
       const tier = tierInfo(b.tier);
       const box = buyBox(b);
       const info = matchActive ? matchInfo(b) : null;
+      const eng = engInfo(b.id);
       const lastContact = fmtDate(lastContactByBuyer[b.id]);
       const tel = phoneHref(b);
       const markets = buyerStates(b);
       const strats = buyerStrategies(b.strategy);
+
+      // Engagement summary: score + which signals produced it.
+      const engLevel = DealShared.engagementLevel(eng.score);
+      const countChips = [
+        eng.counts.interest && `⭐ ${eng.counts.interest} interested`,
+        eng.counts.reply && `💬 ${eng.counts.reply} repl${eng.counts.reply === 1 ? "y" : "ies"}`,
+        eng.counts.view && `👀 ${eng.counts.view} deck view${eng.counts.view === 1 ? "" : "s"}`,
+        eng.counts.pdf && `📄 ${eng.counts.pdf} PDF${eng.counts.pdf === 1 ? "" : "s"}`,
+        eng.counts.click && `🔗 ${eng.counts.click} click${eng.counts.click === 1 ? "" : "s"}`,
+        eng.counts.open && `✉️ ${eng.counts.open} open${eng.counts.open === 1 ? "" : "s"}`,
+      ].filter(Boolean);
+      const engColor = engLevel === "hot" ? "#C05621" : engLevel === "warm" ? "#975A16" : "var(--text-3)";
+      const engagementHtml = `
+        <div style="margin-top:16px;background:#F7FAFC;border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-3)">Engagement</span>
+            <span style="font-size:1.05rem;font-weight:800;color:${engColor}">${eng.score ? `${engLevel === "hot" ? "🔥" : engLevel === "warm" ? "⚡" : ""} ${eng.score}/100` : "—"}</span>
+            <div style="flex:1;min-width:120px;height:6px;background:#E2E8F0;border-radius:999px;overflow:hidden"><div style="width:${eng.score}%;height:100%;background:${engLevel === "hot" ? "#DD6B20" : engLevel === "warm" ? "#D69E2E" : "#A0AEC0"};border-radius:999px"></div></div>
+          </div>
+          ${countChips.length
+            ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:9px">${countChips.map(c => `<span style="font-size:0.76rem;color:var(--text-2);background:#fff;border:1px solid var(--border);border-radius:999px;padding:3px 10px">${c}</span>`).join("")}</div>`
+            : `<div class="muted" style="font-size:0.8rem;margin-top:8px">No engagement recorded yet — no deck views, opens, or replies from this buyer.</div>`}
+        </div>`;
+
+      // Activity timeline: newest first, capped for readability.
+      const timelineHtml = eng.events.length ? `
+        <div style="margin-top:22px">
+          <div class="bd-seclabel" style="margin-bottom:8px">Recent activity</div>
+          <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;background:#fff">
+            ${eng.events.slice(0, 25).map(ev => `
+              <div style="display:flex;gap:10px;align-items:baseline;padding:8px 14px;border-bottom:1px solid #F1F5F9;font-size:0.84rem">
+                <span style="flex-shrink:0">${ev.icon}</span>
+                <span style="flex:1;color:var(--text-1)">${escapeHtml(ev.label)}</span>
+                <span class="muted" style="flex-shrink:0;font-size:0.72rem">${fmtDate(ev.at) || ""}</span>
+              </div>`).join("")}
+          </div>
+        </div>` : "";
 
       const reasonsHtml = (info && info.reasons.length) ? `
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#F7FAFC;border:1px solid var(--border);border-radius:10px;padding:11px 14px;margin-top:16px">
@@ -470,6 +602,7 @@
         </div>
 
         ${reasonsHtml}
+        ${engagementHtml}
 
         <div style="margin-top:18px">
           <div class="bd-seclabel" style="margin-bottom:12px">Buy-box</div>
@@ -518,6 +651,7 @@
             ? `<div style="font-size:0.9rem;color:var(--text-1);line-height:1.65;background:#F7FAFC;border:1px solid var(--border);border-radius:10px;padding:14px 16px;white-space:pre-wrap">${escapeHtml(b.notes)}</div>`
             : `<div style="font-size:0.88rem;color:var(--text-3);font-style:italic;background:#F7FAFC;border:1px dashed var(--border);border-radius:10px;padding:14px 16px">No free-text notes yet — add context about this buyer here.</div>`}
         </div>
+        ${timelineHtml}
 
         <div style="margin-top:22px;padding-top:16px;border-top:1px solid #EDF1F6;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <span style="width:8px;height:8px;border-radius:50%;background:${lastContact ? "var(--green)" : "#CBD5E0"};display:inline-block"></span>
@@ -941,12 +1075,13 @@
         if (e.key === "Enter") document.getElementById("match-go").click();
       });
 
-      // ── List: search (debounced) + row selection ──
+      // ── List: search (debounced) + sort + row selection ──
       let renderTimer = null;
       document.getElementById("list-search").addEventListener("input", () => {
         clearTimeout(renderTimer);
         renderTimer = setTimeout(renderAll, 180);
       });
+      document.getElementById("list-sort").addEventListener("change", renderAll);
       document.getElementById("buyer-rows").addEventListener("click", (e) => {
         const row = e.target.closest(".buyer-row");
         if (!row) return;

@@ -282,6 +282,81 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       return mismatches;
     }
 
+    // ── "Call today" list: who to call right now, from live engagement ──
+    // Priority 1: interested / offer-stage leads (last 14 days) — hottest.
+    // Priority 2: leads who replied (stage 'responded').
+    // Priority 3: buyers who opened a deck page in the last 72h but didn't tap.
+    // One entry per person, highest priority + most recent wins.
+    function timeAgoShort(iso) {
+      const mins = Math.max(1, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+      if (mins < 60) return `${mins}m ago`;
+      if (mins < 1440) return `${Math.round(mins / 60)}h ago`;
+      return `${Math.round(mins / 1440)}d ago`;
+    }
+    function buildCallList(props, leads, deckViews, buyers) {
+      const buyerById = Object.fromEntries((buyers || []).map(b => [b.id, b]));
+      const dealOf = Object.fromEntries((props || []).map(p => [p.card_id, (p.address_override || p.name || "").split(",")[0]]));
+      const now = Date.now();
+      const best = {};
+      const add = (key, e) => {
+        const cur = best[key];
+        if (!cur || e.priority < cur.priority || (e.priority === cur.priority && new Date(e.at) > new Date(cur.at))) best[key] = e;
+      };
+      for (const l of (leads || [])) {
+        const at = l.updated_at || l.created_at;
+        if ((now - new Date(at)) / 86400000 > 14) continue;
+        const deal = dealOf[l.card_id] || (l.address || "").split(",")[0] || "a deal";
+        const b = l.buyer_id ? buyerById[l.buyer_id] : null;
+        const contact = l.contact || "";
+        const entry = {
+          name: b ? b.name : l.name,
+          phone: b ? b.phone : (!contact.includes("@") ? contact : ""),
+          email: b ? b.email : (contact.includes("@") ? contact : ""),
+          at,
+        };
+        const key = l.buyer_id ? `b${l.buyer_id}` : `l${l.id}`;
+        if (l.stage === "interested") add(key, { ...entry, priority: 1, reason: `${l.source === "deck_page" ? "🔥 Tapped Interested" : "🔥 Interested"} — ${deal}` });
+        else if (l.stage === "offer") add(key, { ...entry, priority: 1, reason: `💰 Offer stage — ${deal}` });
+        else if (l.stage === "responded") add(key, { ...entry, priority: 2, reason: `💬 Replied — ${deal}` });
+      }
+      for (const v of (deckViews || [])) {
+        if (!v.buyer_id) continue;
+        if ((now - new Date(v.viewed_at)) / 3600000 > 72) continue;
+        const b = buyerById[v.buyer_id];
+        if (!b) continue;
+        add(`b${v.buyer_id}`, { name: b.name, phone: b.phone, email: b.email, at: v.viewed_at, priority: 3, reason: `👀 Viewed ${dealOf[v.card_id] || "a deck"}` });
+      }
+      return Object.values(best)
+        .sort((a, b) => a.priority - b.priority || new Date(b.at) - new Date(a.at))
+        .slice(0, 8);
+    }
+    function renderCallList(callList) {
+      if (!callList.length) return "";
+      const P_COLOR = { 1: "#DD6B20", 2: "#3182CE", 3: "#718096" };
+      return `
+      <div class="card" style="margin-bottom:18px;border-left:4px solid #DD6B20">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <b style="color:var(--navy-dark)">📞 Call today</b>
+          <span class="muted" style="font-size:0.82rem">${callList.length} buyer${callList.length === 1 ? "" : "s"} showing live interest</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px">
+          ${callList.map(c => {
+            const tel = (c.phone || "").replace(/[^\d+]/g, "");
+            return `
+            <div style="border:1px solid var(--border);border-left:3px solid ${P_COLOR[c.priority]};border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px">
+              <div style="display:flex;align-items:baseline;gap:8px"><b style="font-size:0.92rem;color:var(--navy-dark)">${escapeHtml(c.name || "Unknown")}</b><span class="muted" style="font-size:0.72rem;margin-left:auto">${timeAgoShort(c.at)}</span></div>
+              <div style="font-size:0.8rem;color:var(--text-2)">${escapeHtml(c.reason)}</div>
+              <div style="display:flex;gap:6px;margin-top:2px">
+                ${tel ? `<a class="btn btn-primary btn-sm" style="font-size:0.74rem;padding:3px 10px" href="tel:${escapeHtml(tel)}">📞 Call</a><a class="btn btn-ghost btn-sm" style="font-size:0.74rem;padding:3px 10px" href="sms:${escapeHtml(tel)}">💬 Text</a>` : ""}
+                ${!tel && c.email ? `<a class="btn btn-ghost btn-sm" style="font-size:0.74rem;padding:3px 10px" href="mailto:${escapeHtml(c.email)}">✉️ Email</a>` : ""}
+                ${!tel && !c.email ? `<span class="muted" style="font-size:0.74rem">No contact info</span>` : ""}
+              </div>
+            </div>`;
+          }).join("")}
+        </div>
+      </div>`;
+    }
+
     // ── Sync health: latest heartbeat per scheduled function (sync_runs rows
     // written by lib/heartbeat.js). Fails soft — before the 025 migration runs
     // the query errors and the indicator simply stays hidden. ──
@@ -370,6 +445,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       const morbyProps = props.filter(p => p.deal_type === "morby");
 
       content.innerHTML = `
+        ${renderCallList(buildCallList(props, leads, deckViews, buyers))}
         <div class="deal-type-group">
           <div class="deal-type-group-header">🏠 Sub-To Deals <span class="muted">(${subtoProps.length})</span></div>
           ${subtoProps.length ? `<div class="grid grid-2">${subtoProps.map(renderArgs).join("")}</div>` : `<div class="empty">No "Under Contract" Sub-To properties found yet. New deals sync automatically every 10 minutes.</div>`}

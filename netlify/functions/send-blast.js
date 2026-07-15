@@ -229,7 +229,9 @@ function buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer, deckUrlForB
 }
 
 // ── ESP send: Resend (preferred) ─────────────────────────────────
-async function sendViaResend(to, subject, html, unsubUrl, attachments) {
+// `tags` ({ buyer_id, card_id }) come back on Resend webhook events, letting
+// resend-events.js attribute opens/clicks to a (buyer, deal) pair.
+async function sendViaResend(to, subject, html, unsubUrl, attachments, tags) {
   const body = {
     from: RESEND_FROM,
     to: [to],
@@ -240,6 +242,13 @@ async function sendViaResend(to, subject, html, unsubUrl, attachments) {
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
     } : undefined,
   };
+  if (tags) {
+    // Resend allows only ASCII letters/digits/underscores/dashes in tag values.
+    body.tags = Object.entries(tags)
+      .filter(([, v]) => v !== null && v !== undefined && v !== "")
+      .map(([name, v]) => ({ name, value: String(v).replace(/[^a-zA-Z0-9_-]/g, "") }));
+    if (!body.tags.length) delete body.tags;
+  }
   if (attachments && attachments.length) body.attachments = attachments;
   const r = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -611,7 +620,7 @@ exports.handler = async (event) => {
               const unsubUrl = unsubUrlFor(b.id);
               const { subject, html } = buildEmail(unsubUrl, b, deckPageUrl(b.id));
               try {
-                if (useResend) await sendViaResend(b.email, subject, html, unsubUrl, pdfAttachments);
+                if (useResend) await sendViaResend(b.email, subject, html, unsubUrl, pdfAttachments, { buyer_id: b.id, card_id });
                 else await sendViaGmail(token, b.email, subject, html, unsubUrl);
                 sent++;
                 recipientRows.push(recipientRow(card_id, b, address, "email", b.email, "sent", variation));

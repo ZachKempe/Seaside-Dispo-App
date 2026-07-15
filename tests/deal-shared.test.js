@@ -7,6 +7,7 @@ const assert = require("node:assert/strict");
 const {
   fmtMoney, fmtPct, matchesDeal, buyerCashAtClose,
   dscrMonthlyPayment, subtoSummaryRows, morbyTermRows,
+  engagementScore, engagementLevel,
 } = require("../public/js/deal-shared");
 
 // ── Formatting ────────────────────────────────────────────────────
@@ -102,6 +103,50 @@ test("DSCR payment is 0 when price or rate is missing", () => {
   assert.equal(dscrMonthlyPayment(0, 7.75, 75), 0);
   assert.equal(dscrMonthlyPayment(400000, 0, 75), 0);
   assert.equal(dscrMonthlyPayment(400000, 7.75, 0), 0);
+});
+
+// ── Engagement score ──────────────────────────────────────────────
+const NOW = Date.parse("2026-07-15T12:00:00Z");
+const daysAgo = (d) => new Date(NOW - d * 86400000).toISOString();
+
+test("engagement: zero signals is 0, interest tap is the strongest signal", () => {
+  assert.equal(engagementScore({}, null, NOW), 0);
+  assert.equal(engagementScore({ interest: 1 }, daysAgo(1), NOW), 30);
+  // an interested buyer outranks any pile of opens (opens cap at 10)
+  assert.ok(engagementScore({ interest: 1 }, daysAgo(1), NOW) >
+            engagementScore({ open: 50 }, daysAgo(1), NOW));
+});
+
+test("engagement: per-signal caps prevent volume gaming", () => {
+  // 100 opens score the same as 5 opens (cap 10 pts)
+  assert.equal(engagementScore({ open: 100 }, daysAgo(1), NOW),
+               engagementScore({ open: 5 }, daysAgo(1), NOW));
+  // views cap at 3 (24 pts)
+  assert.equal(engagementScore({ view: 3 }, daysAgo(1), NOW),
+               engagementScore({ view: 30 }, daysAgo(1), NOW));
+});
+
+test("engagement: recency decay — same signals fade over time", () => {
+  const counts = { view: 2, open: 3 };
+  const fresh = engagementScore(counts, daysAgo(2), NOW);
+  const monthOld = engagementScore(counts, daysAgo(20), NOW);
+  const stale = engagementScore(counts, daysAgo(120), NOW);
+  assert.ok(fresh > monthOld && monthOld > stale && stale >= 1);
+  assert.equal(fresh, 22);          // 2×8 + 3×2 = 22, no decay inside 7d
+  assert.equal(monthOld, 13);       // 22 × 0.6
+});
+
+test("engagement: clamps to 100 and levels band correctly", () => {
+  const max = engagementScore(
+    { interest: 5, reply: 5, view: 5, longDwell: 5, pdf: 5, click: 5, open: 5 },
+    daysAgo(0), NOW
+  );
+  assert.equal(max, 100);
+  assert.equal(engagementLevel(100), "hot");
+  assert.equal(engagementLevel(60), "hot");
+  assert.equal(engagementLevel(45), "warm");
+  assert.equal(engagementLevel(10), "quiet");
+  assert.equal(engagementLevel(0), "none");
 });
 
 // ── Term rows (what the deck page + Morby email tables show) ──────

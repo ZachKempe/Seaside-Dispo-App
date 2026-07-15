@@ -68,6 +68,38 @@
     return principal * (r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
   }
 
+  // ── Buyer engagement score (0–100) ──────────────────────────────
+  // Weighted, capped points per signal, then a recency decay on the buyer's
+  // last touch. Interpretation: ≥60 hot (call now), 25–59 warm, 1–24 quiet.
+  const ENGAGEMENT_WEIGHTS = {
+    interest:  { pts: 30, cap: 60 }, // "I'm interested" taps / interested+ leads
+    reply:     { pts: 12, cap: 36 }, // email/SMS replies captured
+    view:      { pts: 8,  cap: 24 }, // deck page views
+    longDwell: { pts: 5,  cap: 10 }, // deck views with 60s+ on the page
+    pdf:       { pts: 5,  cap: 15 }, // deal-deck PDF downloads
+    click:     { pts: 6,  cap: 18 }, // email link clicks
+    open:      { pts: 2,  cap: 10 }, // email opens (weak signal, low cap)
+  };
+
+  // counts: {interest, reply, view, longDwell, pdf, click, open} (missing = 0)
+  // lastTouchAt: ISO string / Date of the buyer's most recent signal.
+  function engagementScore(counts, lastTouchAt, now = Date.now()) {
+    counts = counts || {};
+    let raw = 0;
+    for (const k in ENGAGEMENT_WEIGHTS) {
+      const { pts, cap } = ENGAGEMENT_WEIGHTS[k];
+      raw += Math.min((Number(counts[k]) || 0) * pts, cap);
+    }
+    if (!raw) return 0;
+    const days = lastTouchAt ? (now - new Date(lastTouchAt).getTime()) / 86400000 : Infinity;
+    const decay = days <= 7 ? 1 : days <= 30 ? 0.6 : days <= 90 ? 0.35 : 0.2;
+    return Math.max(1, Math.min(100, Math.round(raw * decay)));
+  }
+
+  function engagementLevel(score) {
+    return score >= 60 ? "hot" : score >= 25 ? "warm" : score > 0 ? "quiet" : "none";
+  }
+
   // ── Term rows ([label, value] pairs, dashes filtered out) ───────
   // Sub-To rows for the deck page.
   function subtoSummaryRows(terms) {
@@ -99,5 +131,8 @@
     return rows.filter(([, v]) => v && v !== "—");
   }
 
-  return { fmtMoney, fmtPct, matchesDeal, buyerCashAtClose, dscrMonthlyPayment, subtoSummaryRows, morbyTermRows };
+  return {
+    fmtMoney, fmtPct, matchesDeal, buyerCashAtClose, dscrMonthlyPayment,
+    subtoSummaryRows, morbyTermRows, engagementScore, engagementLevel, ENGAGEMENT_WEIGHTS,
+  };
 });

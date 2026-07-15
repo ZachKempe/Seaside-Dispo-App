@@ -346,6 +346,96 @@ tr:hover td { background: #FAFBFC; }
 .acq-media-status.ok { color: var(--green); }
 .acq-media-status.bad { color: var(--red); }
 
+/* ── Buyer Dashboard: deal matcher + master-detail ── */
+.matcher-bar {
+  background: linear-gradient(135deg, var(--navy-dark), var(--navy));
+  border-radius: 14px; padding: 16px 20px; margin-bottom: 16px;
+  box-shadow: 0 6px 20px rgba(17,41,80,0.2);
+}
+.matcher-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.matcher-title { color: #fff; font-weight: 700; font-size: 0.98rem; display: flex; align-items: center; gap: 8px; margin-right: 6px; padding-bottom: 8px; }
+.matcher-field { display: flex; flex-direction: column; gap: 3px; }
+.matcher-field label { font-size: 0.62rem; color: #B9C6DC; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 0; }
+.matcher-field select, .matcher-field input {
+  width: auto; font-size: 0.85rem; padding: 8px 10px; border-radius: 8px;
+  border: 1.5px solid rgba(255,255,255,0.25); background: #fff; color: var(--text-1);
+}
+.matcher-go {
+  font-family: inherit; font-size: 0.85rem; font-weight: 700; padding: 9px 18px;
+  border-radius: 8px; border: none; background: var(--gold); color: var(--navy-dark); cursor: pointer;
+}
+.matcher-go:hover { filter: brightness(1.06); }
+.matcher-clear {
+  font-family: inherit; font-size: 0.82rem; font-weight: 600; padding: 9px 14px;
+  border-radius: 8px; border: 1px solid rgba(255,255,255,0.35); background: transparent; color: #fff; cursor: pointer;
+}
+.matcher-clear:hover { background: rgba(255,255,255,0.1); }
+.matcher-status { color: #fff; font-size: 0.85rem; font-weight: 600; margin-left: auto; padding-bottom: 8px; }
+
+.buyer-md { display: grid; grid-template-columns: 430px 1fr; gap: 18px; align-items: start; }
+@media (max-width: 980px) { .buyer-md { grid-template-columns: 1fr; } }
+
+.buyer-list {
+  background: #fff; border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: 0 2px 12px rgba(27,58,107,0.06); max-height: 760px; overflow-y: auto;
+}
+.buyer-list::-webkit-scrollbar { width: 8px; height: 8px; }
+.buyer-list::-webkit-scrollbar-thumb { background: #CBD5E0; border-radius: 8px; }
+.buyer-list-head {
+  padding: 11px 16px; border-bottom: 1px solid #EDF1F6;
+  font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--text-3); position: sticky; top: 0; background: #F7FAFC; z-index: 2;
+  display: flex; align-items: center; gap: 10px;
+}
+.buyer-list-head input {
+  flex: 1; min-width: 0; width: auto; font-size: 0.78rem; font-weight: 500;
+  text-transform: none; letter-spacing: 0; padding: 5px 9px; border-radius: 7px;
+}
+.buyer-list-head .list-count { font-weight: 600; text-transform: none; letter-spacing: 0; white-space: nowrap; }
+.buyer-row {
+  display: flex; gap: 10px; padding: 12px 16px; border-bottom: 1px solid #EDF1F6;
+  cursor: pointer; background: #fff; border-left: 3px solid transparent;
+}
+.buyer-row:hover { background: #F7FAFC; }
+.buyer-row.tint-green { background: #F5FBF7; }
+.buyer-row.tint-amber { background: #FFFDF7; }
+.buyer-row.selected { background: #EEF3FB; border-left-color: var(--navy); }
+.tier-pill-sm { font-weight: 700; border-radius: 999px; padding: 1px 8px; font-size: 0.62rem; white-space: nowrap; }
+.chip-market { background: #DBEAFE; color: var(--navy); font-size: 0.66rem; font-weight: 600; border-radius: 999px; padding: 1px 8px; }
+.chip-strat  { background: #EDF2F7; color: var(--text-2); font-size: 0.66rem; font-weight: 600; border-radius: 999px; padding: 1px 8px; }
+.match-badge { display: inline-block; min-width: 42px; text-align: center; font-weight: 700; font-size: 0.74rem; border-radius: 999px; padding: 3px 8px; }
+.match-green { background: #C6F6D5; color: var(--green); }
+.match-amber { background: #FEEBC8; color: var(--amber); }
+.match-red   { background: #FED7D7; color: var(--red); }
+
+.buyer-detail {
+  background: #fff; border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: 0 2px 12px rgba(27,58,107,0.06); padding: 24px;
+}
+.bd-seclabel { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--navy-dark); }
+.bd-sublabel { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--text-3); margin-bottom: 6px; }
+.bd-chip-market { background: #DBEAFE; color: var(--navy); font-size: 0.78rem; font-weight: 600; border-radius: 999px; padding: 3px 12px; }
+.bd-chip-strat  { background: #EDF2F7; color: var(--text-2); font-size: 0.78rem; font-weight: 600; border-radius: 999px; padding: 3px 12px; }
+.reason-chip { font-size: 0.76rem; font-weight: 700; border-radius: 999px; padding: 3px 10px; }
+.reason-ok { background: #E7F6EC; color: var(--green); }
+.reason-no { background: #FDECEC; color: var(--red); }
+
+/* ── Tools dropdown menu ── */
+.tools-menu-wrap { position: relative; }
+.tools-menu {
+  position: absolute; right: 0; top: calc(100% + 6px);
+  background: #fff; border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(17,41,80,0.18); min-width: 220px; z-index: 40; padding: 6px;
+}
+.tools-menu button, .tools-menu a {
+  display: flex; width: 100%; text-align: left; background: none; border: none;
+  font: inherit; font-size: 0.84rem; font-weight: 500; color: var(--text-2);
+  padding: 9px 12px; border-radius: 7px; cursor: pointer; text-decoration: none;
+  gap: 8px; align-items: center;
+}
+.tools-menu button:hover, .tools-menu a:hover { background: var(--bg); color: var(--navy); }
+@media (max-width: 600px) { .tools-menu { right: auto; left: 0; } }
+
 /* ── Card-header health badges ── */
 .health-badges { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; max-width: 230px; justify-content: flex-end; }
 .health-badge {

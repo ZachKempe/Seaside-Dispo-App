@@ -10,6 +10,7 @@
 
 const crypto = require("crypto");
 const { deckToken } = require("./lib/deck-token");
+const { matchesDeal, buyerCashAtClose, morbyTermRows } = require("../../public/js/deal-shared");
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -68,21 +69,8 @@ async function verifyUser(authHeader) {
   return r.json();
 }
 
-// ── R2: buyer matching now respects strategy ─────────────────────
-// A buyer matches a deal if their strategy is "all" or equals the deal's
-// strategy (subto / morby). State/price/PITI/beds filters unchanged.
-function matches(buyer, dealStrategy, state, price, piti, beds) {
-  // Buyers can hold multiple strategies (comma-separated, e.g. "subto,morby").
-  // "all"/empty matches any deal strategy.
-  const strats = String(buyer.strategy || "").toLowerCase().split(",").map(s => s.trim()).filter(Boolean);
-  if (strats.length && !strats.includes("all") && dealStrategy && !strats.includes(dealStrategy)) return false;
-  const states = (buyer.states || "").trim();
-  if (states && state && !states.split(",").map(s => s.trim().toUpperCase()).includes(state.toUpperCase())) return false;
-  if (buyer.max_price > 0 && price > 0 && price > buyer.max_price) return false;
-  if (buyer.max_piti > 0 && piti > 0 && piti > buyer.max_piti) return false;
-  if (buyer.min_beds > 0 && beds > 0 && beds < buyer.min_beds) return false;
-  return true;
-}
+// ── R2: buyer matching (strategy-aware) lives in lib — matchesDeal from
+// public/js/deal-shared.js, the same function the dashboard preview runs. ──
 
 // ── R3: per-recipient logging + recipient-level idempotency ──────
 async function buyerIdsByStatus(cardId, channel, status) {
@@ -149,8 +137,6 @@ async function ensureDeckSlug(prop) {
 }
 
 // ── Email content ─────────────────────────────────────────────────
-function fmtMoney(n) { n = Number(n) || 0; return n ? `$${n.toLocaleString()}` : "—"; }
-
 function buildDealCopyText(prop, terms) {
   const beds = terms.beds || "N/A";
   const baths = terms.baths || "N/A";
@@ -272,31 +258,13 @@ function firstNameOf(buyer) {
   return first.charAt(0).toUpperCase() + first.slice(1);
 }
 
-// Cash the buyer receives at close = their 50% share of the assignment.
-//   Loan proceeds (Purchase × DSCR LTV: 75% SFH / 70% commercial)
-//   − Down Payment − 5% closing costs, then split in half.
-// Returns 0 when the loan doesn't cover the down payment + closing (the email
-// hides the line in that case rather than advertising a negative).
-function buyerCashAtClose(morby) {
-  const price = Number(morby.purchase_price) || 0;
-  if (!price) return 0;
-  const defaultLtv = (morby.property_type === "commercial") ? 70 : 75;
-  const ltv = morby.dscr_ltv != null ? Number(morby.dscr_ltv) : defaultLtv;
-  const loanProceeds = price * (ltv / 100);
-  const downPayment = Number(morby.down_payment) || 0;
-  const closingCosts = price * 0.05;
-  const addlBrokerFee = price * ((Number(morby.additional_broker_pct) || 0) / 100);
-  const buyerShare = (loanProceeds - downPayment - closingCosts - addlBrokerFee) / 2;
-  return buyerShare > 0 ? buyerShare : 0;
-}
-
 // ── Morby / Stack Method Deal Deck email ─────────────────────────
+// (buyerCashAtClose + the snapshot term rows come from lib/deal-shared, the
+// same source the deck page renders from, so email and page can't drift.)
 function buildMorbyEmail(prop, morby, unsubUrl, buyer, deckUrlForBuyer) {
   const address = prop.address_override || prop.name || "";
   const subject = `Stack Method Deal: ${address}`;
   const greeting = `Hi ${firstNameOf(buyer)},`;
-  const fmtM = (n) => n ? `$${Number(n).toLocaleString()}` : "—";
-  const fmtPct = (n) => n ? `${Number(n).toFixed(2)}%` : "—";
 
   // Headline hook: estimated cash to the buyer at close (their assignment share).
   const cashAtClose = buyerCashAtClose(morby);
@@ -309,16 +277,7 @@ function buildMorbyEmail(prop, morby, unsubUrl, buyer, deckUrlForBuyer) {
           </div>
         </td></tr>` : "";
 
-  const rows = [
-    ["Purchase Price",    fmtM(morby.purchase_price)],
-    ["Down Payment",      fmtM(morby.down_payment)],
-    ["Seller Carry",      fmtM(morby.seller_carry_balance)],
-    ["Monthly Payment",   fmtM(morby.monthly_payment)],
-    ["Deferred Rate",     fmtPct(morby.deferred_interest_rate)],
-    ["Balloon",           morby.balloon_months ? `${morby.balloon_months} months` : "—"],
-    ["Inspection Period", morby.inspection_period_days ? `${morby.inspection_period_days} days` : "—"],
-    ["Close of Escrow",   morby.close_of_escrow_days ? `${morby.close_of_escrow_days} days` : "—"],
-  ].filter(([, v]) => v && v !== "—");
+  const rows = morbyTermRows(morby);
 
   const termRows = rows.map(([label, val]) =>
     `<tr><td style="padding:6px 12px;color:#718096;font-size:13px;border-bottom:1px solid #EDF2F7">${escapeHtml(label)}</td>` +
@@ -554,7 +513,7 @@ exports.handler = async (event) => {
 
     const matched = targeted
       ? (buyers || []).filter(b => targetIdSet.has(Number(b.id)))
-      : (buyers || []).filter(b => matches(b, dealStrategy, prop.state, price, piti, beds));
+      : (buyers || []).filter(b => matchesDeal(b, dealStrategy, prop.state, price, piti, beds));
 
     const result = { email: null, sms: null, test: isTest, targeted, retry: retryMode, esp: useResend ? "resend" : "gmail" };
     const recipientRows = [];

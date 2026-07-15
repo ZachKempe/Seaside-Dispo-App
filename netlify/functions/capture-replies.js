@@ -4,6 +4,7 @@
 // is never touched. Idempotent via the inbound_messages ledger.
 
 const { sb, markSeen, captureResponder } = require("./lib/capture");
+const { logSyncRun } = require("./lib/heartbeat");
 
 const GMAIL_CLIENT_ID = process.env.GMAIL_CLIENT_ID;
 const GMAIL_CLIENT_SECRET = process.env.GMAIL_CLIENT_SECRET;
@@ -115,9 +116,11 @@ exports.handler = async () => {
 
     const summary = `capture-replies: ${captured} captured (${newBuyers} new buyers, ${leads} pipeline leads), ${skipped} skipped of ${messages.length} matched`;
     console.log(summary);
+    await logSyncRun("capture-replies", "ok", summary);
     return { statusCode: 200, body: summary };
   } catch (err) {
     console.error("capture-replies error:", err.message);
+    await logSyncRun("capture-replies", "error", err.message);
     return { statusCode: 500, body: err.message };
   }
 };

@@ -8,7 +8,7 @@
 // All data queries, token handling, view logging and interest posting are UNCHANGED.
 // New dependency: ./lib/deck-photo.js  +  env GOOGLE_MAPS_API_KEY (optional).
 const { verifyDeckToken } = require("./lib/deck-token");
-const { fmtMoney, buyerCashAtClose, subtoSummaryRows, morbyTermRows } = require("./lib/deck-content");
+const { fmtMoney, buyerCashAtClose, subtoSummaryRows, morbyTermRows } = require("../../public/js/deal-shared");
 const { resolveDealPhotos } = require("./lib/deck-photo");
 
 const SB_URL = process.env.SUPABASE_URL;

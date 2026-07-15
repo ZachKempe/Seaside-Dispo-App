@@ -4,6 +4,8 @@
 // deduping against existing phone/email. Mirrors the logic that used to
 // live in netlify_sync.py, but writes straight to the hosted database.
 
+const { logSyncRun } = require("./lib/heartbeat");
+
 const NAME_TO_ABBR = {
   alabama:"AL",alaska:"AK",arizona:"AZ",arkansas:"AR",california:"CA",colorado:"CO",
   connecticut:"CT",delaware:"DE",florida:"FL",georgia:"GA",hawaii:"HI",idaho:"ID",
@@ -149,9 +151,11 @@ exports.handler = async () => {
     }
 
     console.log(`sync-buyers: added ${added} new buyer(s) of ${submissions.length} submissions`);
+    await logSyncRun("sync-buyers", "ok", `added ${added} of ${submissions.length} submissions`);
     return { statusCode: 200, body: `added ${added} new buyer(s)` };
   } catch (err) {
     console.error("sync-buyers error:", err.message);
+    await logSyncRun("sync-buyers", "error", err.message);
     return { statusCode: 500, body: err.message };
   }
 };

@@ -3,5 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "description": "Hosted buyer + posting dashboards for Seaside Horizon, backed by Supabase, deployed on Netlify.",
-  "engines": { "node": ">=18" }
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test"
+  }
 }

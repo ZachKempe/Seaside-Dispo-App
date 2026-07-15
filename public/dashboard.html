@@ -26,6 +26,7 @@
       <div>
         <h1>Posting Dashboard</h1>
         <div class="sub" id="prop-count"></div>
+        <div class="sub" id="sync-health" style="font-size:0.78rem;margin-top:2px"></div>
       </div>
       <button class="btn btn-ghost btn-sm" id="refresh-btn">↻ Refresh</button>
     </div>
@@ -160,6 +161,7 @@
   </div>
 
   <script src="/js/supa.js"></script>
+  <script src="/js/deal-shared.js"></script>
   <script>
     const FB_GROUPS = [
       { name: "SubTo/Creative Finance", url: "https://www.facebook.com/groups/4250744751826258" },
@@ -174,10 +176,9 @@
     const activeTabByCard = {}; // card_id -> "posting" | "dealinfo" — preserved across re-renders
     let allBuyers = []; // every active buyer — used by the blast modal's "by method" filter
 
-    function fmtMoney(n) {
-      n = Number(n) || 0;
-      return n ? `$${n.toLocaleString()}` : "—";
-    }
+    // Shared with send-blast.js and the deck page (see /js/deal-shared.js) so
+    // the blast preview, the live send, and the emails can never disagree.
+    const { fmtMoney, matchesDeal, dscrMonthlyPayment } = DealShared;
 
     function escapeHtml(s) {
       return String(s || "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -281,8 +282,37 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       return mismatches;
     }
 
+    // ── Sync health: latest heartbeat per scheduled function (sync_runs rows
+    // written by lib/heartbeat.js). Fails soft — before the 025 migration runs
+    // the query errors and the indicator simply stays hidden. ──
+    const SYNC_FN_LABELS = { "sync-trello": "Trello", "sync-buyers": "Buyer form", "capture-replies": "Reply capture" };
+    async function loadSyncHealth() {
+      const el = document.getElementById("sync-health");
+      if (!el) return;
+      const { data, error } = await supa.from("sync_runs")
+        .select("fn,status,ran_at,detail").order("ran_at", { ascending: false }).limit(30);
+      if (error || !data || !data.length) { el.textContent = ""; return; }
+      const latest = {};
+      for (const r of data) if (!latest[r.fn]) latest[r.fn] = r;
+      const failing = Object.values(latest).filter(r => r.status === "error");
+      const newestMs = Math.max(...Object.values(latest).map(r => new Date(r.ran_at).getTime()));
+      const mins = Math.round((Date.now() - newestMs) / 60000);
+      const ago = mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
+      if (failing.length) {
+        el.innerHTML = failing.map(r =>
+          `<span style="color:var(--red,#C53030);font-weight:700" title="${escapeHtml(r.detail || "")}">⚠ ${escapeHtml(SYNC_FN_LABELS[r.fn] || r.fn)} sync failing</span>`
+        ).join(" · ");
+      } else if (mins > 30) {
+        // All heartbeats old — the functions themselves may have stopped running.
+        el.innerHTML = `<span style="color:#B7791F;font-weight:700">⚠ no sync heartbeat in ${ago.replace(" ago", "")}</span>`;
+      } else {
+        el.innerHTML = `<span style="color:#2F855A" title="Trello / buyer-form / reply-capture syncs healthy">✓ synced ${ago}</span>`;
+      }
+    }
+
     async function loadAll() {
       const content = document.getElementById("content");
+      loadSyncHealth(); // fire-and-forget; never blocks the board
 
       let { data: props, error: pErr } = await supa.from("properties").select("*").eq("archived", false).order("synced_at", { ascending: false });
       if (pErr) {
@@ -365,17 +395,8 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       wireAddMorbyPanel();
     }
 
-    // Mirrors the server-side matching logic in send-blast.js (R2: strategy-aware).
-    function matchesDeal(b, dealStrategy, state, price, piti, beds) {
-      const strats = String(b.strategy || "").toLowerCase().split(",").map(s => s.trim()).filter(Boolean);
-      if (strats.length && !strats.includes("all") && dealStrategy && !strats.includes(dealStrategy)) return false;
-      const states = (b.states || "").trim();
-      if (states && state && !states.split(",").map(s => s.trim().toUpperCase()).includes(state.toUpperCase())) return false;
-      if (b.max_price > 0 && price > 0 && price > b.max_price) return false;
-      if (b.max_piti > 0 && piti > 0 && piti > b.max_piti) return false;
-      if (b.min_beds > 0 && beds > 0 && beds < b.min_beds) return false;
-      return true;
-    }
+    // Buyer↔deal matching is matchesDeal from /js/deal-shared.js — the exact
+    // function send-blast.js runs, so the preview list IS the send list.
 
     // Scores a buyer's fit for a deal (0-100ish) with human-readable reasons,
     // plus a list of missing contact fields that would block reaching them.
@@ -914,18 +935,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
       commercial:    { rate: 8.5,  ltv: 70, credit: 800 },
     };
 
-    // Standard 30-year amortizing monthly debt service on (principal * ltv%)
-    function dscrMonthlyPayment(price, ratePct, ltvPct, years = 30) {
-      price = Number(price) || 0;
-      ratePct = Number(ratePct) || 0;
-      ltvPct = Number(ltvPct) || 0;
-      const principal = price * (ltvPct / 100);
-      const r = (ratePct / 100) / 12;
-      const n = years * 12;
-      if (!principal || !r) return 0;
-      const m = principal * (r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
-      return m;
-    }
+    // (dscrMonthlyPayment comes from /js/deal-shared.js)
 
     function renderMorbyPanel(p, morby, terms, acq) {
       const m = morby || {};

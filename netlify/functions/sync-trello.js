@@ -3,6 +3,8 @@
 // Drive link / deal terms out of the card comments, and upserts everything
 // into Supabase so the dashboard can read it instantly without hitting Trello.
 
+const { logSyncRun } = require("./lib/heartbeat");
+
 const TRELLO_BASE = "https://api.trello.com/1";
 
 const US_STATES = new Set([
@@ -255,10 +257,13 @@ exports.handler = async () => {
     await supabaseSetArchived(SB_URL, SB_KEY, toUnarchive, false);
 
     const total = newRows.length + existingRows.length;
+    const summary = `synced ${total} cards (${newCount} new, ${toArchive.length} archived, ${dealTermRows.length} terms seeded)`;
     console.log(`sync-trello: synced ${total} card(s), ${newCount} new, ${dealTermRows.length} deal-term row(s) seeded, ${toArchive.length} archived (moved off list), ${toUnarchive.length} restored`);
-    return { statusCode: 200, body: `synced ${total} cards (${newCount} new, ${toArchive.length} archived, ${dealTermRows.length} terms seeded)` };
+    await logSyncRun("sync-trello", "ok", summary);
+    return { statusCode: 200, body: summary };
   } catch (err) {
     console.error("sync-trello error:", err.message);
+    await logSyncRun("sync-trello", "error", err.message);
     return { statusCode: 500, body: err.message };
   }
 };

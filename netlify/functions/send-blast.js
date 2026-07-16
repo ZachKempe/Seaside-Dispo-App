@@ -10,6 +10,7 @@
 
 const crypto = require("crypto");
 const { deckToken } = require("./lib/deck-token");
+const { subtoSubject, morbySubject } = require("./lib/subjects");
 const { matchesDeal, buyerCashAtClose, morbyTermRows } = require("../../public/js/deal-shared");
 
 const SB_URL = process.env.SUPABASE_URL;
@@ -36,6 +37,9 @@ const UNSUB_SECRET = process.env.UNSUB_SECRET || SB_SERVICE_KEY || "seaside-unsu
 
 const CONTACT_NAME = process.env.MARKETING_CONTACT_NAME || "Seaside Horizon";
 const CONTACT_PHONE = process.env.MARKETING_CONTACT_PHONE || "";
+// CAN-SPAM requires a valid physical postal address in marketing email.
+// Set MARKETING_POSTAL_ADDRESS in Netlify env (e.g. "123 Main St, Ste 4, Naperville, IL 60540").
+const CONTACT_ADDRESS = process.env.MARKETING_POSTAL_ADDRESS || "";
 const LOGO_URL = "https://seaside-dispo-app.netlify.app/img/logo.png";
 const BRAND_NAVY = "#1B3A6B";
 const BRAND_NAVY_DARK = "#112950";
@@ -178,7 +182,7 @@ function escapeHtml(s) {
 function buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer, deckUrlForBuyer) {
   const city = prop.name || "";
   const entryFee = Number(terms.entry_fee) || 0;
-  const subject = `New Sub-To Deal: ${city} | ${entryFee ? "$" + entryFee.toLocaleString() : "Ask"} Entry Fee`;
+  const subject = subtoSubject(city, entryFee);
   const greeting = `Hi ${firstNameOf(buyer)},`;
   const dealCopy = buildDealCopyText(prop, terms);
   const coverImageTag = coverImageUrl
@@ -188,8 +192,9 @@ function buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer, deckUrlForB
          <div style="background:#F7FAFC;border-left:3px solid #1B3A6B;border-radius:6px;padding:14px 18px;font-size:13.5px;line-height:1.6;color:#2D3748">${coverImageTag}<div style="white-space:pre-wrap">${escapeHtml(dealCopy)}</div></div>
        </td></tr>`;
 
+  const addressLine = CONTACT_ADDRESS ? `<br>Seaside Horizon · ${escapeHtml(CONTACT_ADDRESS)}` : "";
   const unsubFooter = unsubUrl
-    ? `<tr><td style="padding:6px 32px 16px;font-size:11px;color:#A0AEC0;background:#fff">You're receiving this because you're on Seaside Horizon's buyer list. <a href="${escapeHtml(unsubUrl)}" style="color:#A0AEC0;text-decoration:underline">Unsubscribe</a>.</td></tr>`
+    ? `<tr><td style="padding:6px 32px 16px;font-size:11px;color:#A0AEC0;background:#fff">You're receiving this because you're on Seaside Horizon's buyer list. <a href="${escapeHtml(unsubUrl)}" style="color:#A0AEC0;text-decoration:underline">Unsubscribe</a>.${addressLine}</td></tr>`
     : "";
 
   const html = `
@@ -272,7 +277,7 @@ function firstNameOf(buyer) {
 // same source the deck page renders from, so email and page can't drift.)
 function buildMorbyEmail(prop, morby, unsubUrl, buyer, deckUrlForBuyer) {
   const address = prop.address_override || prop.name || "";
-  const subject = `Stack Method Deal: ${address}`;
+  const subject = morbySubject(address);
   const greeting = `Hi ${firstNameOf(buyer)},`;
 
   // Headline hook: estimated cash to the buyer at close (their assignment share).
@@ -293,8 +298,9 @@ function buildMorbyEmail(prop, morby, unsubUrl, buyer, deckUrlForBuyer) {
     `<td style="padding:6px 12px;font-weight:600;font-size:13px;color:#1A202C;border-bottom:1px solid #EDF2F7">${escapeHtml(val)}</td></tr>`
   ).join("");
 
+  const addressLine = CONTACT_ADDRESS ? `<br>Seaside Horizon · ${escapeHtml(CONTACT_ADDRESS)}` : "";
   const unsubFooter = unsubUrl
-    ? `<tr><td colspan="2" style="padding:6px 32px 16px;font-size:11px;color:#A0AEC0;background:#fff">You're receiving this because you're on Seaside Horizon's buyer list. <a href="${escapeHtml(unsubUrl)}" style="color:#A0AEC0;text-decoration:underline">Unsubscribe</a>.</td></tr>`
+    ? `<tr><td colspan="2" style="padding:6px 32px 16px;font-size:11px;color:#A0AEC0;background:#fff">You're receiving this because you're on Seaside Horizon's buyer list. <a href="${escapeHtml(unsubUrl)}" style="color:#A0AEC0;text-decoration:underline">Unsubscribe</a>.${addressLine}</td></tr>`
     : "";
 
   const html = `

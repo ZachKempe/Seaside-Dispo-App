@@ -1,0 +1,91 @@
+# Nightly encrypted backup of the Supabase Postgres database.
+#
+# The buyer list — plus every lead, blast record, and engagement signal — lives
+# only in Supabase, and the free tier takes no backups. This job dumps the whole
+# database, encrypts it (AES-256, symmetric passphrase), and stores it as a
+# release asset on a SEPARATE PRIVATE repo. It never writes plaintext anywhere,
+# and it stores nothing in THIS (public) repo, whose artifacts would be
+# world-readable.
+#
+# One-time setup + how to restore: docs/db-backup-SETUP.md
+# Nothing here runs until the four secrets in that doc are set.
+
+name: DB backup (nightly, encrypted)
+
+on:
+  schedule:
+    - cron: "17 8 * * *" # 08:17 UTC daily (~03:17 America/Chicago)
+  workflow_dispatch: {} # allow a manual run from the Actions tab
+
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      BACKUP_GPG_PASSPHRASE: ${{ secrets.BACKUP_GPG_PASSPHRASE }}
+      BACKUP_REPO: ${{ secrets.BACKUP_REPO }}
+      GH_TOKEN: ${{ secrets.BACKUP_REPO_PAT }}
+      RETENTION_DAYS: "30"
+    steps:
+      - name: Guard — required secrets present
+        run: |
+          missing=
+          for v in SUPABASE_DB_URL BACKUP_GPG_PASSPHRASE BACKUP_REPO GH_TOKEN; do
+            [ -z "${!v}" ] && missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Backup not configured — missing secret(s):$missing. See docs/db-backup-SETUP.md"
+            exit 1
+          fi
+
+      - name: Install PostgreSQL 17 client
+        run: |
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+
+      - name: Dump + encrypt
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +%Y-%m-%dT%H%M%SZ)"
+          out="seaside-db-${stamp}.dump.gpg"
+          # -Fc = compressed custom format (restore with pg_restore).
+          pg_dump --no-owner --no-privileges -Fc "$SUPABASE_DB_URL" \
+            | gpg --batch --yes --symmetric --cipher-algo AES256 \
+                  --passphrase "$BACKUP_GPG_PASSPHRASE" -o "$out"
+          size=$(du -h "$out" | cut -f1)
+          echo "Wrote $out ($size)"
+          echo "ASSET=$out" >> "$GITHUB_ENV"
+          echo "TAG=backup-${stamp}" >> "$GITHUB_ENV"
+
+      - name: Upload to private backup repo (release asset)
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" "$ASSET" \
+            --repo "$BACKUP_REPO" \
+            --title "$TAG" \
+            --notes "Automated encrypted pg_dump. Restore: docs/db-backup-SETUP.md" \
+            || gh release upload "$TAG" "$ASSET" --repo "$BACKUP_REPO" --clobber
+
+      - name: Prune backups older than retention window
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u -d "-${RETENTION_DAYS} days" +%s 2>/dev/null || date -u -v-"${RETENTION_DAYS}"d +%s)
+          gh release list --repo "$BACKUP_REPO" --limit 200 --json tagName,createdAt \
+            --jq '.[] | select(.tagName|startswith("backup-")) | [.tagName, .createdAt] | @tsv' \
+          | while IFS=$'\t' read -r tag created; do
+              ts=$(date -u -d "$created" +%s 2>/dev/null || date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$created" +%s)
+              if [ "$ts" -lt "$cutoff" ]; then
+                echo "Pruning $tag ($created)"
+                gh release delete "$tag" --repo "$BACKUP_REPO" --yes --cleanup-tag
+              fi
+            done
+
+      - name: Notify on failure
+        if: failure()
+        run: echo "::warning::Nightly DB backup failed — check this run. The database is unbacked until it succeeds."

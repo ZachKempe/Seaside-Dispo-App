@@ -2375,7 +2375,18 @@ async function runBlast({ test }) {
   if (test) {
     if (!confirm(`Send a TEST preview (${chLabel}) for "${address}" to your own email/phone only? This will NOT reach any buyers.`)) return;
   } else {
-    if (!confirm(`⚠️ LIVE SEND: ${chLabel} the deal alert for "${address}" to ${targetCount} buyer${targetCount === 1 ? "" : "s"}? This cannot be undone.`)) return;
+    // Resend's free tier hard-caps sending at 100 emails/day: past the cap
+    // the rest of the blast fails (rows land as 'failed' in the ledger, so
+    // "↻ Retry failed" can finish the job tomorrow — or upgrade the plan).
+    const RESEND_FREE_DAILY_LIMIT = 100;
+    const idSet = buyerIds ? new Set(buyerIds) : null;
+    const emailAudience = channels.includes("email")
+      ? activeBlast.matched.filter(b => (!idSet || idSet.has(Number(b.id))) && b.email && !b.email_opt_out).length
+      : 0;
+    const budgetWarning = emailAudience > RESEND_FREE_DAILY_LIMIT
+      ? `\n\n⚠️ Resend free tier: only ~${RESEND_FREE_DAILY_LIMIT} of these ${emailAudience} emails can send today — the rest will log as failed. Use "↻ Retry failed" tomorrow to finish, or upgrade Resend.`
+      : "";
+    if (!confirm(`⚠️ LIVE SEND: ${chLabel} the deal alert for "${address}" to ${targetCount} buyer${targetCount === 1 ? "" : "s"}? This cannot be undone.${budgetWarning}`)) return;
     if (!confirm(`Are you absolutely sure? This sends real messages to real buyers right now.`)) return;
   }
 

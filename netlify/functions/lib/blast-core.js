@@ -571,6 +571,18 @@ async function runBlast(payload, user) {
       });
       if (!r.ok) throw httpError(400, `deal deck download (${deal_deck_path}) -> ${r.status}`);
       pdfBase64 = Buffer.from(await r.arrayBuffer()).toString("base64");
+      // The staged copy is a transfer artifact — remove it now that the bytes
+      // are in memory (the SMS link re-uploads to the canonical
+      // deal-decks/<slug>.pdf), so the public bucket doesn't accumulate one
+      // orphaned PDF per Morby blast.
+      if (deal_deck_path.startsWith("deal-decks/staged-")) {
+        try {
+          await fetch(`${SB_URL}/storage/v1/object/property-photos/${deal_deck_path}`, {
+            method: "DELETE",
+            headers: { apikey: SB_SERVICE_KEY, Authorization: `Bearer ${SB_SERVICE_KEY}` },
+          });
+        } catch (e) { console.warn("staged deck cleanup failed:", e.message); }
+      }
     }
     const isMorbyDeck = !!(pdfBase64 && dealStrategy === "morby");
     const pdfAttachments = isMorbyDeck ? [{
@@ -642,8 +654,10 @@ async function runBlast(payload, user) {
         // R3: recipient-level idempotency. A normal full blast skips anyone
         // already 'sent'; retry mode targets only prior failures.
         if (retryMode) {
-          const failed = await buyerIdsByStatus(card_id, "email", "failed");
-          const sent = await buyerIdsByStatus(card_id, "email", "sent");
+          const [failed, sent] = await Promise.all([
+            buyerIdsByStatus(card_id, "email", "failed"),
+            buyerIdsByStatus(card_id, "email", "sent"),
+          ]);
           emailBuyers = emailBuyers.filter(b => failed.has(Number(b.id)) && !sent.has(Number(b.id)));
         } else if (!targeted) {
           const sent = await buyerIdsByStatus(card_id, "email", "sent");
@@ -690,8 +704,10 @@ async function runBlast(payload, user) {
           ? matched.filter(b => b.sms_opt_in && b.phone)
           : matched.filter(b => b.tier === "A" && b.sms_opt_in && b.phone);
         if (retryMode) {
-          const failed = await buyerIdsByStatus(card_id, "sms", "failed");
-          const sent = await buyerIdsByStatus(card_id, "sms", "sent");
+          const [failed, sent] = await Promise.all([
+            buyerIdsByStatus(card_id, "sms", "failed"),
+            buyerIdsByStatus(card_id, "sms", "sent"),
+          ]);
           smsBuyers = smsBuyers.filter(b => failed.has(Number(b.id)) && !sent.has(Number(b.id)));
         } else if (!targeted) {
           const sent = await buyerIdsByStatus(card_id, "sms", "sent");

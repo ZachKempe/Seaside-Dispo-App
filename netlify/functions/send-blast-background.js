@@ -21,14 +21,24 @@ exports.handler = async (event) => {
   if (event.httpMethod !== "POST") return;
   let payload = {};
   try { payload = JSON.parse(event.body || "{}"); } catch (_) { /* caught as missing card_id below */ }
-  const cardTag = `card=${payload.card_id || "?"}`;
+  // client_ref is echoed into the heartbeat detail so the dashboard can match
+  // THIS blast's completion row exactly (no clock comparison, no collision
+  // with an earlier blast of the same card).
+  const cardTag = `card=${payload.card_id || "?"}${payload.client_ref ? ` ref=${payload.client_ref}` : ""}`;
   try {
     const user = await verifyUser(event.headers.authorization || event.headers.Authorization);
     if (!user) throw new Error("Unauthorized");
     if (payload.test) throw new Error("test mode must use the synchronous send-blast function");
     const result = await runBlast(payload, user);
     const fmt = (r) => r ? `sent=${r.sent ?? 0} failed=${r.failed ?? 0}${r.note ? ` (${r.note})` : ""}${r.error ? ` err=${r.error}` : ""}` : "—";
-    await logSyncRun("send-blast", "ok", `${cardTag} email: ${fmt(result.email)} · sms: ${fmt(result.sms)}`);
+    // A run that reached nobody but hit errors/failures is an error, not an
+    // "ok" — runBlast only throws on hard faults, so per-recipient wipeouts
+    // (expired API key, unconfigured provider) surface here.
+    const sentTotal = ((result.email && result.email.sent) || 0) + ((result.sms && result.sms.sent) || 0);
+    const hadTrouble = !!((result.email && (result.email.error || result.email.failed)) ||
+                          (result.sms && (result.sms.error || result.sms.failed)));
+    const status = sentTotal === 0 && hadTrouble ? "error" : "ok";
+    await logSyncRun("send-blast", status, `${cardTag} email: ${fmt(result.email)} · sms: ${fmt(result.sms)}`);
     console.log("send-blast-background done:", JSON.stringify(result));
   } catch (err) {
     console.error("send-blast-background error:", err.message);

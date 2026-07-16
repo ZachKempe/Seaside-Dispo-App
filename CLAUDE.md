@@ -68,7 +68,9 @@ dashboard "✓ synced" indicator and the consecutive-failure email alert).
 ## Database / migrations
 
 Numbered SQL files in `sql/`, **run manually** in the Supabase SQL editor — there is no
-migration runner. Take the next number (highest is `025_sync_runs.sql`). Migrations must be
+migration runner. Take the next number (highest is `028_schema_migrations.sql`). Every new
+migration must END with `insert into schema_migrations (filename) values ('0XX_name.sql')
+on conflict do nothing;` so applied state stays queryable. Migrations must be
 additive/idempotent (`if not exists`, `do $$` policy guards) and the frontend must fail soft
 when a migration hasn't run yet (see `loadAll`'s `archived` fallback for the pattern).
 RLS convention: authenticated users get full access; public tables written by functions use

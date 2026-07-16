@@ -25,6 +25,8 @@
         </div>
         <button type="submit" class="btn btn-primary" id="submit-btn">Sign In</button>
         <div class="err" id="err"></div>
+        <div id="msg" style="color:#2F855A;font-size:0.85rem;margin-top:8px"></div>
+        <a href="#" id="forgot-link" style="display:inline-block;margin-top:12px;font-size:0.82rem;color:var(--navy,#1B3A6B)">Forgot password?</a>
       </form>
     </div>
   </div>
@@ -56,6 +58,21 @@
         return;
       }
       window.location.href = "/dashboard.html";
+    });
+
+    // Forgot password: Supabase emails a recovery link that lands on /reset.html.
+    document.getElementById("forgot-link").addEventListener("click", async (e) => {
+      e.preventDefault();
+      const err = document.getElementById("err");
+      const msg = document.getElementById("msg");
+      err.textContent = ""; msg.textContent = "";
+      const email = document.getElementById("email").value.trim();
+      if (!email) { err.textContent = "Type your email above first, then click reset."; return; }
+      const { error } = await supa.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin + "/reset.html",
+      });
+      if (error) { err.textContent = "Couldn't send the reset email: " + error.message; return; }
+      msg.textContent = "Reset link sent — check your email (including spam).";
     });
   </script>
 </body>

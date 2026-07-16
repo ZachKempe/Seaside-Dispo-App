@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Seaside Dispo — Reset Password</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <h1>🔑 Reset Password</h1>
+      <p class="sub" id="sub">Choose a new password for your account.</p>
+      <form id="reset-form">
+        <div class="field">
+          <label>New password</label>
+          <input type="password" id="password" autocomplete="new-password" minlength="8" required>
+        </div>
+        <div class="field">
+          <label>Confirm new password</label>
+          <input type="password" id="password2" autocomplete="new-password" minlength="8" required>
+        </div>
+        <button type="submit" class="btn btn-primary" id="submit-btn">Set New Password</button>
+        <div class="err" id="err"></div>
+        <div id="msg" style="color:#2F855A;font-size:0.85rem;margin-top:8px"></div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/js/supa.js"></script>
+  <script>
+    // The recovery link from the reset email carries a token that supabase-js
+    // exchanges for a session automatically on load. Without that session,
+    // updating the password is impossible — tell the user to use the link.
+    const err = document.getElementById("err");
+
+    (async () => {
+      // Give the client a moment to process the URL hash, then verify.
+      await new Promise(r => setTimeout(r, 400));
+      const { data: { session } } = await supa.auth.getSession();
+      if (!session) {
+        err.textContent = "This page only works from the reset link in your email. Head back to the sign-in page and click \"Forgot password?\".";
+        document.getElementById("submit-btn").disabled = true;
+      }
+    })();
+
+    document.getElementById("reset-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById("submit-btn");
+      const msg = document.getElementById("msg");
+      err.textContent = ""; msg.textContent = "";
+
+      const pw = document.getElementById("password").value;
+      const pw2 = document.getElementById("password2").value;
+      if (pw !== pw2) { err.textContent = "Passwords don't match."; return; }
+
+      btn.disabled = true;
+      btn.textContent = "Saving…";
+      const { error } = await supa.auth.updateUser({ password: pw });
+      if (error) {
+        err.textContent = "Couldn't set the password: " + error.message;
+        btn.disabled = false;
+        btn.textContent = "Set New Password";
+        return;
+      }
+      msg.textContent = "Password updated — taking you to the dashboard…";
+      setTimeout(() => { window.location.href = "/dashboard.html"; }, 900);
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Seaside Dispo — Reports</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    .rpt-section { margin-bottom: 28px; }
+    .rpt-table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+    .rpt-table th { text-align: left; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-3); padding: 8px 10px; border-bottom: 2px solid var(--border); white-space: nowrap; }
+    .rpt-table td { padding: 8px 10px; border-bottom: 1px solid #F1F5F9; vertical-align: middle; }
+    .rpt-table tr:hover td { background: #FAFBFD; }
+    .rpt-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .rpt-bar { position: relative; background: #EDF2F7; border-radius: 999px; height: 8px; min-width: 70px; overflow: hidden; }
+    .rpt-bar > span { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: var(--navy, #1B3A6B); }
+    .rpt-cell-metric { display: flex; align-items: center; gap: 8px; }
+    .rpt-stage-chip { display: inline-block; font-size: 0.7rem; font-weight: 700; border-radius: 999px; padding: 2px 10px; white-space: nowrap; }
+    .rpt-empty { color: var(--text-3); font-size: 0.86rem; font-style: italic; padding: 14px 4px; }
+    .rpt-scroll { overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><img src="/img/logo.png" alt="Seaside Horizon" class="brand-logo"> Seaside Horizon</div>
+    <nav>
+      <a href="/dashboard.html">Posting</a>
+      <a href="/pipeline.html">Pipeline</a>
+      <a href="/buyers.html">Buyers</a>
+      <a href="/reports.html" class="active">Reports</a>
+      <button class="logout" id="logout-btn">Sign Out</button>
+    </nav>
+  </div>
+
+  <div class="page">
+    <div class="page-header">
+      <div>
+        <h1>Reports</h1>
+        <div class="sub" id="rpt-sub"></div>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="refresh-btn">↻ Refresh</button>
+    </div>
+
+    <div id="rpt-loading" class="loading"><div class="spinner"></div>Crunching the numbers…</div>
+
+    <div id="rpt-content" class="hidden">
+      <div class="card rpt-section">
+        <h2 style="margin:0 0 4px;font-size:1.05rem;color:var(--navy-dark)">Deal funnel</h2>
+        <p class="muted" style="margin:0 0 12px;font-size:0.82rem">Per deal: emails sent → opened → clicked → deck views → interested. Opens/clicks accrue only on blasts sent after email tracking went live.</p>
+        <div class="rpt-scroll" id="rpt-funnel"></div>
+      </div>
+
+      <div class="card rpt-section">
+        <h2 style="margin:0 0 4px;font-size:1.05rem;color:var(--navy-dark)">Copy variation performance</h2>
+        <p class="muted" style="margin:0 0 12px;font-size:0.82rem">Which marketing copy actually gets opened, clicked, and answered — across all deals.</p>
+        <div class="rpt-scroll" id="rpt-variations"></div>
+      </div>
+
+      <div class="card rpt-section">
+        <h2 style="margin:0 0 4px;font-size:1.05rem;color:var(--navy-dark)">Aging — time in current stage</h2>
+        <p class="muted" style="margin:0 0 12px;font-size:0.82rem">Active deals, longest-sitting first. The board tracks the current stage only, so this clock starts at the last stage move.</p>
+        <div class="rpt-scroll" id="rpt-aging"></div>
+      </div>
+
+      <div class="card rpt-section">
+        <h2 style="margin:0 0 4px;font-size:1.05rem;color:var(--navy-dark)">Closed deals</h2>
+        <p class="muted" style="margin:0 0 12px;font-size:0.82rem">Speed from first blast to closed, plus how terminal deals split between closed and dead.</p>
+        <div id="rpt-closed"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/supa.js"></script>
+  <script src="/js/dispo.js"></script>
+  <script src="/js/reports.js"></script>
+</body>
+</html>

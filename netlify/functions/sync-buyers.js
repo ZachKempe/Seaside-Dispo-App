@@ -5,6 +5,7 @@
 // live in netlify_sync.py, but writes straight to the hosted database.
 
 const { logSyncRun } = require("./lib/heartbeat");
+const { fetchAllRows } = require("./lib/fetch-all");
 
 const NAME_TO_ABBR = {
   alabama:"AL",alaska:"AK",arizona:"AZ",arkansas:"AR",california:"CA",colorado:"CO",
@@ -103,8 +104,12 @@ exports.handler = async () => {
     console.log(`sync-buyers: ${submissions.length} total submissions`);
     if (submissions.length > 0) console.log("sync-buyers: first submission keys:", Object.keys(submissions[0]));
 
-    // 3. Existing buyers (for dedupe)
-    const existing = await sb(`/buyers?select=phone,email`, { method: "GET" }, SB_URL, SB_KEY);
+    // 3. Existing buyers (for dedupe). Paged (F3): a truncated set here means
+    // buyers past row 1,000 get re-inserted as duplicates.
+    const existing = await fetchAllRows(
+      p => sb(p, { method: "GET" }, SB_URL, SB_KEY),
+      `/buyers?select=phone,email`
+    );
     console.log(`sync-buyers: ${existing.length} existing buyers for dedupe`);
     const exPhones = new Set(existing.map(b => digitsOnly(b.phone)).filter(Boolean));
     const exEmails = new Set(existing.map(b => (b.email || "").toLowerCase()).filter(Boolean));

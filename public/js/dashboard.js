@@ -222,12 +222,16 @@ async function loadAll() {
   const content = document.getElementById("content");
   loadSyncHealth(); // fire-and-forget; never blocks the board
 
-  let { data: props, error: pErr } = await supa.from("properties").select("*").eq("archived", false).order("synced_at", { ascending: false });
+  // fetchAllRows (F3) pages past PostgREST's silent 1,000-row cap; the
+  // secondary .order("card_id") keeps pages deterministic.
+  let { data: props, error: pErr } = await fetchAllRows(() =>
+    supa.from("properties").select("*").eq("archived", false).order("synced_at", { ascending: false }).order("card_id"));
   if (pErr) {
     // `archived` column doesn't exist yet (017 migration not run) — fall
     // back to unfiltered so the dashboard still loads; archiving just
     // won't take visual effect until the migration runs.
-    ({ data: props, error: pErr } = await supa.from("properties").select("*").order("synced_at", { ascending: false }));
+    ({ data: props, error: pErr } = await fetchAllRows(() =>
+      supa.from("properties").select("*").order("synced_at", { ascending: false }).order("card_id")));
   }
 
   // Scope every card-keyed query to just the deals we're about to render.
@@ -239,14 +243,18 @@ async function loadAll() {
     supa.from("deal_terms").select("*").in("card_id", cardIds),
     supa.from("property_status").select("*").in("card_id", cardIds),
     supa.from("facebook_posts").select("*").in("card_id", cardIds),
-    supa.from("buyers").select("id,name,email,phone,tier,states,strategy,sms_opt_in,max_price,max_piti,min_beds,email_opt_out").eq("active", true),
+    // Paged (F3): this is the blast-preview audience — must be complete, or
+    // the preview understates who a live send reaches past 1,000 buyers.
+    fetchAllRows(() => supa.from("buyers").select("id,name,email,phone,tier,states,strategy,sms_opt_in,max_price,max_piti,min_beds,email_opt_out").eq("active", true).order("id")),
     supa.from("deal_leads").select("*").in("card_id", cardIds).order("updated_at", { ascending: false }),
     supa.from("deal_blasts").select("card_id,channel,status,detail,variation_index,variation_title,blasted_at").in("card_id", cardIds),
     supa.from("deal_acquisition").select("*").in("card_id", cardIds),
     supa.from("morby_deals").select("*").in("card_id", cardIds),
-    supa.from("blast_recipients").select("card_id,channel,status,buyer_id").in("card_id", cardIds),
-    supa.from("deck_views").select("card_id,buyer_id,viewed_at").in("card_id", cardIds),
-    supa.from("email_events").select("card_id,buyer_id,event").in("card_id", cardIds),
+    // Paged (F3): one blast writes a recipient row per buyer, and deck views /
+    // email opens multiply per blast — all three blow past 1,000 rows first.
+    fetchAllRows(() => supa.from("blast_recipients").select("card_id,channel,status,buyer_id").in("card_id", cardIds).order("id")),
+    fetchAllRows(() => supa.from("deck_views").select("card_id,buyer_id,viewed_at").in("card_id", cardIds).order("id")),
+    fetchAllRows(() => supa.from("email_events").select("card_id,buyer_id,event").in("card_id", cardIds).order("id")),
   ]);
 
   if (pErr) {

@@ -157,13 +157,17 @@ async function loadBuyers() {
   // attributed rows (buyer_id set) and capped newest-first — plenty for
   // scoring/timelines without pulling unbounded history. email_events may
   // not exist yet (026 migration); its error fails soft to an empty list.
+  // All fetches go through fetchAllRows (F3): PostgREST silently truncates at
+  // 1,000 rows per request, so the old .limit(4000) calls actually got 1,000
+  // and the buyer list itself would drop everyone past row 1,000. The
+  // secondary .order("id") makes paging deterministic across requests.
   const [{ data, error }, { data: activity }, { data: dViews }, { data: dLeads }, { data: eEvents }, { data: propNames }] = await Promise.all([
-    supa.from("buyers").select("*").eq("active", true).order("date_added", { ascending: false }),
-    supa.from("buyer_activity").select("buyer_id,channel,detail,card_id,address,created_at").order("created_at", { ascending: false }).limit(4000),
-    supa.from("deck_views").select("buyer_id,card_id,kind,dwell_seconds,viewed_at").not("buyer_id", "is", null).order("viewed_at", { ascending: false }).limit(4000),
-    supa.from("deal_leads").select("buyer_id,card_id,address,stage,source,created_at,updated_at").not("buyer_id", "is", null).order("updated_at", { ascending: false }).limit(4000),
-    supa.from("email_events").select("buyer_id,card_id,event,link_url,created_at").not("buyer_id", "is", null).order("created_at", { ascending: false }).limit(4000),
-    supa.from("properties").select("card_id,name"),
+    fetchAllRows(() => supa.from("buyers").select("*").eq("active", true).order("date_added", { ascending: false }).order("id")),
+    fetchAllRows(() => supa.from("buyer_activity").select("buyer_id,channel,detail,card_id,address,created_at").order("created_at", { ascending: false }).order("id"), { maxRows: 4000 }),
+    fetchAllRows(() => supa.from("deck_views").select("buyer_id,card_id,kind,dwell_seconds,viewed_at").not("buyer_id", "is", null).order("viewed_at", { ascending: false }).order("id"), { maxRows: 4000 }),
+    fetchAllRows(() => supa.from("deal_leads").select("buyer_id,card_id,address,stage,source,created_at,updated_at").not("buyer_id", "is", null).order("updated_at", { ascending: false }).order("id"), { maxRows: 4000 }),
+    fetchAllRows(() => supa.from("email_events").select("buyer_id,card_id,event,link_url,created_at").not("buyer_id", "is", null).order("created_at", { ascending: false }).order("id"), { maxRows: 4000 }),
+    fetchAllRows(() => supa.from("properties").select("card_id,name").order("card_id")),
   ]);
   const loading = document.getElementById("loading");
   if (error) { loading.innerHTML = `<div class="empty">Couldn't load buyers: ${escapeHtml(error.message)}</div>`; return; }

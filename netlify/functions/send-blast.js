@@ -11,6 +11,7 @@
 const crypto = require("crypto");
 const { deckToken } = require("./lib/deck-token");
 const { subtoSubject, morbySubject } = require("./lib/subjects");
+const { fetchAllRows } = require("./lib/fetch-all");
 const { matchesDeal, buyerCashAtClose, morbyTermRows } = require("../../public/js/deal-shared");
 
 const SB_URL = process.env.SUPABASE_URL;
@@ -77,10 +78,12 @@ async function verifyUser(authHeader) {
 // public/js/deal-shared.js, the same function the dashboard preview runs. ──
 
 // ── R3: per-recipient logging + recipient-level idempotency ──────
+// Paged (F3): one blast to >1,000 buyers writes >1,000 ledger rows, and a
+// truncated "sent" set here would re-send to everyone past row 1,000.
 async function buyerIdsByStatus(cardId, channel, status) {
-  const rows = await sb(
-    `/blast_recipients?card_id=eq.${encodeURIComponent(cardId)}&channel=eq.${channel}&status=eq.${status}&select=buyer_id`,
-    { method: "GET" }
+  const rows = await fetchAllRows(
+    p => sb(p, { method: "GET" }),
+    `/blast_recipients?card_id=eq.${encodeURIComponent(cardId)}&channel=eq.${channel}&status=eq.${status}&select=buyer_id`
   );
   return new Set((rows || []).map(r => Number(r.buyer_id)).filter(Boolean));
 }
@@ -510,7 +513,9 @@ exports.handler = async (event) => {
       sb(`/properties?card_id=eq.${encodeURIComponent(card_id)}&select=*&limit=1`, { method: "GET" }),
       sb(`/deal_terms?card_id=eq.${encodeURIComponent(card_id)}&select=*&limit=1`, { method: "GET" }),
       sb(`/deal_acquisition?card_id=eq.${encodeURIComponent(card_id)}&select=cover_image_url&limit=1`, { method: "GET" }),
-      sb(`/buyers?active=eq.true&select=*`, { method: "GET" }),
+      // Paged (F3): this is the blast audience — a truncated fetch silently
+      // drops every buyer past row 1,000 from the send.
+      fetchAllRows(p => sb(p, { method: "GET" }), `/buyers?active=eq.true&select=*`),
       sb(`/morby_deals?card_id=eq.${encodeURIComponent(card_id)}&select=*&limit=1`, { method: "GET" }),
     ]);
     const prop = (props || [])[0];

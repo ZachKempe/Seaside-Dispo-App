@@ -7,6 +7,8 @@
 //   2. log a buyer_activity touch,
 //   3. if we know which deal it's about, create/advance a deal_leads pipeline row.
 
+const { fetchAllRows } = require("./fetch-all");
+
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -58,7 +60,12 @@ async function findBuyer(email, phone) {
   const pd = digitsOnly(phone);
   if (pd) {
     // Phones are stored in varied formats; compare on digits in code.
-    const rows = await sb(`/buyers?select=id,name,email,phone,strategy,tier,sms_opt_in&phone=neq.`, { method: "GET" });
+    // Paged (F3): truncation here would misattribute replies from buyers
+    // past row 1,000 (they'd be re-created as fresh "responder" buyers).
+    const rows = await fetchAllRows(
+      p => sb(p, { method: "GET" }),
+      `/buyers?select=id,name,email,phone,strategy,tier,sms_opt_in&phone=neq.`
+    );
     const hit = (rows || []).find((b) => digitsOnly(b.phone) === pd);
     if (hit) return hit;
   }

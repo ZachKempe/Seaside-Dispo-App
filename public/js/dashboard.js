@@ -197,8 +197,12 @@ const SYNC_FN_LABELS = { "sync-trello": "Trello", "sync-buyers": "Buyer form", "
 async function loadSyncHealth() {
   const el = document.getElementById("sync-health");
   if (!el) return;
+  // Scoped to the scheduled syncs: send-blast-background also heartbeats into
+  // sync_runs (for blast-progress polling), and those rows must not make the
+  // strip look fresher than the syncs actually are.
   const { data, error } = await supa.from("sync_runs")
-    .select("fn,status,ran_at,detail").order("ran_at", { ascending: false }).limit(30);
+    .select("fn,status,ran_at,detail").in("fn", Object.keys(SYNC_FN_LABELS))
+    .order("ran_at", { ascending: false }).limit(30);
   if (error || !data || !data.length) { el.textContent = ""; return; }
   const latest = {};
   for (const r of data) if (!latest[r.fn]) latest[r.fn] = r;
@@ -2406,24 +2410,48 @@ async function runBlast({ test }) {
       body.variation_title = v.title || `Variation ${idx + 1}`;
       body.variation_body = v.body || "";
     }
-    const res = await fetch("/.netlify/functions/send-blast", {
+    if (test) {
+      // Test mode stays synchronous — a single preview whose result comes
+      // back inline, exactly as before.
+      const res = await fetch("/.netlify/functions/send-blast", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
+        body: JSON.stringify(body),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || result || "Blast failed");
+      const parts = [];
+      if (result.email) parts.push(result.email.error ? `Email test failed: ${result.email.error}` : `Email test → ${result.email.to} (would reach ${result.email.would_reach ?? "?"} ${buyerIds ? "selected" : "matching"} buyer(s) live)`);
+      if (result.sms) parts.push(result.sms.error ? `SMS test failed: ${result.sms.error}` : result.sms.note ? `SMS test: ${result.sms.note}` : `SMS test → ${result.sms.to} (would reach ${result.sms.would_reach ?? "?"} ${buyerIds ? "selected" : "matching"} buyer(s) live)`);
+      statusEl.textContent = "🧪 TEST — " + parts.join(" · ");
+      return;
+    }
+
+    // LIVE (F4): goes to the background function — 202 immediately, up to a
+    // 15-minute send budget — then we watch progress via blast_recipients.
+    if (activeBlast.isMorbyDeck) {
+      // A background invocation's payload caps at ~256 KB, far too small for
+      // an inline base64 PDF — stage it in Storage and pass the path.
+      const b64 = (body.deal_deck_pdf || "").split("base64,").pop();
+      delete body.deal_deck_pdf;
+      const bytes = Uint8Array.from(atob(b64), ch => ch.charCodeAt(0));
+      const path = `deal-decks/staged-${cardId}.pdf`;
+      const { error: upErr } = await supa.storage.from("property-photos")
+        .upload(path, new Blob([bytes], { type: "application/pdf" }), { upsert: true, contentType: "application/pdf" });
+      if (upErr) throw new Error(`Couldn't stage the deck PDF: ${upErr.message}`);
+      body.deal_deck_path = path;
+    }
+    // 30 s of slack against client/server clock skew when matching the
+    // blast's own ledger + heartbeat rows.
+    const startIso = new Date(Date.now() - 30000).toISOString();
+    const res = await fetch("/.netlify/functions/send-blast-background", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
       body: JSON.stringify(body),
     });
-    const result = await res.json();
-    if (!res.ok) throw new Error(result.error || result || "Blast failed");
-    const parts = [];
-    if (result.email) {
-      if (test) parts.push(result.email.error ? `Email test failed: ${result.email.error}` : `Email test → ${result.email.to} (would reach ${result.email.would_reach ?? "?"} ${buyerIds ? "selected" : "matching"} buyer(s) live)`);
-      else parts.push(result.email.skipped ? `Email: already sent` : `Email: ${result.email.sent || 0} sent${result.email.failed ? `, ${result.email.failed} failed` : ""}${result.email.note ? ` (${result.email.note})` : ""}${result.email.error ? ` — ${result.email.error}` : ""}`);
-    }
-    if (result.sms) {
-      if (test) parts.push(result.sms.error ? `SMS test failed: ${result.sms.error}` : result.sms.note ? `SMS test: ${result.sms.note}` : `SMS test → ${result.sms.to} (would reach ${result.sms.would_reach ?? "?"} ${buyerIds ? "selected" : "matching"} buyer(s) live)`);
-      else parts.push(result.sms.skipped ? `SMS: already sent` : `SMS: ${result.sms.sent || 0} sent${result.sms.failed ? `, ${result.sms.failed} failed` : ""}${result.sms.note ? ` (${result.sms.note})` : ""}`);
-    }
-    statusEl.textContent = (test ? "🧪 TEST — " : "") + parts.join(" · ");
-    if (!test) closeBlastModal();
+    if (res.status !== 202 && !res.ok) throw new Error(`Blast failed to start (HTTP ${res.status})`);
+    await watchBlastProgress({ cardId, startIso, statusEl, expected: targetCount });
+    await loadAll();
   } catch (err) {
     statusEl.textContent = `Error: ${err.message}`;
     statusEl.style.color = "var(--red)";
@@ -2431,6 +2459,42 @@ async function runBlast({ test }) {
     sendBtn.disabled = false; testBtn.disabled = false;
     busyBtn.textContent = busyLabel;
   }
+}
+
+// F4: a live blast returns 202 before anything sends. Progress comes from
+// blast_recipients (blast-core flushes rows incrementally); completion is the
+// sync_runs row send-blast-background writes at the end, matched to this
+// blast via the card=<card_id> tag in its detail. Exits early if the modal
+// closes (the send itself keeps running server-side).
+async function watchBlastProgress({ cardId, startIso, statusEl, expected }) {
+  const deadline = Date.now() + 16 * 60 * 1000;
+  statusEl.style.color = "";
+  statusEl.textContent = `Blast started — sending in the background to ~${expected} buyer(s)…`;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 4000));
+    if (!activeBlast || activeBlast.cardId !== cardId) return;
+    const [{ data: recips }, { data: runs }] = await Promise.all([
+      fetchAllRows(() => supa.from("blast_recipients").select("channel,status").eq("card_id", cardId).gte("blasted_at", startIso).order("id")),
+      supa.from("sync_runs").select("status,detail").eq("fn", "send-blast").gte("ran_at", startIso).order("ran_at", { ascending: false }).limit(5),
+    ]);
+    const sent = (recips || []).filter(r => r.status === "sent").length;
+    const failed = (recips || []).filter(r => r.status === "failed").length;
+    const done = (runs || []).find(r => (r.detail || "").includes(`card=${cardId}`));
+    if (done) {
+      const summary = (done.detail || "").replace(`card=${cardId}`, "").trim();
+      if (done.status === "ok") {
+        statusEl.textContent = `✅ Blast finished — ${summary || `${sent} sent${failed ? `, ${failed} failed` : ""}`}`;
+      } else {
+        statusEl.textContent = `❌ Blast error: ${summary}`;
+        statusEl.style.color = "var(--red)";
+      }
+      return;
+    }
+    const doneCount = sent + failed;
+    const pct = expected ? Math.min(99, Math.round((doneCount / expected) * 100)) : 0;
+    statusEl.textContent = `Sending in background… ${sent} sent${failed ? `, ${failed} failed` : ""} (~${pct}% of ${expected})`;
+  }
+  statusEl.textContent = "Still sending in the background — stopped watching after 16 min; check the deal's blast status shortly.";
 }
 
 document.getElementById("blast-mode-all").addEventListener("change", () => document.getElementById("blast-buyer-list").classList.add("hidden"));

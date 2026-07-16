@@ -81,20 +81,28 @@ async function captureResponder({ channel, name, email, phone, cardId, address, 
   let isNewBuyer = false;
 
   if (!buyer) {
-    const created = await sb(`/buyers`, {
-      method: "POST",
-      headers: { Prefer: "return=representation" },
-      body: JSON.stringify({
-        name: name || email || phone || "Unknown responder",
-        email, phone,
-        strategy: "all", states: "",
-        max_price: 0, max_piti: 0, min_beds: 0,
-        tier: "B", list_source: "responder", active: true, sms_opt_in: false,
-        notes: `Auto-captured from ${channel} reply${address ? ` re: ${address}` : ""}`,
-      }),
-    });
-    buyer = created && created[0];
-    isNewBuyer = true;
+    try {
+      const created = await sb(`/buyers`, {
+        method: "POST",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({
+          name: name || email || phone || "Unknown responder",
+          email, phone,
+          strategy: "all", states: "",
+          max_price: 0, max_piti: 0, min_beds: 0,
+          tier: "B", list_source: "responder", active: true, sms_opt_in: false,
+          notes: `Auto-captured from ${channel} reply${address ? ` re: ${address}` : ""}`,
+        }),
+      });
+      buyer = created && created[0];
+      isNewBuyer = true;
+    } catch (e) {
+      // Migration 029's unique indexes: the buyer already exists (inserted
+      // between our lookup and this insert, or matched only after
+      // normalization). Re-run the lookup rather than dropping the capture.
+      if (!/-> 409/.test(e.message)) throw e;
+      buyer = await findBuyer(email, phone);
+    }
   }
   if (!buyer) return { ok: false, reason: "could not create buyer" };
 

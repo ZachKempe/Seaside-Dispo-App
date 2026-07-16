@@ -77,11 +77,15 @@ exports.handler = async () => {
   const SB_KEY        = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   try {
-    // 1. Find the form ID
-    const formsRaw = await (await fetch(
+    // 1. Find the form ID. Check HTTP status explicitly: an expired/revoked
+    // token returns an error object, which used to coerce to "0 forms" and
+    // produce a misleading "form not found" — surface the real failure.
+    const formsRes = await fetch(
       `https://api.netlify.com/api/v1/sites/${SITE_ID}/forms`,
       { headers: { Authorization: `Bearer ${NETLIFY_TOKEN}` } }
-    )).json();
+    );
+    if (!formsRes.ok) throw new Error(`Netlify forms API -> ${formsRes.status}: ${(await formsRes.text()).slice(0, 200)} (check NETLIFY_ACCESS_TOKEN)`);
+    const formsRaw = await formsRes.json();
     const forms = Array.isArray(formsRaw) ? formsRaw : (formsRaw.forms || []);
     console.log(`sync-buyers: found ${forms.length} forms on site ${SITE_ID}:`, forms.map(f => f.name));
     const form = forms.find(f => f.name === FORM_NAME);
@@ -89,10 +93,12 @@ exports.handler = async () => {
     console.log(`sync-buyers: using form id=${form.id} name=${form.name}`);
 
     // 2. Fetch submissions
-    const submissionsRaw = await (await fetch(
+    const subsRes = await fetch(
       `https://api.netlify.com/api/v1/forms/${form.id}/submissions?per_page=1000`,
       { headers: { Authorization: `Bearer ${NETLIFY_TOKEN}` } }
-    )).json();
+    );
+    if (!subsRes.ok) throw new Error(`Netlify submissions API -> ${subsRes.status}: ${(await subsRes.text()).slice(0, 200)} (check NETLIFY_ACCESS_TOKEN)`);
+    const submissionsRaw = await subsRes.json();
     const submissions = Array.isArray(submissionsRaw) ? submissionsRaw : (submissionsRaw.submissions || []);
     console.log(`sync-buyers: ${submissions.length} total submissions`);
     if (submissions.length > 0) console.log("sync-buyers: first submission keys:", Object.keys(submissions[0]));

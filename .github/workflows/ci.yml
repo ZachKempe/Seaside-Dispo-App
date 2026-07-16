@@ -1,0 +1,34 @@
+# CI gate (F8): every push to main and every PR runs the pure-logic tests and
+# a syntax check over all page scripts, functions, and the two remaining
+# inline HTML scripts. Push-to-main deploys straight to production via
+# Netlify, so this is the only automated gate in front of it — keep it green.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Unit tests (deal-shared, subjects)
+        run: npm test
+
+      - name: Syntax-check page scripts and functions
+        run: |
+          set -e
+          for f in public/js/*.js netlify/functions/*.js netlify/functions/lib/*.js scripts/*.js; do
+            node --check "$f"
+          done
+          echo "all files parsed cleanly"
+
+      - name: Syntax-check inline HTML scripts (index.html, reset.html)
+        run: node scripts/check-inline-scripts.js

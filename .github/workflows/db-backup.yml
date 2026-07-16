@@ -52,10 +52,15 @@ jobs:
       - name: Dump + encrypt
         run: |
           set -euo pipefail
+          # Ubuntu's generic `pg_dump` resolves to the default cluster (v16) even
+          # with the v17 client installed, and pg_dump must be >= the server
+          # (Supabase runs 17.x). Call the newest installed binary directly.
+          PGDUMP="$(ls -d /usr/lib/postgresql/*/bin/pg_dump | sort -V | tail -1)"
+          "$PGDUMP" --version
           stamp="$(date -u +%Y-%m-%dT%H%M%SZ)"
           out="seaside-db-${stamp}.dump.gpg"
           # -Fc = compressed custom format (restore with pg_restore).
-          pg_dump --no-owner --no-privileges -Fc "$SUPABASE_DB_URL" \
+          "$PGDUMP" --no-owner --no-privileges -Fc "$SUPABASE_DB_URL" \
             | gpg --batch --yes --symmetric --cipher-algo AES256 \
                   --passphrase "$BACKUP_GPG_PASSPHRASE" -o "$out"
           size=$(du -h "$out" | cut -f1)

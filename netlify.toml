@@ -16,3 +16,7 @@
 
 [functions."capture-replies"]
   schedule = "*/15 * * * *"
+
+# F9 — weekly digest email to NOTIFY_EMAIL (Mondays 14:00 UTC ≈ 9am ET / 8am CT).
+[functions."weekly-digest"]
+  schedule = "0 14 * * 1"

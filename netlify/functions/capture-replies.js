@@ -1,18 +1,23 @@
 // C1 — Scheduled (every 15 min). Polls Gmail for replies to deal blasts and
 // captures the sender as a buyer + pipeline lead. Only looks at messages whose
-// subject carries the blast marker ("New SubTo Deal"), so unrelated inbox mail
-// is never touched. Idempotent via the inbound_messages ledger.
+// subject carries a blast marker (Sub-To or Stack Method), so unrelated inbox
+// mail is never touched. Idempotent via the inbound_messages ledger.
+//
+// The search query and the subject parser come from lib/subjects.js — the same
+// module send-blast.js builds subjects from — so the two can never drift apart
+// (they once did, and email replies silently stopped being captured).
 
 const { sb, markSeen, captureResponder } = require("./lib/capture");
 const { logSyncRun } = require("./lib/heartbeat");
+const { replyGmailQuery, propertyNameFromSubject } = require("./lib/subjects");
 
 const GMAIL_CLIENT_ID = process.env.GMAIL_CLIENT_ID;
 const GMAIL_CLIENT_SECRET = process.env.GMAIL_CLIENT_SECRET;
 const GMAIL_REFRESH_TOKEN = process.env.GMAIL_REFRESH_TOKEN;
 const GMAIL_FROM_ADDRESS = (process.env.GMAIL_FROM_ADDRESS || "").toLowerCase();
 
-// Matches the blast subject built in send-blast.js: "🏡 New SubTo Deal — <name> | …"
-const DEAL_QUERY = 'in:inbox newer_than:7d -from:me subject:"New SubTo Deal"';
+// Matches every current + legacy blast subject (see lib/subjects.js).
+const DEAL_QUERY = replyGmailQuery();
 
 async function gmailAccessToken() {
   const r = await fetch("https://oauth2.googleapis.com/token", {
@@ -57,15 +62,6 @@ function parseFrom(from) {
   return { name: (m[1] || "").trim(), email: (m[2] || "").trim().toLowerCase() };
 }
 
-// Subject: "Re: 🏡 New SubTo Deal — 123 Main St, Ocala, FL 34479 | $5,000 Entry Fee"
-// Pull the street part (before the first comma) so the property lookup avoids
-// commas that would confuse the PostgREST filter.
-function dealNameFromSubject(subject) {
-  const m = subject.match(/New SubTo Deal\s*[—–-]\s*([^|]+)/i);
-  if (!m) return "";
-  return m[1].split(",")[0].trim();
-}
-
 async function findProperty(namePart) {
   if (!namePart) return null;
   const pat = encodeURIComponent(`%${namePart}%`);
@@ -99,7 +95,7 @@ exports.handler = async () => {
       const fresh = await markSeen(id, "email");
       if (!fresh) { skipped++; continue; }
 
-      const prop = await findProperty(dealNameFromSubject(subject));
+      const prop = await findProperty(propertyNameFromSubject(subject));
       const res = await captureResponder({
         channel: "email",
         name, email,

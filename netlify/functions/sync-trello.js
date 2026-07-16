@@ -4,6 +4,7 @@
 // into Supabase so the dashboard can read it instantly without hitting Trello.
 
 const { logSyncRun } = require("./lib/heartbeat");
+const { fetchAllRows } = require("./lib/fetch-all");
 
 const TRELLO_BASE = "https://api.trello.com/1";
 
@@ -86,12 +87,18 @@ async function trelloGet(path, params, key, token) {
   return r.json();
 }
 
-async function supabaseGetExistingCardIds(sbUrl, sbKey) {
-  const r = await fetch(`${sbUrl}/rest/v1/properties?select=card_id`, {
+// Shared GET helper so the whole-table card_id fetches below can page past
+// PostgREST's silent 1,000-row cap (F3) via fetchAllRows.
+async function sbGet(sbUrl, sbKey, path) {
+  const r = await fetch(`${sbUrl}/rest/v1${path}`, {
     headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` },
   });
-  if (!r.ok) throw new Error(`Supabase select properties -> ${r.status}: ${await r.text()}`);
-  const rows = await r.json();
+  if (!r.ok) throw new Error(`Supabase ${path} -> ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+async function supabaseGetExistingCardIds(sbUrl, sbKey) {
+  const rows = await fetchAllRows(p => sbGet(sbUrl, sbKey, p), `/properties?select=card_id`, { order: "card_id" });
   return new Set(rows.map(row => row.card_id));
 }
 
@@ -101,11 +108,11 @@ async function supabaseGetExistingCardIds(sbUrl, sbKey) {
 // those are created/deleted entirely independently of Trello (LOI upload +
 // the manual 🗑 Remove button) and must never be auto-archived by this sync.
 async function supabaseGetActiveCardIds(sbUrl, sbKey) {
-  const r = await fetch(`${sbUrl}/rest/v1/properties?select=card_id&archived=is.false&deal_type=eq.subto`, {
-    headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` },
-  });
-  if (!r.ok) throw new Error(`Supabase select active properties -> ${r.status}: ${await r.text()}`);
-  const rows = await r.json();
+  const rows = await fetchAllRows(
+    p => sbGet(sbUrl, sbKey, p),
+    `/properties?select=card_id&archived=is.false&deal_type=eq.subto`,
+    { order: "card_id" }
+  );
   return rows.map(row => row.card_id);
 }
 
@@ -128,11 +135,7 @@ async function supabaseSetArchived(sbUrl, sbKey, cardIds, archived) {
 }
 
 async function supabaseGetExistingDealTermIds(sbUrl, sbKey) {
-  const r = await fetch(`${sbUrl}/rest/v1/deal_terms?select=card_id`, {
-    headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` },
-  });
-  if (!r.ok) throw new Error(`Supabase select deal_terms -> ${r.status}: ${await r.text()}`);
-  const rows = await r.json();
+  const rows = await fetchAllRows(p => sbGet(sbUrl, sbKey, p), `/deal_terms?select=card_id`, { order: "card_id" });
   return new Set(rows.map(row => row.card_id));
 }
 

@@ -16,6 +16,28 @@ async function requireAuth() {
   return session;
 }
 
+// ── F3: page past PostgREST's silent 1,000-row cap ─────────────────
+// supabase-js inherits the server's 1,000-rows-per-request limit, and even an
+// explicit .limit(4000) is truncated to that cap — with no error. Any fetch
+// that needs a complete set (buyer lists!) or more than 1,000 rows must go
+// through this pager. `buildQuery` must return a FRESH query on each call and
+// include a stable .order(...) so pages can't skip or duplicate rows.
+// Returns { data, error } like a plain query; `maxRows` bounds intentionally
+// capped fetches (e.g. "most recent 4,000 events"). Any page failing returns
+// { data: null, error } — never a silently partial set, which would
+// reintroduce the exact truncation bug this helper exists to fix.
+async function fetchAllRows(buildQuery, { pageSize = 1000, maxRows = Infinity } = {}) {
+  const all = [];
+  for (let from = 0; from < maxRows; from += pageSize) {
+    const to = Math.min(from + pageSize, maxRows) - 1;
+    const { data, error } = await buildQuery().range(from, to);
+    if (error) return { data: null, error };
+    all.push(...(data || []));
+    if (!data || data.length < to - from + 1) break;
+  }
+  return { data: all, error: null };
+}
+
 function wireLogout(buttonEl) {
   if (!buttonEl) return;
   buttonEl.addEventListener("click", async () => {

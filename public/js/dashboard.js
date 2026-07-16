@@ -197,8 +197,12 @@ const SYNC_FN_LABELS = { "sync-trello": "Trello", "sync-buyers": "Buyer form", "
 async function loadSyncHealth() {
   const el = document.getElementById("sync-health");
   if (!el) return;
+  // Scoped to the scheduled syncs: send-blast-background also heartbeats into
+  // sync_runs (for blast-progress polling), and those rows must not make the
+  // strip look fresher than the syncs actually are.
   const { data, error } = await supa.from("sync_runs")
-    .select("fn,status,ran_at,detail").order("ran_at", { ascending: false }).limit(30);
+    .select("fn,status,ran_at,detail").in("fn", Object.keys(SYNC_FN_LABELS))
+    .order("ran_at", { ascending: false }).limit(30);
   if (error || !data || !data.length) { el.textContent = ""; return; }
   const latest = {};
   for (const r of data) if (!latest[r.fn]) latest[r.fn] = r;
@@ -2406,24 +2410,62 @@ async function runBlast({ test }) {
       body.variation_title = v.title || `Variation ${idx + 1}`;
       body.variation_body = v.body || "";
     }
-    const res = await fetch("/.netlify/functions/send-blast", {
+    if (test) {
+      // Test mode stays synchronous — a single preview whose result comes
+      // back inline, exactly as before.
+      const res = await fetch("/.netlify/functions/send-blast", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
+        body: JSON.stringify(body),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || result || "Blast failed");
+      const parts = [];
+      if (result.email) parts.push(result.email.error ? `Email test failed: ${result.email.error}` : `Email test → ${result.email.to} (would reach ${result.email.would_reach ?? "?"} ${buyerIds ? "selected" : "matching"} buyer(s) live)`);
+      if (result.sms) parts.push(result.sms.error ? `SMS test failed: ${result.sms.error}` : result.sms.note ? `SMS test: ${result.sms.note}` : `SMS test → ${result.sms.to} (would reach ${result.sms.would_reach ?? "?"} ${buyerIds ? "selected" : "matching"} buyer(s) live)`);
+      statusEl.textContent = "🧪 TEST — " + parts.join(" · ");
+      return;
+    }
+
+    // LIVE (F4): goes to the background function — 202 immediately, up to a
+    // 15-minute send budget — then we watch progress via blast_recipients.
+    if (activeBlast.isMorbyDeck) {
+      // A background invocation's payload caps at ~256 KB, far too small for
+      // an inline base64 PDF — stage it in Storage and pass the path.
+      const b64 = (body.deal_deck_pdf || "").split("base64,").pop();
+      delete body.deal_deck_pdf;
+      const bytes = Uint8Array.from(atob(b64), ch => ch.charCodeAt(0));
+      const path = `deal-decks/staged-${cardId}.pdf`;
+      const { error: upErr } = await supa.storage.from("property-photos")
+        .upload(path, new Blob([bytes], { type: "application/pdf" }), { upsert: true, contentType: "application/pdf" });
+      if (upErr) throw new Error(`Couldn't stage the deck PDF: ${upErr.message}`);
+      body.deal_deck_path = path;
+    }
+    // Completion is matched on this ref (echoed back in the heartbeat row's
+    // detail), so detecting the end never depends on the browser clock. The
+    // startIso slack only scopes the cosmetic in-flight counts.
+    body.client_ref = blastRef();
+    const startIso = new Date(Date.now() - 30000).toISOString();
+    const res = await fetch("/.netlify/functions/send-blast-background", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
       body: JSON.stringify(body),
     });
-    const result = await res.json();
-    if (!res.ok) throw new Error(result.error || result || "Blast failed");
-    const parts = [];
-    if (result.email) {
-      if (test) parts.push(result.email.error ? `Email test failed: ${result.email.error}` : `Email test → ${result.email.to} (would reach ${result.email.would_reach ?? "?"} ${buyerIds ? "selected" : "matching"} buyer(s) live)`);
-      else parts.push(result.email.skipped ? `Email: already sent` : `Email: ${result.email.sent || 0} sent${result.email.failed ? `, ${result.email.failed} failed` : ""}${result.email.note ? ` (${result.email.note})` : ""}${result.email.error ? ` — ${result.email.error}` : ""}`);
+    if (res.status !== 202 && !res.ok) throw new Error(`Blast failed to start (HTTP ${res.status})`);
+    const outcome = await watchBlastProgress({ cardId, ref: body.client_ref, startIso, statusEl, expected: targetCount });
+    if (outcome && outcome.run) {
+      const summary = blastRunSummary(outcome.run, cardId);
+      if (outcome.run.status === "ok") {
+        // Close on success like the old sync flow did — leaving the modal
+        // open with a live Send button invites an accidental duplicate send.
+        toast(`✅ Blast finished — ${summary}`, { type: "success", duration: 8000 });
+        closeBlastModal();
+      } else {
+        statusEl.textContent = `❌ Blast error: ${summary}`;
+        statusEl.style.color = "var(--red)";
+      }
     }
-    if (result.sms) {
-      if (test) parts.push(result.sms.error ? `SMS test failed: ${result.sms.error}` : result.sms.note ? `SMS test: ${result.sms.note}` : `SMS test → ${result.sms.to} (would reach ${result.sms.would_reach ?? "?"} ${buyerIds ? "selected" : "matching"} buyer(s) live)`);
-      else parts.push(result.sms.skipped ? `SMS: already sent` : `SMS: ${result.sms.sent || 0} sent${result.sms.failed ? `, ${result.sms.failed} failed` : ""}${result.sms.note ? ` (${result.sms.note})` : ""}`);
-    }
-    statusEl.textContent = (test ? "🧪 TEST — " : "") + parts.join(" · ");
-    if (!test) closeBlastModal();
+    await loadAll();
   } catch (err) {
     statusEl.textContent = `Error: ${err.message}`;
     statusEl.style.color = "var(--red)";
@@ -2431,6 +2473,43 @@ async function runBlast({ test }) {
     sendBtn.disabled = false; testBtn.disabled = false;
     busyBtn.textContent = busyLabel;
   }
+}
+
+// F4: a live blast returns 202 before anything sends. Progress comes from
+// blast_recipients head-counts (blast-core flushes rows incrementally);
+// completion is the sync_runs row send-blast-background writes at the end,
+// matched by the client-generated ref echoed into its detail — immune to
+// client/server clock skew and to a stale heartbeat from an earlier blast of
+// the same card. Returns { run, sent, failed } on completion, null on
+// timeout or when the modal closes (the send keeps running server-side).
+function blastRef() {
+  return (crypto.randomUUID && crypto.randomUUID()) || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+function blastRunSummary(run, cardId) {
+  return (run.detail || "").replace(/\s*ref=\S+/, "").replace(`card=${cardId}`, "").trim();
+}
+async function watchBlastProgress({ cardId, ref, startIso, statusEl, expected }) {
+  const deadline = Date.now() + 16 * 60 * 1000;
+  statusEl.style.color = "";
+  statusEl.textContent = `Blast started — sending in the background to ~${expected} buyer(s)…`;
+  const countRows = (status) => supa.from("blast_recipients")
+    .select("id", { count: "exact", head: true })
+    .eq("card_id", cardId).eq("status", status).gte("blasted_at", startIso);
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 4000));
+    if (!activeBlast || activeBlast.cardId !== cardId) return null;
+    const [{ count: sent }, { count: failed }, { data: runs }] = await Promise.all([
+      countRows("sent"), countRows("failed"),
+      supa.from("sync_runs").select("status,detail").eq("fn", "send-blast").order("ran_at", { ascending: false }).limit(10),
+    ]);
+    const run = (runs || []).find(r => (r.detail || "").includes(`ref=${ref}`));
+    if (run) return { run, sent: sent || 0, failed: failed || 0 };
+    // Counts are per message (a buyer on email+SMS is two rows), so no
+    // percentage — the ref-matched heartbeat above is the real finish line.
+    statusEl.textContent = `Sending in background… ${sent || 0} message${sent === 1 ? "" : "s"} sent${failed ? `, ${failed} failed` : ""} (audience ~${expected} buyer${expected === 1 ? "" : "s"})`;
+  }
+  statusEl.textContent = "Still sending in the background — stopped watching after 16 min; check the deal's blast status shortly.";
+  return null;
 }
 
 document.getElementById("blast-mode-all").addEventListener("change", () => document.getElementById("blast-buyer-list").classList.add("hidden"));
@@ -2457,17 +2536,28 @@ async function retryFailed(btn) {
   btn.disabled = true; const label = btn.textContent; btn.textContent = "Retrying…";
   try {
     const { data: { session: s } } = await supa.auth.getSession();
-    const res = await fetch("/.netlify/functions/send-blast", {
+    // Retries ride the background function too (F4): a mostly-failed large
+    // blast makes the retry set just as big as the original send.
+    const ref = blastRef();
+    const res = await fetch("/.netlify/functions/send-blast-background", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
-      body: JSON.stringify({ card_id: cardId, retry_failed: true }),
+      body: JSON.stringify({ card_id: cardId, retry_failed: true, client_ref: ref }),
     });
-    const r = await res.json();
-    if (!res.ok) throw new Error(r.error || r || "Retry failed");
-    const parts = [];
-    if (r.email) parts.push(`Email: ${r.email.sent || 0} sent${r.email.failed ? `, ${r.email.failed} failed` : ""}${r.email.note ? ` (${r.email.note})` : ""}`);
-    if (r.sms) parts.push(`SMS: ${r.sms.sent || 0} sent${r.sms.failed ? `, ${r.sms.failed} failed` : ""}${r.sms.note ? ` (${r.sms.note})` : ""}`);
-    alert("Retry complete — " + parts.join(" · "));
+    if (res.status !== 202 && !res.ok) throw new Error(`Retry failed to start (HTTP ${res.status})`);
+    const deadline = Date.now() + 16 * 60 * 1000;
+    let run = null;
+    while (!run && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 5000));
+      const { data: runs } = await supa.from("sync_runs").select("status,detail").eq("fn", "send-blast").order("ran_at", { ascending: false }).limit(10);
+      run = (runs || []).find(x => (x.detail || "").includes(`ref=${ref}`));
+    }
+    if (run) {
+      toast(`Retry ${run.status === "ok" ? "complete" : "error"} — ${blastRunSummary(run, cardId)}`,
+        { type: run.status === "ok" ? "success" : "error", duration: 8000 });
+    } else {
+      toast("Retry is still running in the background — refresh in a few minutes.", { type: "info" });
+    }
     await loadAll();
   } catch (err) {
     alert("Retry error: " + err.message);

@@ -8,7 +8,7 @@
 // (they once did, and email replies silently stopped being captured).
 
 const { sb, markSeen, captureResponder } = require("./lib/capture");
-const { logSyncRun } = require("./lib/heartbeat");
+const { logSyncRun, purgeOldSyncRuns } = require("./lib/heartbeat");
 const { replyGmailQuery, propertyNameFromSubject } = require("./lib/subjects");
 
 const GMAIL_CLIENT_ID = process.env.GMAIL_CLIENT_ID;
@@ -73,6 +73,10 @@ async function findProperty(namePart) {
 }
 
 exports.handler = async () => {
+  // F9 retention: trim sync_runs to 30 days (self-gated to a quiet hour, so
+  // this is a no-op on almost every run). Piggybacks on this 15-min job.
+  await purgeOldSyncRuns();
+
   if (!GMAIL_CLIENT_ID || !GMAIL_REFRESH_TOKEN) {
     return { statusCode: 200, body: "Gmail not configured — skipping" };
   }

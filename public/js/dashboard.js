@@ -220,6 +220,38 @@ async function loadSyncHealth() {
   } else {
     el.innerHTML = `<span style="color:#2F855A" title="Trello / buyer-form / reply-capture syncs healthy">✓ synced ${ago}</span>`;
   }
+
+  // F9 — Resend webhook liveness. resend-events.js has no heartbeat of its own,
+  // so a broken webhook is invisible until you notice engagement data stopped.
+  // Tell: an email blast went out but no email_events came back after it. We
+  // only flag once the blast has had time to generate events (≥1h) so a
+  // just-sent blast doesn't false-alarm.
+  const warn = await webhookStaleWarning();
+  if (warn) el.innerHTML += ` <span style="color:#B7791F">·</span> ${warn}`;
+}
+
+// Returns a warning span if the Resend webhook looks dead (a recent email blast
+// produced no email_events), else "". Fails soft — any query error yields "".
+async function webhookStaleWarning() {
+  try {
+    const [{ data: blast }, { data: evt }] = await Promise.all([
+      supa.from("blast_recipients").select("blasted_at")
+        .eq("channel", "email").order("blasted_at", { ascending: false }).limit(1),
+      supa.from("email_events").select("created_at")
+        .order("created_at", { ascending: false }).limit(1),
+    ]);
+    const lastBlast = blast && blast[0] && new Date(blast[0].blasted_at).getTime();
+    if (!lastBlast) return ""; // never email-blasted — nothing to expect
+    const ageH = (Date.now() - lastBlast) / 3600000;
+    if (ageH < 1) return ""; // too soon; give Resend time to deliver + report
+    const lastEvt = evt && evt[0] && new Date(evt[0].created_at).getTime();
+    if (!lastEvt || lastEvt < lastBlast) {
+      return `<span style="color:#B7791F;font-weight:700" title="No email opens/clicks/bounces recorded since the last blast — the Resend webhook (resend-events) may be misconfigured.">⚠ Resend webhook may be down</span>`;
+    }
+    return "";
+  } catch (_) {
+    return "";
+  }
 }
 
 async function loadAll() {

@@ -38,6 +38,24 @@ async function alertFailureStreak(fn, detail) {
   });
 }
 
+// F9 — retention. sync_runs grows ~16k rows/month (every scheduled run + every
+// blast heartbeat). Keep 30 days; older rows have no consumer (the dashboard
+// strip only reads the latest per fn). Called once/day from the least-frequent
+// scheduled job, gated to a quiet UTC hour so it isn't a delete on every run.
+// Idempotent and never throws — a failed purge must not break the sync.
+async function purgeOldSyncRuns() {
+  try {
+    if (new Date().getUTCHours() !== 9) return; // ~04:00 ET, low-traffic window
+    const cutoff = new Date(Date.now() - 30 * 86400000).toISOString();
+    await sb(`/sync_runs?ran_at=lt.${encodeURIComponent(cutoff)}`, {
+      method: "DELETE",
+      headers: { Prefer: "return=minimal" },
+    });
+  } catch (e) {
+    console.warn("sync_runs purge failed:", e.message);
+  }
+}
+
 async function logSyncRun(fn, status, detail = "") {
   try {
     // Read the two prior runs BEFORE inserting, so "prior" means previous runs.
@@ -64,4 +82,4 @@ async function logSyncRun(fn, status, detail = "") {
   }
 }
 
-module.exports = { logSyncRun };
+module.exports = { logSyncRun, purgeOldSyncRuns };

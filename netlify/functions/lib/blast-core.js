@@ -522,7 +522,7 @@ async function runBlast(payload, user) {
       sb(`/morby_deals?card_id=eq.${encodeURIComponent(card_id)}&select=*&limit=1`, { method: "GET" }),
     ]);
     const prop = (props || [])[0];
-    if (!prop) return { statusCode: 404, body: "property not found" };
+    if (!prop) throw httpError(404, "property not found");
     const deckSlugVal = await ensureDeckSlug(prop);
     const deckPageUrl = (buyerId) => `${SITE_URL}/deck/${deckSlugVal}?b=${deckToken(buyerId)}`;
     const terms = (termsRows || [])[0] || {};

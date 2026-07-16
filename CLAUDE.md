@@ -12,11 +12,17 @@ in `netlify/functions/`, Supabase (Postgres + Auth + Storage) as the backend. Pa
 to Supabase directly from the browser via `public/js/supa.js` (anon key + RLS); functions
 use the service-role key via env vars.
 
+Page logic lives in `public/js/<page>.js` (one file per page, loaded after `supa.js`).
+Presentation helpers (`escapeHtml`, `timeAgo`, `fmtDate`) are in `public/js/ui-shared.js`;
+modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline either.
+`fmtMoney` is deliberately per-page (dashboard shows "—" for empty, buyers/pipeline show "").
+
 ### Surfaces
 
 | Surface | File | Purpose |
 |---|---|---|
-| Sign in | `public/index.html` | Supabase email/password auth |
+| Sign in | `public/index.html` | Supabase email/password auth + forgot-password (`reset.html` handles the recovery link) |
+| Reports | `public/reports.html` | Read-only rollups: per-deal funnel, copy-variation performance, time-in-stage aging, closed-deal stats |
 | Posting Dashboard | `public/dashboard.html` | Deals (synced from Trello), terms, copy variations, email/SMS blasts, Morby deals w/ LOI extraction, per-deal leads |
 | Buyer Dashboard | `public/buyers.html` | Buyer CRM: master-detail list, CSV import, deal matcher, buy-box onboarding |
 | Pipeline | `public/pipeline.html` | Kanban dispo board: manual stages, drag-drop, shared notes, stale flags |
@@ -80,8 +86,9 @@ the service key.
 
 - `npm test` — Node's built-in runner over `tests/` (pure-logic tests for `deal-shared.js`).
   Run it after touching matching or money math.
-- Syntax-check inline page scripts after editing:
-  `node -e "new Function(require('fs').readFileSync('public/dashboard.html','utf8').match(/<script>([\s\S]*?)<\/script>/)[1])"`
+- Syntax-check page scripts after editing: `for f in public/js/*.js; do node --check "$f"; done`
+  (index.html/reset.html still carry small inline scripts — extract-and-parse those with
+  `new Function(...)` if touched).
 - Blasts have a test mode (🧪 sends only to the caller) — use it before any live send.
 
 ## Deploys & env

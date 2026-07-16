@@ -5,9 +5,7 @@
 
 let session;
 
-function escapeHtml(s) {
-  return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
+// escapeHtml comes from /js/ui-shared.js
 function pct(part, whole) {
   if (!whole) return "—";
   return `${Math.round((part / whole) * 100)}%`;

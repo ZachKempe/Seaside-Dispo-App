@@ -139,17 +139,26 @@ exports.handler = async () => {
       if (data.prop_type)        noteParts.push(`Property types: ${data.prop_type}`);
       if (maxEntry)              noteParts.push(`Max entry fee: $${maxEntry.toLocaleString()}`);
 
-      await sb(`/buyers`, {
-        method: "POST",
-        headers: { Prefer: "return=minimal" },
-        body: JSON.stringify({
-          name, email, phone, states,
-          max_price: 0, max_piti: maxPiti, min_beds: minBeds,
-          strategy, tier: "B", list_source: "investor",
-          active: true, sms_opt_in: smsConsent,
-          notes: noteParts.join(" | "),
-        }),
-      }, SB_URL, SB_KEY);
+      try {
+        await sb(`/buyers`, {
+          method: "POST",
+          headers: { Prefer: "return=minimal" },
+          body: JSON.stringify({
+            name, email, phone, states,
+            max_price: 0, max_piti: maxPiti, min_beds: minBeds,
+            strategy, tier: "B", list_source: "investor",
+            active: true, sms_opt_in: smsConsent,
+            notes: noteParts.join(" | "),
+          }),
+        }, SB_URL, SB_KEY);
+      } catch (e) {
+        // Migration 029's unique indexes reject duplicates this run's
+        // in-memory sets can't see (e.g. a row another intake path wrote
+        // mid-run). A duplicate isn't a failure — skip it, keep syncing.
+        if (!/-> 409/.test(e.message)) throw e;
+        console.log(`sync-buyers: skipped duplicate submission for ${email || phone}`);
+        continue;
+      }
 
       if (phoneDigits) exPhones.add(phoneDigits);
       if (email) exEmails.add(email);

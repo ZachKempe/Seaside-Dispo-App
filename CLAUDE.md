@@ -23,7 +23,7 @@ modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline eit
 |---|---|---|
 | Sign in | `public/index.html` | Supabase email/password auth + forgot-password (`reset.html` handles the recovery link) |
 | Reports | `public/reports.html` | Read-only rollups: per-deal funnel, copy-variation performance, time-in-stage aging, closed-deal stats |
-| Posting Dashboard | `public/dashboard.html` | Deals (synced from Trello), terms, copy variations, email/SMS blasts, Morby deals w/ LOI extraction, per-deal leads |
+| Posting Dashboard | `public/dashboard.html` | Deals (Sub-To via contract upload, Morby via LOI upload — both AI-extracted), terms, copy variations, email/SMS blasts, per-deal leads |
 | Buyer Dashboard | `public/buyers.html` | Buyer CRM: master-detail list, CSV import, deal matcher, buy-box onboarding |
 | Pipeline | `public/pipeline.html` | Kanban dispo board: manual stages, drag-drop, shared notes, stale flags |
 | Deck page (public) | `/deck/<slug>` → `netlify/functions/deck.js` | Buyer-facing deal page; `?b=<token>` attributes views/interest to a buyer; `.pdf` suffix redirects to the stored PDF |
@@ -42,13 +42,19 @@ modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline eit
 - `deck-dwell.js` — sendBeacon target that fills `deck_views.dwell_seconds` (view-token
   signed, only-increases).
 - `parse-loi.js` — sends an LOI PDF to the Claude API, extracts Morby deal terms.
+- `parse-subto.js` / `generate-copy.js` — the Sub-To intake (Trello retired July 2026):
+  contract + optional mortgage-statement PDFs → Claude extracts `deal_terms` and creates
+  the card (`card_id` `subto-…`); a second call writes 3 marketing copy variations FROM
+  the saved structured terms so copy numbers can't drift from `deal_terms`.
 - `onboard-buyers.js` — one-time buy-box request email to new buyers (`onboarded_at` gate).
 - `unsubscribe.js` — HMAC-tokenized opt-out.
 - `ghl-inbound.js` — webhook for inbound GHL SMS; attributes the text to the deal most
   recently SMS-blasted to that phone (7-day window via `blast_recipients`).
-- Scheduled (see `netlify.toml`): `sync-trello` (10 min, Trello cards → `properties`/`deal_terms`),
-  `sync-buyers` (5 min, Netlify Forms buyer intake → `buyers`), `capture-replies`
-  (15 min, Gmail replies → buyers + leads).
+- Scheduled (see `netlify.toml`): `sync-buyers` (5 min, Netlify Forms buyer intake →
+  `buyers`), `capture-replies` (15 min, Gmail replies → buyers + leads; also purges
+  `sync_runs` >30 days), `weekly-digest` (Mondays 14:00 UTC, 7-day rollup email).
+  There is no Trello sync — deal creation and lifecycle (archive via the 🗑 button)
+  are fully in-dashboard.
 
 ### Shared logic — the one rule that matters
 
@@ -95,8 +101,8 @@ the service key.
 
 Push to `main` deploys via Netlify. Key env vars (set in Netlify): `SUPABASE_URL`,
 `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `RESEND_API_KEY`, `RESEND_FROM`,
-`GMAIL_*` (fallback sender + reply capture), `GHL_*` (SMS), `TRELLO_*`,
-`ANTHROPIC_API_KEY` (LOI parsing), `PUBLIC_SITE_URL`, `UNSUB_SECRET`, `DECK_TOKEN_SECRET`,
+`GMAIL_*` (fallback sender + reply capture), `GHL_*` (SMS),
+`ANTHROPIC_API_KEY` (LOI/contract parsing + copy generation), `PUBLIC_SITE_URL`, `UNSUB_SECRET`, `DECK_TOKEN_SECRET`,
 `NOTIFY_EMAIL` (interest + sync-failure alerts), `GOOGLE_MAPS_API_KEY` (deck photo fallback),
 `CAPTURE_WEBHOOK_SECRET` (GHL webhook).
 

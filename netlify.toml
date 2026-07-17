@@ -8,9 +8,6 @@
   to = "/.netlify/functions/deck?slug=:splat"
   status = 200
 
-[functions."sync-trello"]
-  schedule = "*/10 * * * *"
-
 [functions."sync-buyers"]
   schedule = "*/5 * * * *"
 

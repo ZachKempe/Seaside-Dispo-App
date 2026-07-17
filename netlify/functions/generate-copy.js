@@ -2,8 +2,8 @@
 // properties + deal_terms rows (never the PDFs — the structured terms are the
 // single source of truth, so the numbers in the copy can't drift from what the
 // dashboard shows and what send-blast sends; findCopyMismatches stays green)
-// and asks Claude for 3 copy variations, saved to properties.variations in the
-// same [{title, body}] shape sync-trello used to seed from Trello comments.
+// and asks Claude for 3 copy variations, saved to properties.variations as
+// [{title, body}] — the shape the dashboard's copy editor and blast modal use.
 // The dashboard's copy editor remains the source of truth after generation —
 // this only ever runs on a card whose variations are still empty, unless the
 // caller passes force:true.

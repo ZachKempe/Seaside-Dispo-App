@@ -56,7 +56,7 @@ Interested? Reply here or call/text ${ZACH_PHONE}`;
 // ── Feature 3: Data Consistency Validation ──
 // Read-only check: parses numbers out of the marketing copy and flags any
 // that contradict the structured deal_terms fields. Never auto-fixes —
-// user resolves manually (in Trello / the edit flow).
+// user resolves manually (the copy/terms edit flows).
 function parseMoney(str) {
   if (!str) return null;
   const n = Number(String(str).replace(/[^0-9.]/g, ""));
@@ -193,7 +193,9 @@ function renderCallList(callList) {
 // ── Sync health: latest heartbeat per scheduled function (sync_runs rows
 // written by lib/heartbeat.js). Fails soft — before the 025 migration runs
 // the query errors and the indicator simply stays hidden. ──
-const SYNC_FN_LABELS = { "sync-trello": "Trello", "sync-buyers": "Buyer form", "capture-replies": "Reply capture" };
+// Trello was retired (July 2026) — deals are created by contract/LOI upload
+// now, so only the buyer-form and reply-capture syncs heartbeat here.
+const SYNC_FN_LABELS = { "sync-buyers": "Buyer form", "capture-replies": "Reply capture" };
 async function loadSyncHealth() {
   const el = document.getElementById("sync-health");
   if (!el) return;
@@ -218,7 +220,7 @@ async function loadSyncHealth() {
     // All heartbeats old — the functions themselves may have stopped running.
     el.innerHTML = `<span style="color:#B7791F;font-weight:700">⚠ no sync heartbeat in ${ago.replace(" ago", "")}</span>`;
   } else {
-    el.innerHTML = `<span style="color:#2F855A" title="Trello / buyer-form / reply-capture syncs healthy">✓ synced ${ago}</span>`;
+    el.innerHTML = `<span style="color:#2F855A" title="Buyer-form / reply-capture syncs healthy">✓ synced ${ago}</span>`;
   }
 
   // F9 — Resend webhook liveness. resend-events.js has no heartbeat of its own,
@@ -344,7 +346,7 @@ async function loadAll() {
           <span id="add-subto-status" class="muted" style="font-size:0.82rem"></span>
         </div>
       </div>
-      ${subtoProps.length ? `<div class="grid grid-2">${subtoProps.map(renderArgs).join("")}</div>` : `<div class="empty">No Sub-To deals yet — click "+ Add Sub-To Deal" and upload the contract, or wait for the Trello sync (every 10 minutes).</div>`}
+      ${subtoProps.length ? `<div class="grid grid-2">${subtoProps.map(renderArgs).join("")}</div>` : `<div class="empty">No Sub-To deals yet — click "+ Add Sub-To Deal" and upload the contract to create one.</div>`}
     </div>
     <div class="deal-type-group">
       <div class="deal-type-group-header flex-between">
@@ -591,7 +593,7 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
             <button class="btn btn-ghost btn-sm copy-deal-btn" data-card-id="${escapeHtml(p.card_id)}" title="Copy a pre-formatted deal summary to your clipboard">📋 Copy Deal Info</button>
             <button class="btn btn-ghost btn-sm test-blast-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Send a preview to yourself only — does not reach buyers">🧪 Test Blast</button>
             <button class="btn btn-primary btn-sm send-blast-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" ${blockSend ? `disabled title="${escapeHtml(blockTitle)}"` : ""} style="${blockSend ? "opacity:.5;cursor:not-allowed" : ""}">📣 Send Blast</button>
-            ${String(p.card_id).startsWith("subto-") ? `<button class="btn btn-ghost btn-sm morby-delete-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Remove this deal (it was created by upload, not Trello, so it won't come back)">🗑</button>` : ""}
+            <button class="btn btn-ghost btn-sm morby-delete-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Remove this deal (archives it — undo available)">🗑</button>
           </div>
           <span class="blast-status muted" style="font-size:0.74rem;text-align:right;max-width:220px"></span>
         </div>
@@ -1565,8 +1567,9 @@ function wireMorbyPanel() {
     btn.addEventListener("click", () => extractLoi(btn));
   });
 
-  // ── Remove a manually-created deal card (Morby LOI uploads and F5 Sub-To
-  // contract uploads — both card kinds that Trello doesn't own) ──
+  // ── Remove a deal card. With the Trello sync retired (July 2026) this is
+  // the only lifecycle control — every card (uploaded or legacy Trello-era)
+  // is archived from here when it's done. ──
   document.querySelectorAll(".morby-delete-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
       const cardId = btn.dataset.cardId;
@@ -1574,8 +1577,8 @@ function wireMorbyPanel() {
       if (!confirm(`Remove the deal "${address}"?`)) return;
       btn.disabled = true;
       // Soft delete: archive it (hidden from the dashboard) instead of a
-      // permanent delete, so it can be undone. These cards aren't synced
-      // from Trello, so archiving won't be re-created.
+      // permanent delete, so it can be undone. Nothing re-creates archived
+      // cards — no sync owns deal lifecycle anymore.
       const { error } = await supa.from("properties")
         .update({ archived: true, archived_at: new Date().toISOString() })
         .eq("card_id", cardId);

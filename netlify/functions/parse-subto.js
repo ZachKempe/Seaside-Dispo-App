@@ -1,10 +1,9 @@
-// F5 — "Add Sub-To Deal" upload for the dashboard. Sends the purchase contract
-// (and optionally the mortgage statement) to Claude, extracts the Sub-To deal
-// terms, and creates a brand-new standalone deal card: a `properties` row
-// (card_id "subto-...", never a Trello id — sync-trello's archive diff skips
-// that prefix) plus a `deal_terms` row. This is the server-side replacement for
-// the laptop pipeline (main.py) that used to post DEAL TERMS comments to
-// Trello. Marketing copy is generated in a second, PDF-free call —
+// F5 — "Add Sub-To Deal" upload for the dashboard: THE Sub-To intake (the
+// Trello sync and the laptop pipeline it fed from are both retired). Sends the
+// purchase contract (and optionally the mortgage statement) to Claude,
+// extracts the Sub-To deal terms, and creates a brand-new standalone deal
+// card: a `properties` row (card_id "subto-...") plus a `deal_terms` row.
+// Marketing copy is generated in a second, PDF-free call —
 // generate-copy.js — so the numbers in the copy always come from the same
 // structured terms saved here.
 //
@@ -121,9 +120,8 @@ exports.handler = async (event) => {
       throw new Error(`Couldn't parse Claude's response as JSON: ${e.message}`);
     }
 
-    // Brand-new standalone Sub-To card. The "subto-" prefix matters: it is how
-    // sync-trello's archive diff knows this deal was never a Trello card and
-    // must not be auto-archived for being absent from the Trello list.
+    // Brand-new standalone Sub-To card ("subto-" prefix marks upload-created
+    // cards, distinct from legacy Trello card ids).
     const card_id = `subto-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const propRow = {
       card_id,

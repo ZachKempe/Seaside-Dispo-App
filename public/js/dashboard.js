@@ -335,10 +335,10 @@ async function loadAll() {
       </div>
       <div id="add-subto-panel" class="card hidden" style="margin-bottom:16px">
         <h3 style="margin-top:0">New Sub-To Deal — Upload Contract</h3>
-        <p class="muted" style="font-size:0.85rem">Upload the purchase contract (PDF), plus the seller's mortgage statement if you have it — Claude extracts the deal terms, creates the card, and writes 3 marketing copy variations, all ready to review and blast. No Trello needed.</p>
+        <p class="muted" style="font-size:0.85rem">Upload the purchase contract and the seller's mortgage statement — PDF or image (JPG/PNG). Claude extracts the deal terms, creates the card, and writes 3 marketing copy variations, all ready to review and blast. No Trello needed.</p>
         <div class="flex gap-8" style="flex-wrap:wrap;align-items:center">
-          <label style="font-size:0.8rem">Contract (required)<br><input type="file" id="add-subto-contract" accept="application/pdf" style="max-width:260px"></label>
-          <label style="font-size:0.8rem">Mortgage statement (optional)<br><input type="file" id="add-subto-statement" accept="application/pdf" style="max-width:260px"></label>
+          <label style="font-size:0.8rem">Contract (required)<br><input type="file" id="add-subto-contract" accept="application/pdf,image/jpeg,image/png,image/gif,image/webp" style="max-width:260px"></label>
+          <label style="font-size:0.8rem">Mortgage statement (required)<br><input type="file" id="add-subto-statement" accept="application/pdf,image/jpeg,image/png,image/gif,image/webp" style="max-width:260px"></label>
         </div>
         <div class="flex gap-8 mt-8" style="flex-wrap:wrap;align-items:center">
           <button type="button" class="btn btn-primary btn-sm" id="add-subto-submit">📤 Extract &amp; Create</button>
@@ -1715,27 +1715,38 @@ function wireAddSubtoPanel() {
     statusEl.textContent = "";
   });
 
+  // PDF or the image types Claude accepts. HEIC (default iPhone photo format)
+  // is deliberately excluded — Claude's API rejects it — so we steer the user
+  // to convert rather than fail server-side with a cryptic message.
+  const SUBTO_ALLOWED = ["application/pdf", "image/jpeg", "image/png", "image/gif", "image/webp"];
+
   submitBtn.addEventListener("click", async () => {
     const contract = contractInput.files && contractInput.files[0];
     const statement = statementInput.files && statementInput.files[0];
-    if (!contract) { statusEl.textContent = "Choose the contract PDF first."; return; }
-    if (contract.type !== "application/pdf" || (statement && statement.type !== "application/pdf")) {
-      statusEl.textContent = "Both files must be PDFs.";
+    if (!contract) { statusEl.textContent = "Choose the contract file first."; return; }
+    if (!statement) { statusEl.textContent = "Choose the mortgage statement file — it's required."; return; }
+    if (!SUBTO_ALLOWED.includes(contract.type) || !SUBTO_ALLOWED.includes(statement.type)) {
+      statusEl.textContent = "Files must be PDF, JPG, PNG, GIF, or WebP. (iPhone HEIC photos: convert to JPG first.)";
       return;
     }
     // Base64 inflates ~4/3 and the whole payload must fit one function call.
-    if (contract.size + (statement ? statement.size : 0) > 4 * 1024 * 1024) {
-      statusEl.textContent = "PDFs too large — keep the combined size under 4 MB (try a compressed/re-saved PDF).";
+    if (contract.size + statement.size > 4 * 1024 * 1024) {
+      statusEl.textContent = "Files too large — keep the combined size under 4 MB (compress/re-save, or screenshot a smaller region).";
       return;
     }
 
     const original = submitBtn.textContent;
     submitBtn.disabled = true;
-    submitBtn.textContent = "Reading PDFs…";
+    submitBtn.textContent = "Reading files…";
     statusEl.textContent = "";
     try {
-      const body = { contract_base64: await pdfFileToBase64(contract) };
-      if (statement) body.statement_base64 = await pdfFileToBase64(statement);
+      // Send each file with its media type so the server can pick the right
+      // Claude content block (document for PDF, image for JPG/PNG/etc.).
+      const filePayload = async (f) => ({ media_type: f.type, data: await pdfFileToBase64(f) });
+      const body = {
+        contract: await filePayload(contract),
+        statement: await filePayload(statement),
+      };
 
       submitBtn.textContent = "Extracting terms with AI…";
       const { data: { session: s } } = await supa.auth.getSession();

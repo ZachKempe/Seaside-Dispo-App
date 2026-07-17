@@ -1,9 +1,9 @@
 // F5 — "Add Sub-To Deal" upload for the dashboard: THE Sub-To intake (the
 // Trello sync and the laptop pipeline it fed from are both retired). Sends the
-// purchase contract (and optionally the mortgage statement) to Claude,
-// extracts the Sub-To deal terms, and creates a brand-new standalone deal
-// card: a `properties` row (card_id "subto-...") plus a `deal_terms` row.
-// Marketing copy is generated in a second, PDF-free call —
+// purchase contract and the seller's mortgage statement (each a PDF or an
+// image — screenshot/JPEG) to Claude, extracts the Sub-To deal terms, and
+// creates a brand-new standalone deal card: a `properties` row (card_id
+// "subto-...") plus a `deal_terms` row. Marketing copy is a second call —
 // generate-copy.js — so the numbers in the copy always come from the same
 // structured terms saved here.
 //
@@ -40,7 +40,22 @@ async function verifyUser(authHeader) {
   return r.json();
 }
 
-const EXTRACTION_PROMPT = `You are reading the documents for a "Subject-To" (Sub-To) real estate deal: a purchase contract, and possibly the seller's mortgage statement.
+// PDF goes in a "document" block; images (screenshots / phone photos of a
+// statement) go in an "image" block. Claude accepts these image types only —
+// notably NOT image/heic, which the dashboard blocks before upload.
+const ALLOWED_MEDIA = new Set(["application/pdf", "image/jpeg", "image/png", "image/gif", "image/webp"]);
+
+function fileBlock(file, label) {
+  if (!file || !file.data) throw new Error(`${label} file is missing`);
+  const mt = file.media_type;
+  if (!ALLOWED_MEDIA.has(mt)) throw new Error(`${label} must be a PDF or JPG/PNG/GIF/WebP image (got ${mt || "unknown type"})`);
+  const source = { type: "base64", media_type: mt, data: file.data };
+  return mt === "application/pdf"
+    ? { type: "document", source }
+    : { type: "image", source };
+}
+
+const EXTRACTION_PROMPT = `You are reading the documents for a "Subject-To" (Sub-To) real estate deal: a purchase contract and the seller's mortgage statement.
 
 Extract the following and return ONLY a valid JSON object — no explanation, no markdown, just the JSON. Use null for anything not stated in the documents. Numbers must be plain JSON numbers (no $ signs or commas).
 
@@ -74,17 +89,19 @@ exports.handler = async (event) => {
       return { statusCode: 500, body: JSON.stringify({ error: "ANTHROPIC_API_KEY is not configured on the server." }) };
     }
 
-    const { contract_base64, statement_base64 } = JSON.parse(event.body || "{}");
-    if (!contract_base64) return { statusCode: 400, body: JSON.stringify({ error: "contract_base64 required" }) };
+    const { contract, statement } = JSON.parse(event.body || "{}");
+    if (!contract || !contract.data) return { statusCode: 400, body: JSON.stringify({ error: "contract file required" }) };
+    if (!statement || !statement.data) return { statusCode: 400, body: JSON.stringify({ error: "mortgage statement file required" }) };
 
-    // Both PDFs go in one request as document blocks, docs before the prompt.
+    // Both files go in one request, each labelled so Claude knows which is which
+    // (matters especially when they're images rather than self-labelling PDFs).
     const content = [
-      { type: "document", source: { type: "base64", media_type: "application/pdf", data: contract_base64 } },
+      { type: "text", text: "Document 1 — the purchase contract:" },
+      fileBlock(contract, "Contract"),
+      { type: "text", text: "Document 2 — the seller's mortgage statement:" },
+      fileBlock(statement, "Mortgage statement"),
+      { type: "text", text: EXTRACTION_PROMPT },
     ];
-    if (statement_base64) {
-      content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: statement_base64 } });
-    }
-    content.push({ type: "text", text: EXTRACTION_PROMPT });
 
     const aiRes = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",

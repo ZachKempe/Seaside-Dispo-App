@@ -327,8 +327,24 @@ async function loadAll() {
   content.innerHTML = `
     ${renderCallList(buildCallList(props, leads, deckViews, buyers))}
     <div class="deal-type-group">
-      <div class="deal-type-group-header">🏠 Sub-To Deals <span class="muted">(${subtoProps.length})</span></div>
-      ${subtoProps.length ? `<div class="grid grid-2">${subtoProps.map(renderArgs).join("")}</div>` : `<div class="empty">No "Under Contract" Sub-To properties found yet. New deals sync automatically every 10 minutes.</div>`}
+      <div class="deal-type-group-header flex-between">
+        <span>🏠 Sub-To Deals <span class="muted">(${subtoProps.length})</span></span>
+        <button type="button" class="btn btn-primary btn-sm" id="add-subto-btn">+ Add Sub-To Deal</button>
+      </div>
+      <div id="add-subto-panel" class="card hidden" style="margin-bottom:16px">
+        <h3 style="margin-top:0">New Sub-To Deal — Upload Contract</h3>
+        <p class="muted" style="font-size:0.85rem">Upload the purchase contract (PDF), plus the seller's mortgage statement if you have it — Claude extracts the deal terms, creates the card, and writes 3 marketing copy variations, all ready to review and blast. No Trello needed.</p>
+        <div class="flex gap-8" style="flex-wrap:wrap;align-items:center">
+          <label style="font-size:0.8rem">Contract (required)<br><input type="file" id="add-subto-contract" accept="application/pdf" style="max-width:260px"></label>
+          <label style="font-size:0.8rem">Mortgage statement (optional)<br><input type="file" id="add-subto-statement" accept="application/pdf" style="max-width:260px"></label>
+        </div>
+        <div class="flex gap-8 mt-8" style="flex-wrap:wrap;align-items:center">
+          <button type="button" class="btn btn-primary btn-sm" id="add-subto-submit">📤 Extract &amp; Create</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="add-subto-cancel">Cancel</button>
+          <span id="add-subto-status" class="muted" style="font-size:0.82rem"></span>
+        </div>
+      </div>
+      ${subtoProps.length ? `<div class="grid grid-2">${subtoProps.map(renderArgs).join("")}</div>` : `<div class="empty">No Sub-To deals yet — click "+ Add Sub-To Deal" and upload the contract, or wait for the Trello sync (every 10 minutes).</div>`}
     </div>
     <div class="deal-type-group">
       <div class="deal-type-group-header flex-between">
@@ -349,6 +365,7 @@ async function loadAll() {
     </div>`;
   wireCardEvents();
   wireAddMorbyPanel();
+  wireAddSubtoPanel();
 }
 
 // Buyer↔deal matching is matchesDeal from /js/deal-shared.js — the exact
@@ -563,8 +580,8 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
           <p class="prop-title">${escapeHtml(p.name)}</p>
           <div class="prop-meta">
             ${p.state ? `<span class="pill pill-state">${escapeHtml(p.state)}</span>` : ""}
-            <a href="${escapeHtml(p.trello_url)}" target="_blank" rel="noopener">Trello ↗</a>
-            ${p.drive_link ? ` · <a href="${escapeHtml(p.drive_link)}" target="_blank" rel="noopener">Photos (Drive) ↗</a>` : ""}
+            ${p.trello_url ? `<a href="${escapeHtml(p.trello_url)}" target="_blank" rel="noopener">Trello ↗</a>` : ""}
+            ${p.drive_link ? `${p.trello_url ? " · " : ""}<a href="${escapeHtml(p.drive_link)}" target="_blank" rel="noopener">Photos (Drive) ↗</a>` : ""}
             ${respondedPlus ? ` <span class="pill responded-pill" data-card-id="${escapeHtml(p.card_id)}" style="background:#ff5a1f22;color:#ff5a1f;font-weight:700;cursor:pointer" title="Buyers who replied to a blast on this deal — click to view">🔥 ${respondedPlus} responded</span>` : ""}
           </div>
           ${flags.length ? `<div class="health-badges" style="justify-content:flex-start">${flags.map(f => `<span class="health-badge ${f.cls}" title="${escapeHtml(f.label)}">${f.icon} ${escapeHtml(f.label)}</span>`).join("")}</div>` : ""}
@@ -574,6 +591,7 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
             <button class="btn btn-ghost btn-sm copy-deal-btn" data-card-id="${escapeHtml(p.card_id)}" title="Copy a pre-formatted deal summary to your clipboard">📋 Copy Deal Info</button>
             <button class="btn btn-ghost btn-sm test-blast-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Send a preview to yourself only — does not reach buyers">🧪 Test Blast</button>
             <button class="btn btn-primary btn-sm send-blast-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" ${blockSend ? `disabled title="${escapeHtml(blockTitle)}"` : ""} style="${blockSend ? "opacity:.5;cursor:not-allowed" : ""}">📣 Send Blast</button>
+            ${String(p.card_id).startsWith("subto-") ? `<button class="btn btn-ghost btn-sm morby-delete-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Remove this deal (it was created by upload, not Trello, so it won't come back)">🗑</button>` : ""}
           </div>
           <span class="blast-status muted" style="font-size:0.74rem;text-align:right;max-width:220px"></span>
         </div>
@@ -638,7 +656,7 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
 
       ${variations.length ? `
         <div class="mt-16">
-          <label>Marketing Copy (${variations.length} variation${variations.length === 1 ? "" : "s"}) <span class="muted" style="font-weight:400">— generated from Trello on intake; edits here are saved and become the source of truth</span></label>
+          <label>Marketing Copy (${variations.length} variation${variations.length === 1 ? "" : "s"}) <span class="muted" style="font-weight:400">— generated on intake; edits here are saved and become the source of truth</span></label>
           ${variations.map((v, i) => {
             const body = (v && typeof v === "object") ? (v.body || "") : String(v || "");
             return `
@@ -1547,15 +1565,16 @@ function wireMorbyPanel() {
     btn.addEventListener("click", () => extractLoi(btn));
   });
 
-  // ── Remove a Morby deal card ──
+  // ── Remove a manually-created deal card (Morby LOI uploads and F5 Sub-To
+  // contract uploads — both card kinds that Trello doesn't own) ──
   document.querySelectorAll(".morby-delete-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
       const cardId = btn.dataset.cardId;
       const address = btn.dataset.address;
-      if (!confirm(`Remove the Morby deal "${address}"?`)) return;
+      if (!confirm(`Remove the deal "${address}"?`)) return;
       btn.disabled = true;
       // Soft delete: archive it (hidden from the dashboard) instead of a
-      // permanent delete, so it can be undone. Morby deals aren't synced
+      // permanent delete, so it can be undone. These cards aren't synced
       // from Trello, so archiving won't be re-created.
       const { error } = await supa.from("properties")
         .update({ archived: true, archived_at: new Date().toISOString() })
@@ -1661,6 +1680,94 @@ function wireAddMorbyPanel() {
       panel.classList.add("hidden");
       fileInput.value = "";
       await loadAll();
+    } catch (e) {
+      statusEl.textContent = `Couldn't create deal: ${e.message}`;
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = original;
+    }
+  });
+}
+
+// ── "+ Add Sub-To Deal" (F5) — create a card directly from the contract +
+// mortgage statement, no Trello involved. Two server calls: parse-subto
+// (extract terms, create the card) then generate-copy (write the 3 marketing
+// variations from the saved terms). If copy generation fails the card still
+// exists — the copy can be added by hand, so that failure is only a warning.
+function wireAddSubtoPanel() {
+  const addBtn = document.getElementById("add-subto-btn");
+  const panel = document.getElementById("add-subto-panel");
+  const cancelBtn = document.getElementById("add-subto-cancel");
+  const submitBtn = document.getElementById("add-subto-submit");
+  const contractInput = document.getElementById("add-subto-contract");
+  const statementInput = document.getElementById("add-subto-statement");
+  const statusEl = document.getElementById("add-subto-status");
+  if (!addBtn) return;
+
+  addBtn.addEventListener("click", () => panel.classList.toggle("hidden"));
+  cancelBtn.addEventListener("click", () => {
+    panel.classList.add("hidden");
+    contractInput.value = "";
+    statementInput.value = "";
+    statusEl.textContent = "";
+  });
+
+  submitBtn.addEventListener("click", async () => {
+    const contract = contractInput.files && contractInput.files[0];
+    const statement = statementInput.files && statementInput.files[0];
+    if (!contract) { statusEl.textContent = "Choose the contract PDF first."; return; }
+    if (contract.type !== "application/pdf" || (statement && statement.type !== "application/pdf")) {
+      statusEl.textContent = "Both files must be PDFs.";
+      return;
+    }
+    // Base64 inflates ~4/3 and the whole payload must fit one function call.
+    if (contract.size + (statement ? statement.size : 0) > 4 * 1024 * 1024) {
+      statusEl.textContent = "PDFs too large — keep the combined size under 4 MB (try a compressed/re-saved PDF).";
+      return;
+    }
+
+    const original = submitBtn.textContent;
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Reading PDFs…";
+    statusEl.textContent = "";
+    try {
+      const body = { contract_base64: await pdfFileToBase64(contract) };
+      if (statement) body.statement_base64 = await pdfFileToBase64(statement);
+
+      submitBtn.textContent = "Extracting terms with AI…";
+      const { data: { session: s } } = await supa.auth.getSession();
+      const res = await fetch("/.netlify/functions/parse-subto", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
+        body: JSON.stringify(body),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || "Extraction failed");
+
+      submitBtn.textContent = "Writing marketing copy…";
+      let copyError = null;
+      try {
+        const copyRes = await fetch("/.netlify/functions/generate-copy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
+          body: JSON.stringify({ card_id: result.card_id }),
+        });
+        const copyResult = await copyRes.json();
+        if (!copyRes.ok) throw new Error(copyResult.error || "copy generation failed");
+      } catch (copyErr) {
+        // The card exists; only the copy is missing. Don't fail the whole flow.
+        copyError = copyErr.message;
+      }
+
+      panel.classList.add("hidden");
+      contractInput.value = "";
+      statementInput.value = "";
+      await loadAll(); // re-renders #content, so report via toast (survives the re-render)
+      if (copyError) {
+        toast(`Deal created, but copy generation failed (${copyError}) — add copy manually.`, { type: "error" });
+      } else {
+        toast("✓ Sub-To deal created with terms + marketing copy — review the card.", { type: "success" });
+      }
     } catch (e) {
       statusEl.textContent = `Couldn't create deal: ${e.message}`;
     } finally {

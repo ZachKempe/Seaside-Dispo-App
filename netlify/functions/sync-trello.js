@@ -107,10 +107,13 @@ async function supabaseGetExistingCardIds(sbUrl, sbKey) {
 // sync. Scoped to deal_type=subto so this diff can never touch Morby deals —
 // those are created/deleted entirely independently of Trello (LOI upload +
 // the manual 🗑 Remove button) and must never be auto-archived by this sync.
+// Manually-created Sub-To deals (F5 contract upload, card_id "subto-...") are
+// likewise excluded: they were never Trello cards, so "absent from the Trello
+// list" is their permanent normal state, not a signal to archive.
 async function supabaseGetActiveCardIds(sbUrl, sbKey) {
   const rows = await fetchAllRows(
     p => sbGet(sbUrl, sbKey, p),
-    `/properties?select=card_id&archived=is.false&deal_type=eq.subto`,
+    `/properties?select=card_id&archived=is.false&deal_type=eq.subto&card_id=not.like.subto-*`,
     { order: "card_id" }
   );
   return rows.map(row => row.card_id);

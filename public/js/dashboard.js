@@ -11,6 +11,14 @@ const dealCache = {}; // card_id -> { prop, terms, matched: [...buyers] }
 const activeTabByCard = {}; // card_id -> "posting" | "dealinfo" — preserved across re-renders
 let allBuyers = []; // every active buyer — used by the blast modal's "by method" filter
 
+// ── Deal triage (scalability): cards render as compact one-line rows by
+// default and expand on click; the triage bar searches/filters/sorts them.
+// State lives here so it survives loadAll re-renders within the session.
+const expandedDealCards = new Set(); // card_ids currently shown as full cards
+const dealView = { query: "", filter: "all", sort: "attention" }; // triage bar state
+let boardData = null;      // last loadAll fetch — lets renderBoard re-render without refetching
+let dealSearchTimer = null; // debounce for the triage search box
+
 // Shared with send-blast.js and the deck page (see /js/deal-shared.js) so
 // the blast preview, the live send, and the emails can never disagree.
 const { fmtMoney, matchesDeal, dscrMonthlyPayment } = DealShared;
@@ -319,18 +327,90 @@ async function loadAll() {
 
   allBuyers = buyers || [];
 
+  // Stash everything the renderer needs so the triage bar (search / filter /
+  // sort / expand) can re-render instantly without refetching Supabase.
+  boardData = {
+    props: props || [], buyers: buyers || [], leads: leads || [], deckViews: deckViews || [],
+    termsByCard, statusByCard, fbByCard, leadsByCard, blastsByCard, recipsByCard,
+    viewsByCard, eventsByCard, acqByCard, morbyByCard,
+  };
+  renderBoard();
+}
+
+// ── Board renderer — everything below the page header. Split out of loadAll
+// so triage-bar interactions re-render from boardData without a refetch. ──
+function renderBoard() {
+  if (!boardData) return;
+  const content = document.getElementById("content");
+  const { props, buyers, leads, deckViews, termsByCard, statusByCard, fbByCard, leadsByCard,
+          blastsByCard, recipsByCard, viewsByCard, eventsByCard, acqByCard, morbyByCard } = boardData;
+
   document.getElementById("prop-count").textContent =
     `${props.length} active under-contract propert${props.length === 1 ? "y" : "ies"}`;
 
-  const renderArgs = (p) => renderCard(p, termsByCard, statusByCard, fbByCard, buyers || [], leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard, eventsByCard);
-  const subtoProps = props.filter(p => (p.deal_type || "subto") !== "morby");
-  const morbyProps = props.filter(p => p.deal_type === "morby");
+  // Attention score per deal — drives the default sort and the ⚠ filter.
+  const attByCard = {};
+  for (const p of props) {
+    attByCard[p.card_id] = dealAttention(
+      p, termsByCard[p.card_id] || {}, leadsByCard[p.card_id] || [],
+      blastsByCard[p.card_id] || [], recipsByCard[p.card_id] || [],
+      viewsByCard[p.card_id] || [], eventsByCard[p.card_id] || []);
+  }
+
+  const q = dealView.query.trim().toLowerCase();
+  const matchesView = (p) => {
+    if (q && !`${p.name || ""} ${p.state || ""}`.toLowerCase().includes(q)) return false;
+    const a = attByCard[p.card_id];
+    if (dealView.filter === "attention") return a.score >= 20;
+    if (dealView.filter === "never") return a.neverBlasted;
+    if (dealView.filter === "hot") return a.hot > 0;
+    return true;
+  };
+  const SORTERS = {
+    attention: (x, y) => attByCard[y.card_id].score - attByCard[x.card_id].score
+      || new Date(y.synced_at || 0) - new Date(x.synced_at || 0),
+    newest: (x, y) => new Date(y.synced_at || 0) - new Date(x.synced_at || 0),
+    az: (x, y) => String(x.name || "").localeCompare(String(y.name || "")),
+  };
+  const applyView = (list) => list.filter(matchesView).sort(SORTERS[dealView.sort] || SORTERS.attention);
+
+  const renderArgs = (p) => renderCard(p, termsByCard, statusByCard, fbByCard, buyers || [], leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard, eventsByCard, attByCard[p.card_id]);
+  const allSubto = props.filter(p => (p.deal_type || "subto") !== "morby");
+  const allMorby = props.filter(p => p.deal_type === "morby");
+  const subtoProps = applyView(allSubto);
+  const morbyProps = applyView(allMorby);
+  const filtered = !!q || dealView.filter !== "all";
+  const attentionCount = props.filter(p => attByCard[p.card_id].score >= 20).length;
+
+  // Rebuilding innerHTML drops focus — remember if the user was mid-search
+  // so we can put the caret back after the re-render.
+  const searchWasFocused = document.activeElement && document.activeElement.id === "deal-search";
+
+  const chip = (key, label, title) =>
+    `<button type="button" class="btn btn-sm deal-filter-chip ${dealView.filter === key ? "btn-primary" : "btn-ghost"}" data-filter="${key}" title="${escapeHtml(title)}">${label}</button>`;
+  const groupCount = (shown, total) =>
+    filtered && shown.length !== total.length ? `(${shown.length} of ${total.length})` : `(${total.length})`;
+  const noMatch = `<div class="empty">No deals match the current search/filter — <a href="#" class="deal-clear-filters">clear filters</a>.</div>`;
+  const stack = (cards) => `<div style="display:flex;flex-direction:column;gap:12px">${cards.map(renderArgs).join("")}</div>`;
 
   content.innerHTML = `
     ${renderCallList(buildCallList(props, leads, deckViews, buyers))}
+    <div class="card" id="deal-triage" style="padding:10px 14px;margin-bottom:14px;display:flex;gap:8px;row-gap:8px;flex-wrap:wrap;align-items:center">
+      <input type="search" id="deal-search" placeholder="Search address or state…" value="${escapeHtml(dealView.query)}" style="flex:1 1 200px;max-width:320px;padding:6px 10px;border:1px solid var(--border,#CBD5E0);border-radius:8px;font-size:0.85rem">
+      ${chip("all", "All", "Show every deal")}
+      ${chip("attention", `⚠ Attention${attentionCount ? ` (${attentionCount})` : ""}`, "Deals with a blocked send, hot leads, no blast yet, or a follow-up due")}
+      ${chip("never", "📣 Never blasted", "Deals that haven't had a successful blast yet")}
+      ${chip("hot", "🔥 Hot leads", "Deals with interested / offer / under-contract leads")}
+      <select id="deal-sort" class="btn btn-ghost btn-sm" title="Sort order" style="padding:4px 8px">
+        <option value="attention" ${dealView.sort === "attention" ? "selected" : ""}>Needs attention first</option>
+        <option value="newest" ${dealView.sort === "newest" ? "selected" : ""}>Newest first</option>
+        <option value="az" ${dealView.sort === "az" ? "selected" : ""}>Address A–Z</option>
+      </select>
+      <button type="button" class="btn btn-ghost btn-sm" id="deal-expand-toggle">${expandedDealCards.size ? "▴ Collapse all" : "▾ Expand all"}</button>
+    </div>
     <div class="deal-type-group">
       <div class="deal-type-group-header flex-between">
-        <span>🏠 Sub-To Deals <span class="muted">(${subtoProps.length})</span></span>
+        <span>🏠 Sub-To Deals <span class="muted">${groupCount(subtoProps, allSubto)}</span></span>
         <button type="button" class="btn btn-primary btn-sm" id="add-subto-btn">+ Add Sub-To Deal</button>
       </div>
       <div id="add-subto-panel" class="card hidden" style="margin-bottom:16px">
@@ -346,11 +426,11 @@ async function loadAll() {
           <span id="add-subto-status" class="muted" style="font-size:0.82rem"></span>
         </div>
       </div>
-      ${subtoProps.length ? `<div class="grid grid-2">${subtoProps.map(renderArgs).join("")}</div>` : `<div class="empty">No Sub-To deals yet — click "+ Add Sub-To Deal" and upload the contract to create one.</div>`}
+      ${subtoProps.length ? stack(subtoProps) : (allSubto.length ? noMatch : `<div class="empty">No Sub-To deals yet — click "+ Add Sub-To Deal" and upload the contract to create one.</div>`)}
     </div>
     <div class="deal-type-group">
       <div class="deal-type-group-header flex-between">
-        <span>🤝 Morby Deals <span class="muted">(${morbyProps.length})</span></span>
+        <span>🤝 Morby Deals <span class="muted">${groupCount(morbyProps, allMorby)}</span></span>
         <button type="button" class="btn btn-primary btn-sm" id="add-morby-btn">+ Add Morby Deal</button>
       </div>
       <div id="add-morby-panel" class="card hidden" style="margin-bottom:16px">
@@ -363,11 +443,48 @@ async function loadAll() {
           <span id="add-morby-status" class="muted" style="font-size:0.82rem"></span>
         </div>
       </div>
-      ${morbyProps.length ? `<div class="grid grid-2">${morbyProps.map(renderArgs).join("")}</div>` : `<div class="empty">No Morby deals yet — click "+ Add Morby Deal" and upload an LOI to create one.</div>`}
+      ${morbyProps.length ? stack(morbyProps) : (allMorby.length ? noMatch : `<div class="empty">No Morby deals yet — click "+ Add Morby Deal" and upload an LOI to create one.</div>`)}
     </div>`;
   wireCardEvents();
   wireAddMorbyPanel();
   wireAddSubtoPanel();
+  wireTriageBar();
+
+  if (searchWasFocused) {
+    const el = document.getElementById("deal-search");
+    if (el) {
+      el.focus();
+      const n = el.value.length;
+      try { el.setSelectionRange(n, n); } catch (_) { /* not all input types support it */ }
+    }
+  }
+}
+
+// ── Triage bar wiring. Search is debounced so each keystroke doesn't rebuild
+// the DOM mid-word; everything re-renders from boardData (no refetch). ──
+function wireTriageBar() {
+  const search = document.getElementById("deal-search");
+  if (search) search.addEventListener("input", () => {
+    clearTimeout(dealSearchTimer);
+    dealSearchTimer = setTimeout(() => { dealView.query = search.value; renderBoard(); }, 160);
+  });
+  document.querySelectorAll(".deal-filter-chip").forEach(b =>
+    b.addEventListener("click", () => { dealView.filter = b.dataset.filter; renderBoard(); }));
+  const sort = document.getElementById("deal-sort");
+  if (sort) sort.addEventListener("change", () => { dealView.sort = sort.value; renderBoard(); });
+  const tog = document.getElementById("deal-expand-toggle");
+  if (tog) tog.addEventListener("click", () => {
+    if (expandedDealCards.size) expandedDealCards.clear();
+    else for (const p of boardData.props) expandedDealCards.add(p.card_id);
+    renderBoard();
+  });
+  document.querySelectorAll(".deal-clear-filters").forEach(a =>
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      dealView.query = "";
+      dealView.filter = "all";
+      renderBoard();
+    }));
 }
 
 // Buyer↔deal matching is matchesDeal from /js/deal-shared.js — the exact
@@ -496,7 +613,93 @@ function acqFlags(acq) {
 }
 // Hard gates that block a live Send Blast — returns list of blocking reasons.
 
-function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard, eventsByCard) {
+// ── Deal attention score — powers the triage bar's default sort, the ⚠
+// filter, and the badges on compact rows. Dashboard-only presentation logic
+// (business math stays in deal-shared.js); every signal is derived from data
+// loadAll already fetches, and each reason maps to an action Zach can take. ──
+const ATTENTION_BADGE_COLORS = { red: "#C53030", orange: "#DD6B20", yellow: "#B7791F", blue: "#2B6CB0", gray: "#718096" };
+function dealAttention(p, t, leads, blasts, recips, views, events) {
+  let score = 0;
+  const badges = [];
+
+  // Highest urgency: numbers in the copy contradict deal_terms — the live
+  // Send Blast button is disabled until this is fixed.
+  if (findCopyMismatches(t, p.variations || []).length) {
+    score += 50;
+    badges.push({ icon: "⛔", label: "Send blocked", cls: "red", title: "Marketing copy contradicts the deal terms — live sends are blocked until it's fixed" });
+  }
+
+  // Hot pipeline: buyers at interested or beyond need a call, not a blast.
+  const hot = (leads || []).filter(l => ["interested", "offer", "under_contract"].includes(l.stage)).length;
+  if (hot) {
+    score += 30 + Math.min(hot - 1, 4) * 5;
+    badges.push({ icon: "🔥", label: `${hot} hot lead${hot === 1 ? "" : "s"}`, cls: "orange", title: "Leads at interested / offer / under-contract — call them" });
+  }
+
+  // Never marketed: a deal sitting unblasted is pure carrying cost.
+  const sentBlasts = (blasts || []).filter(b => b.status === "sent");
+  const neverBlasted = !sentBlasts.length;
+  if (neverBlasted) {
+    score += 25;
+    badges.push({ icon: "📣", label: "Never blasted", cls: "blue", title: "No successful blast yet — buyers haven't seen this deal" });
+  }
+
+  // Follow-up window open: recipients went cold 48h+ after the last send.
+  const fu = followUpInfo(blasts, recips, views, leads, events);
+  if (fu) {
+    score += 20;
+    badges.push({ icon: "⏰", label: `Follow-up due`, cls: "yellow", title: `${fu.ids.length} of ${fu.total} recipients haven't engaged after ${fu.days} day${fu.days === 1 ? "" : "s"}` });
+  }
+
+  // Gone quiet: nothing has happened in 30+ days on a deal that old — a
+  // nudge toward re-marketing or archiving (🗑) so the board stays honest.
+  const DAY = 86400000;
+  const lastActivity = Math.max(0,
+    ...sentBlasts.map(b => new Date(b.blasted_at).getTime()),
+    ...(views || []).map(v => new Date(v.viewed_at).getTime()),
+    ...(leads || []).map(l => new Date(l.updated_at || l.created_at).getTime()));
+  const born = new Date(p.synced_at || 0).getTime();
+  if (born && Date.now() - born > 30 * DAY && (!lastActivity || Date.now() - lastActivity > 30 * DAY)) {
+    score += 8;
+    badges.push({ icon: "🕸", label: "Quiet 30d+", cls: "gray", title: "No blast, deck view, or lead activity in over 30 days — re-market or archive" });
+  }
+
+  return { score, badges, hot, neverBlasted };
+}
+
+function attentionBadges(att) {
+  return ((att && att.badges) || []).map(b =>
+    `<span style="font-size:0.7rem;font-weight:700;color:#fff;background:${ATTENTION_BADGE_COLORS[b.cls] || ATTENTION_BADGE_COLORS.gray};padding:2px 8px;border-radius:999px;white-space:nowrap" title="${escapeHtml(b.title || b.label)}">${b.icon} ${escapeHtml(b.label)}</span>`
+  ).join(" ");
+}
+
+// Compact one-line row — the collapsed default every card renders as until
+// expanded. Address + the numbers that matter + why it needs attention.
+function renderCompactCard(p, t, morby, matchCount, leads, blasts, views, att, dealType) {
+  const sent = (blasts || []).filter(b => b.status === "sent").length;
+  const bits = [];
+  if (dealType === "morby") {
+    if (morby && morby.purchase_price) bits.push(fmtMoney(morby.purchase_price));
+  } else {
+    if (t.price) bits.push(fmtMoney(t.price));
+    if (t.entry_fee) bits.push(`${fmtMoney(t.entry_fee)} entry`);
+    bits.push(`👥 ${matchCount}`);
+  }
+  bits.push(`📣 ${sent}`);
+  if ((views || []).length) bits.push(`👁 ${views.length}`);
+  const openLeads = (leads || []).filter(l => !["dead", "closed"].includes(l.stage)).length;
+  if (openLeads) bits.push(`🧲 ${openLeads}`);
+  return `
+    <div class="card prop-card compact-deal" data-card-id="${escapeHtml(p.card_id)}" role="button" tabindex="0" title="Click to expand this deal" style="cursor:pointer;padding:10px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span class="muted">▸</span>
+      <span style="font-weight:700;flex:1 1 220px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.name)}</span>
+      ${p.state ? `<span class="pill pill-state">${escapeHtml(p.state)}</span>` : ""}
+      <span class="muted" style="font-size:0.78rem;white-space:nowrap">${bits.map(escapeHtml).join(" · ")}</span>
+      ${attentionBadges(att)}
+    </div>`;
+}
+
+function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard, eventsByCard, attention) {
   const t = termsByCard[p.card_id] || {};
   const status = (statusByCard[p.card_id] || {}).status || "active";
   const posts = fbByCard[p.card_id] || [];
@@ -509,6 +712,13 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
   const morby = (morbyByCard && morbyByCard[p.card_id]) || {};
   const dealType = p.deal_type || "subto";
   dealCache[p.card_id] = { prop: p, terms: t, matched, leads, acq, morby };
+
+  // ── Triage: collapsed (compact) mode is the default. One row per deal;
+  // click to expand into the full working card. ──
+  if (!expandedDealCards.has(p.card_id)) {
+    return renderCompactCard(p, t, morby, matchCount, leads, blasts,
+      (viewsByCard && viewsByCard[p.card_id]) || [], attention, dealType);
+  }
 
   // ── Morby deals are a separate, stripped-down workflow: created
   // directly from an LOI upload, no marketing/posting/pipeline tools. ──
@@ -525,6 +735,7 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
         <div class="flex gap-8">
           <button class="btn btn-primary btn-sm morby-send-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Generate Deal Deck PDF and email it to all Stack Method buyers">📣 Send Deal Deck</button>
           <button class="btn btn-ghost btn-sm morby-delete-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Remove this Morby deal">🗑 Remove</button>
+          <button class="btn btn-ghost btn-sm collapse-deal-btn" data-card-id="${escapeHtml(p.card_id)}" title="Collapse to one line">▴</button>
         </div>
       </div>
       ${renderMorbyPanel(p, morby, t, acq)}
@@ -594,6 +805,7 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
             <button class="btn btn-ghost btn-sm test-blast-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Send a preview to yourself only — does not reach buyers">🧪 Test Blast</button>
             <button class="btn btn-primary btn-sm send-blast-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" ${blockSend ? `disabled title="${escapeHtml(blockTitle)}"` : ""} style="${blockSend ? "opacity:.5;cursor:not-allowed" : ""}">📣 Send Blast</button>
             <button class="btn btn-ghost btn-sm morby-delete-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Remove this deal (archives it — undo available)">🗑</button>
+            <button class="btn btn-ghost btn-sm collapse-deal-btn" data-card-id="${escapeHtml(p.card_id)}" title="Collapse to one line">▴</button>
           </div>
           <span class="blast-status muted" style="font-size:0.74rem;text-align:right;max-width:220px"></span>
         </div>
@@ -1104,6 +1316,23 @@ function renderMorbyPanel(p, morby, terms, acq) {
 }
 
 function wireCardEvents() {
+  // ── Triage: expand a compact row / collapse a full card. State lives in
+  // expandedDealCards so it survives re-renders within the session. ──
+  document.querySelectorAll(".compact-deal").forEach(row => {
+    const open = () => { expandedDealCards.add(row.dataset.cardId); renderBoard(); };
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    });
+  });
+  document.querySelectorAll(".collapse-deal-btn").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      expandedDealCards.delete(btn.dataset.cardId);
+      renderBoard();
+    });
+  });
+
   document.querySelectorAll(".fb-group-select").forEach(sel => {
     sel.addEventListener("change", async (e) => {
       const groupName = e.target.value;
@@ -1678,6 +1907,9 @@ function wireAddMorbyPanel() {
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || "Extraction failed");
+      // Open the new card in full so the extracted terms are reviewed, not
+      // buried as a collapsed row.
+      if (result.card_id) expandedDealCards.add(result.card_id);
 
       statusEl.textContent = "✓ Created — review the new card below.";
       panel.classList.add("hidden");
@@ -1757,6 +1989,9 @@ function wireAddSubtoPanel() {
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || "Extraction failed");
+      // Open the new card in full so the extracted terms are reviewed, not
+      // buried as a collapsed row.
+      if (result.card_id) expandedDealCards.add(result.card_id);
 
       submitBtn.textContent = "Writing marketing copy…";
       let copyError = null;

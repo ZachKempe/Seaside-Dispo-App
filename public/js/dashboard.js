@@ -27,6 +27,32 @@ const { fmtMoney, matchesDeal, dscrMonthlyPayment } = DealShared;
 
 const ZACH_PHONE = "630-488-5311";
 
+// ── Deck-page links (the buyer-facing /deck/<slug> page) ──
+// Slugs are minted eagerly at intake now; legacy cards that predate that (and
+// were never blasted) get theirs backfilled on demand via deck-link.js.
+function deckUrlFor(p) {
+  return p && p.deck_slug ? `${location.origin}/deck/${p.deck_slug}` : "";
+}
+// Server resolve: backfills a missing slug, and (with buyerId) returns the
+// per-buyer tokenized link so a manually DM'd buyer still attributes views.
+async function fetchDeckLink(cardId, buyerId = null) {
+  const { data: { session: s } } = await supa.auth.getSession();
+  const res = await fetch("/.netlify/functions/deck-link", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
+    body: JSON.stringify(buyerId ? { card_id: cardId, buyer_id: buyerId } : { card_id: cardId }),
+  });
+  const result = await res.json();
+  if (!res.ok) throw new Error(result.error || "Couldn't resolve deck link");
+  const cached = dealCache[cardId];
+  if (cached && cached.prop && !cached.prop.deck_slug) cached.prop.deck_slug = result.slug;
+  return result.url;
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch (_) { prompt("Copy the link:", text); return false; }
+}
+
 // ── Feature 2: "Copy Deal Info" — pre-formatted text for pasting into texts/DMs ──
 function buildDealCopyText(p, t) {
   const beds = t.beds || "—";
@@ -57,7 +83,7 @@ Rate: ${rate}%
 
 📍 Market: ${market}
 🏷️ Strategy: Sub-To
-
+${deckUrlFor(p) ? `\n🔗 Full deal page: ${deckUrlFor(p)}\n` : ""}
 Interested? Reply here or call/text ${ZACH_PHONE}`;
 }
 
@@ -134,10 +160,19 @@ function timeAgoShort(iso) {
   if (mins < 1440) return `${Math.round(mins / 60)}h ago`;
   return `${Math.round(mins / 1440)}d ago`;
 }
-function buildCallList(props, leads, deckViews, buyers) {
+function buildCallList(props, leads, deckViews, buyers, activities) {
   const buyerById = Object.fromEntries((buyers || []).map(b => [b.id, b]));
   const dealOf = Object.fromEntries((props || []).map(p => [p.card_id, (p.address_override || p.name || "").split(",")[0]]));
   const now = Date.now();
+  // Latest manual touch per buyer (✓ Done / tapped Call on the dashboard, or a
+  // touch logged on the Buyers page). A touch newer than the entry's trigger
+  // clears the tile — the list only shows people you haven't acted on yet.
+  const touchedAt = {};
+  for (const a of (activities || [])) {
+    if (a.channel !== "manual" || a.buyer_id == null) continue;
+    const k = Number(a.buyer_id), t = new Date(a.created_at).getTime();
+    if (!touchedAt[k] || t > touchedAt[k]) touchedAt[k] = t;
+  }
   const best = {};
   const add = (key, e) => {
     const cur = best[key];
@@ -154,6 +189,8 @@ function buildCallList(props, leads, deckViews, buyers) {
       phone: b ? b.phone : (!contact.includes("@") ? contact : ""),
       email: b ? b.email : (contact.includes("@") ? contact : ""),
       at,
+      buyerId: l.buyer_id ? Number(l.buyer_id) : null,
+      cardId: l.card_id || "",
     };
     const key = l.buyer_id ? `b${l.buyer_id}` : `l${l.id}`;
     if (l.stage === "interested") add(key, { ...entry, priority: 1, reason: `${l.source === "deck_page" ? "🔥 Tapped Interested" : "🔥 Interested"} — ${deal}` });
@@ -165,9 +202,10 @@ function buildCallList(props, leads, deckViews, buyers) {
     if ((now - new Date(v.viewed_at)) / 3600000 > 72) continue;
     const b = buyerById[v.buyer_id];
     if (!b) continue;
-    add(`b${v.buyer_id}`, { name: b.name, phone: b.phone, email: b.email, at: v.viewed_at, priority: 3, reason: `👀 Viewed ${dealOf[v.card_id] || "a deck"}` });
+    add(`b${v.buyer_id}`, { name: b.name, phone: b.phone, email: b.email, at: v.viewed_at, buyerId: Number(v.buyer_id), cardId: v.card_id || "", priority: 3, reason: `👀 Viewed ${dealOf[v.card_id] || "a deck"}` });
   }
   return Object.values(best)
+    .filter(e => !(e.buyerId && touchedAt[e.buyerId] && touchedAt[e.buyerId] > new Date(e.at).getTime()))
     .sort((a, b) => a.priority - b.priority || new Date(b.at) - new Date(a.at))
     .slice(0, 8);
 }
@@ -183,19 +221,50 @@ function renderCallList(callList) {
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px">
       ${callList.map(c => {
         const tel = (c.phone || "").replace(/[^\d+]/g, "");
+        const dataAttrs = c.buyerId ? `data-buyer-id="${c.buyerId}" data-card-id="${escapeHtml(c.cardId || "")}"` : "";
+        const contactLink = (href, label, kind, primary) =>
+          `<a class="btn ${primary ? "btn-primary" : "btn-ghost"} btn-sm call-contact-link" style="font-size:0.74rem;padding:3px 10px" href="${escapeHtml(href)}" ${dataAttrs} data-kind="${kind}">${label}</a>`;
         return `
         <div style="border:1px solid var(--border);border-left:3px solid ${P_COLOR[c.priority]};border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px">
           <div style="display:flex;align-items:baseline;gap:8px"><b style="font-size:0.92rem;color:var(--navy-dark)">${escapeHtml(c.name || "Unknown")}</b><span class="muted" style="font-size:0.72rem;margin-left:auto">${timeAgoShort(c.at)}</span></div>
           <div style="font-size:0.8rem;color:var(--text-2)">${escapeHtml(c.reason)}</div>
-          <div style="display:flex;gap:6px;margin-top:2px">
-            ${tel ? `<a class="btn btn-primary btn-sm" style="font-size:0.74rem;padding:3px 10px" href="tel:${escapeHtml(tel)}">📞 Call</a><a class="btn btn-ghost btn-sm" style="font-size:0.74rem;padding:3px 10px" href="sms:${escapeHtml(tel)}">💬 Text</a>` : ""}
-            ${!tel && c.email ? `<a class="btn btn-ghost btn-sm" style="font-size:0.74rem;padding:3px 10px" href="mailto:${escapeHtml(c.email)}">✉️ Email</a>` : ""}
+          <div style="display:flex;gap:6px;margin-top:2px;align-items:center">
+            ${tel ? `${contactLink(`tel:${tel}`, "📞 Call", "Called", true)}${contactLink(`sms:${tel}`, "💬 Text", "Texted", false)}` : ""}
+            ${!tel && c.email ? contactLink(`mailto:${c.email}`, "✉️ Email", "Emailed", false) : ""}
             ${!tel && !c.email ? `<span class="muted" style="font-size:0.74rem">No contact info</span>` : ""}
+            ${c.buyerId ? `<button type="button" class="btn btn-ghost btn-sm call-done-btn" ${dataAttrs} style="font-size:0.74rem;padding:3px 10px;margin-left:auto" title="Mark handled — logs a touch on this buyer and clears the tile">✓ Done</button>` : ""}
           </div>
         </div>`;
       }).join("")}
     </div>
   </div>`;
+}
+
+// ── Call-today actions: ✓ Done logs a manual touch (buyer_activity) and
+// clears the tile immediately; tapping Call/Text/Email logs the touch too but
+// leaves the tile up until the next re-render, so a call that doesn't connect
+// doesn't lose the contact. Suppression itself happens in buildCallList. ──
+async function logBuyerTouch(buyerId, cardId, detail) {
+  const row = { buyer_id: buyerId, card_id: cardId || "", channel: "manual", detail };
+  const { error } = await supa.from("buyer_activity").insert(row);
+  if (!error) (boardData.activities ||= []).unshift({ ...row, created_at: new Date().toISOString() });
+  return { error };
+}
+function wireCallList() {
+  document.querySelectorAll(".call-done-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      const { error } = await logBuyerTouch(Number(btn.dataset.buyerId), btn.dataset.cardId, "✓ Handled from dashboard Call today");
+      if (error) { toast(`Couldn't log the touch: ${error.message}`, { type: "error" }); btn.disabled = false; return; }
+      renderBoard();
+    });
+  });
+  document.querySelectorAll(".call-contact-link").forEach(a => {
+    a.addEventListener("click", () => {
+      const buyerId = Number(a.dataset.buyerId);
+      if (buyerId) logBuyerTouch(buyerId, a.dataset.cardId, `${a.dataset.kind || "Contacted"} from dashboard Call today`);
+    });
+  });
 }
 
 // ── Sync health: latest heartbeat per scheduled function (sync_runs rows
@@ -285,7 +354,7 @@ async function loadAll() {
   // blast × buyer), so pulling whole tables gets slow at scale — we only
   // ever need rows for the active cards on screen.
   const cardIds = (props || []).map(p => p.card_id);
-  const [{ data: terms }, { data: statuses }, { data: fbPosts }, { data: buyers }, { data: leads }, { data: blasts }, { data: acq }, { data: morby }, { data: recips }, { data: deckViews }, { data: emailEvents }] = await Promise.all([
+  const [{ data: terms }, { data: statuses }, { data: fbPosts }, { data: buyers }, { data: leads }, { data: blasts }, { data: acq }, { data: morby }, { data: recips }, { data: deckViews }, { data: emailEvents }, { data: tasks }, { data: activities }] = await Promise.all([
     supa.from("deal_terms").select("*").in("card_id", cardIds),
     supa.from("property_status").select("*").in("card_id", cardIds),
     supa.from("facebook_posts").select("*").in("card_id", cardIds),
@@ -301,6 +370,16 @@ async function loadAll() {
     fetchAllRows(() => supa.from("blast_recipients").select("card_id,channel,status,buyer_id").in("card_id", cardIds).order("id")),
     fetchAllRows(() => supa.from("deck_views").select("card_id,buyer_id,viewed_at").in("card_id", cardIds).order("id")),
     fetchAllRows(() => supa.from("email_events").select("card_id,buyer_id,event").in("card_id", cardIds).order("id")),
+    // Pipeline-page data the dashboard folds in (fails soft pre-027): next
+    // actions drive the "task overdue" attention signal + the card's Next line.
+    supa.from("deal_tasks").select("*").in("card_id", cardIds).order("due_date", { ascending: true }),
+    // Recent manual touches — clears "Call today" tiles you've already acted on.
+    supa.from("buyer_activity").select("buyer_id,card_id,channel,created_at")
+      .gte("created_at", new Date(Date.now() - 14 * 86400000).toISOString())
+      .order("created_at", { ascending: false }),
+    // Stage labels/colors for the dispo-stage chips (dispo.js falls back to
+    // the default six if the table is missing).
+    loadDispoStages(),
   ]);
 
   if (pErr) {
@@ -324,6 +403,8 @@ async function loadAll() {
   for (const e of (emailEvents || [])) (eventsByCard[e.card_id] ||= []).push(e);
   const acqByCard = Object.fromEntries((acq || []).map(a => [a.card_id, a]));
   const morbyByCard = Object.fromEntries((morby || []).map(m => [m.card_id, m]));
+  const tasksByCard = {}; // empty until 027 migration runs
+  for (const t of (tasks || [])) (tasksByCard[t.card_id] ||= []).push(t);
 
   allBuyers = buyers || [];
 
@@ -331,8 +412,9 @@ async function loadAll() {
   // sort / expand) can re-render instantly without refetching Supabase.
   boardData = {
     props: props || [], buyers: buyers || [], leads: leads || [], deckViews: deckViews || [],
+    activities: activities || [],
     termsByCard, statusByCard, fbByCard, leadsByCard, blastsByCard, recipsByCard,
-    viewsByCard, eventsByCard, acqByCard, morbyByCard,
+    viewsByCard, eventsByCard, acqByCard, morbyByCard, tasksByCard,
   };
   renderBoard();
 }
@@ -342,8 +424,8 @@ async function loadAll() {
 function renderBoard() {
   if (!boardData) return;
   const content = document.getElementById("content");
-  const { props, buyers, leads, deckViews, termsByCard, statusByCard, fbByCard, leadsByCard,
-          blastsByCard, recipsByCard, viewsByCard, eventsByCard, acqByCard, morbyByCard } = boardData;
+  const { props, buyers, leads, deckViews, activities, termsByCard, statusByCard, fbByCard, leadsByCard,
+          blastsByCard, recipsByCard, viewsByCard, eventsByCard, acqByCard, morbyByCard, tasksByCard } = boardData;
 
   document.getElementById("prop-count").textContent =
     `${props.length} active under-contract propert${props.length === 1 ? "y" : "ies"}`;
@@ -354,7 +436,8 @@ function renderBoard() {
     attByCard[p.card_id] = dealAttention(
       p, termsByCard[p.card_id] || {}, leadsByCard[p.card_id] || [],
       blastsByCard[p.card_id] || [], recipsByCard[p.card_id] || [],
-      viewsByCard[p.card_id] || [], eventsByCard[p.card_id] || []);
+      viewsByCard[p.card_id] || [], eventsByCard[p.card_id] || [],
+      (tasksByCard && tasksByCard[p.card_id]) || []);
   }
 
   const q = dealView.query.trim().toLowerCase();
@@ -394,11 +477,11 @@ function renderBoard() {
   const stack = (cards) => `<div style="display:flex;flex-direction:column;gap:12px">${cards.map(renderArgs).join("")}</div>`;
 
   content.innerHTML = `
-    ${renderCallList(buildCallList(props, leads, deckViews, buyers))}
+    ${renderCallList(buildCallList(props, leads, deckViews, buyers, activities))}
     <div class="card" id="deal-triage" style="padding:10px 14px;margin-bottom:14px;display:flex;gap:8px;row-gap:8px;flex-wrap:wrap;align-items:center">
       <input type="search" id="deal-search" placeholder="Search address or state…" value="${escapeHtml(dealView.query)}" style="flex:1 1 200px;max-width:320px;padding:6px 10px;border:1px solid var(--border,#CBD5E0);border-radius:8px;font-size:0.85rem">
       ${chip("all", "All", "Show every deal")}
-      ${chip("attention", `⚠ Attention${attentionCount ? ` (${attentionCount})` : ""}`, "Deals with a blocked send, hot leads, no blast yet, or a follow-up due")}
+      ${chip("attention", `⚠ Attention${attentionCount ? ` (${attentionCount})` : ""}`, "Deals with a blocked send, hot leads, no blast yet, an overdue task, or a follow-up due")}
       ${chip("never", "📣 Never blasted", "Deals that haven't had a successful blast yet")}
       ${chip("hot", "🔥 Hot leads", "Deals with interested / offer / under-contract leads")}
       <select id="deal-sort" class="btn btn-ghost btn-sm" title="Sort order" style="padding:4px 8px">
@@ -449,6 +532,7 @@ function renderBoard() {
   wireAddMorbyPanel();
   wireAddSubtoPanel();
   wireTriageBar();
+  wireCallList();
 
   if (searchWasFocused) {
     const el = document.getElementById("deal-search");
@@ -618,7 +702,25 @@ function acqFlags(acq) {
 // (business math stays in deal-shared.js); every signal is derived from data
 // loadAll already fetches, and each reason maps to an action Zach can take. ──
 const ATTENTION_BADGE_COLORS = { red: "#C53030", orange: "#DD6B20", yellow: "#B7791F", blue: "#2B6CB0", gray: "#718096" };
-function dealAttention(p, t, leads, blasts, recips, views, events) {
+
+// Pipeline-page task helpers (deal_tasks rows ride along in boardData).
+function isOverdueTask(t) {
+  return !t.done && t.due_date && new Date(t.due_date + "T23:59:59") < new Date();
+}
+function nextOpenTaskFor(cardId) {
+  return ((boardData && boardData.tasksByCard && boardData.tasksByCard[cardId]) || []).find(t => !t.done) || null;
+}
+
+// Dispo-stage chip: the deal's position on the Pipeline board, linked to it.
+// Labels/colors come from /js/dispo.js (DB-backed, falls back to defaults).
+function dispoStageChip(p) {
+  const key = p.dispo_stage || (DISPO_STAGES[0] && DISPO_STAGES[0].key) || "prep";
+  // Deleted/renamed stage keys display as the first stage, same as the board.
+  const s = DISPO_BY_KEY[key] || DISPO_BY_KEY[(DISPO_STAGES[0] || {}).key] || { label: key, color: "#A0AEC0" };
+  return `<a href="/pipeline.html#deal=${encodeURIComponent(p.card_id)}" class="pill" title="Dispo stage — click to open this deal on the Pipeline board" style="background:${s.color}22;color:${s.color};font-weight:700;text-decoration:none;white-space:nowrap">${escapeHtml(s.label)}</a>`;
+}
+
+function dealAttention(p, t, leads, blasts, recips, views, events, tasks) {
   let score = 0;
   const badges = [];
 
@@ -642,6 +744,15 @@ function dealAttention(p, t, leads, blasts, recips, views, events) {
   if (neverBlasted) {
     score += 25;
     badges.push({ icon: "📣", label: "Never blasted", cls: "blue", title: "No successful blast yet — buyers haven't seen this deal" });
+  }
+
+  // Overdue next-action: a scheduled task (Pipeline board) past its due date —
+  // attention that was explicitly planned and is now late.
+  const late = (tasks || []).filter(isOverdueTask);
+  if (late.length) {
+    score += 22;
+    badges.push({ icon: "⏳", label: "Task overdue", cls: "red",
+      title: `${late.length === 1 ? `"${late[0].title}"` : `${late.length} tasks`} past due — open this deal on the Pipeline board` });
   }
 
   // Follow-up window open: recipients went cold 48h+ after the last send.
@@ -694,6 +805,7 @@ function renderCompactCard(p, t, morby, matchCount, leads, blasts, views, att, d
       <span class="muted">▸</span>
       <span style="font-weight:700;flex:1 1 220px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.name)}</span>
       ${p.state ? `<span class="pill pill-state">${escapeHtml(p.state)}</span>` : ""}
+      ${dispoStageChip(p)}
       <span class="muted" style="font-size:0.78rem;white-space:nowrap">${bits.map(escapeHtml).join(" · ")}</span>
       ${attentionBadges(att)}
     </div>`;
@@ -730,6 +842,9 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
           <p class="prop-title">${escapeHtml(p.name)}</p>
           <div class="prop-meta">
             ${p.state ? `<span class="pill pill-state">${escapeHtml(p.state)}</span>` : ""}
+            ${dispoStageChip(p)}
+            ${p.deck_slug ? `<a href="${escapeHtml(deckUrlFor(p))}" target="_blank" rel="noopener">Deck page ↗</a>` : ""}
+            <button type="button" class="btn btn-ghost btn-sm deck-copy-btn" data-card-id="${escapeHtml(p.card_id)}" style="font-size:0.72rem;padding:1px 8px" title="Copy the public deck-page link for DMs / FB groups">🔗 Copy link</button>
           </div>
         </div>
         <div class="flex gap-8">
@@ -793,10 +908,19 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
           <p class="prop-title">${escapeHtml(p.name)}</p>
           <div class="prop-meta">
             ${p.state ? `<span class="pill pill-state">${escapeHtml(p.state)}</span>` : ""}
+            ${dispoStageChip(p)}
             ${p.trello_url ? `<a href="${escapeHtml(p.trello_url)}" target="_blank" rel="noopener">Trello ↗</a>` : ""}
             ${p.drive_link ? `${p.trello_url ? " · " : ""}<a href="${escapeHtml(p.drive_link)}" target="_blank" rel="noopener">Photos (Drive) ↗</a>` : ""}
+            ${p.deck_slug ? `${(p.trello_url || p.drive_link) ? " · " : ""}<a href="${escapeHtml(deckUrlFor(p))}" target="_blank" rel="noopener" title="The buyer-facing deal page">Deck page ↗</a>` : ""}
+            <button type="button" class="btn btn-ghost btn-sm deck-copy-btn" data-card-id="${escapeHtml(p.card_id)}" style="font-size:0.72rem;padding:1px 8px" title="Copy the public deck-page link for DMs / FB groups">🔗 Copy link</button>
             ${respondedPlus ? ` <span class="pill responded-pill" data-card-id="${escapeHtml(p.card_id)}" style="background:#ff5a1f22;color:#ff5a1f;font-weight:700;cursor:pointer" title="Buyers who replied to a blast on this deal — click to view">🔥 ${respondedPlus} responded</span>` : ""}
           </div>
+          ${(() => {
+            const nt = nextOpenTaskFor(p.card_id);
+            if (!nt) return "";
+            const late = isOverdueTask(nt);
+            return `<div class="prop-meta" style="${late ? "color:#C53030;font-weight:600" : ""}">⏳ Next: ${escapeHtml(nt.title)}${nt.due_date ? ` · ${late ? "overdue since" : "due"} ${escapeHtml(nt.due_date)}` : ""} <a href="/pipeline.html#deal=${encodeURIComponent(p.card_id)}" style="font-size:0.78rem">manage ↗</a></div>`;
+          })()}
           ${flags.length ? `<div class="health-badges" style="justify-content:flex-start">${flags.map(f => `<span class="health-badge ${f.cls}" title="${escapeHtml(f.label)}">${f.icon} ${escapeHtml(f.label)}</span>`).join("")}</div>` : ""}
         </div>
         <div class="flex gap-8" style="flex-direction:column;align-items:flex-end">
@@ -1320,8 +1444,10 @@ function wireCardEvents() {
   // expandedDealCards so it survives re-renders within the session. ──
   document.querySelectorAll(".compact-deal").forEach(row => {
     const open = () => { expandedDealCards.add(row.dataset.cardId); renderBoard(); };
-    row.addEventListener("click", open);
+    // Links inside the row (the dispo-stage chip) navigate; don't also expand.
+    row.addEventListener("click", (e) => { if (!e.target.closest("a")) open(); });
     row.addEventListener("keydown", (e) => {
+      if (e.target.closest("a")) return; // Enter on the stage chip navigates
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
     });
   });
@@ -1476,6 +1602,27 @@ function wireCardEvents() {
       } catch (err) {
         alert("Couldn't copy to clipboard: " + err.message);
       }
+    });
+  });
+  // ── Deck-page link: copy to clipboard (resolving/backfilling the slug via
+  // deck-link.js for legacy cards that don't have one yet). ──
+  document.querySelectorAll(".deck-copy-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const cardId = btn.dataset.cardId;
+      const deal = dealCache[cardId];
+      const label = btn.textContent;
+      try {
+        let url = deal && deal.prop ? deckUrlFor(deal.prop) : "";
+        if (!url) { btn.disabled = true; btn.textContent = "…"; url = await fetchDeckLink(cardId); }
+        await copyText(url);
+        btn.textContent = "✓ Copied";
+      } catch (err) {
+        toast(`Couldn't get the deck link: ${err.message}`, { type: "error" });
+        btn.textContent = label; btn.disabled = false;
+        return;
+      }
+      btn.disabled = false;
+      setTimeout(() => { btn.textContent = label; }, 2000);
     });
   });
   document.querySelectorAll(".send-blast-btn, .test-blast-btn").forEach(btn => {
@@ -2705,7 +2852,8 @@ function renderBlastCheckboxes(list) {
         <span class="muted">${escapeHtml(b.email || b.phone || "")}</span>
         ${b.sms_opt_in ? '<span class="muted" style="font-size:0.7rem">📱</span>' : ""}
         ${missing.length ? `<span style="font-size:0.66rem;color:#C53030;font-weight:600" title="Missing ${missing.join(', ')}">⚠ no ${missing.join("/")}</span>` : ""}
-        <button type="button" class="btn btn-ghost btn-sm log-outcome-btn" data-buyer-id="${b.id}" data-name="${escapeHtml(b.name)}" data-contact="${escapeHtml(b.email || b.phone || "")}" style="margin-left:auto;font-size:0.7rem;padding:2px 8px" title="Log this buyer's response in the deal pipeline">📋 Log</button>
+        <button type="button" class="btn btn-ghost btn-sm buyer-link-btn" data-buyer-id="${b.id}" style="margin-left:auto;font-size:0.7rem;padding:2px 8px" title="Copy this buyer's personal tracked deck link — views and Interested taps from it attribute to them, same as a blast">🔗</button>
+        <button type="button" class="btn btn-ghost btn-sm log-outcome-btn" data-buyer-id="${b.id}" data-name="${escapeHtml(b.name)}" data-contact="${escapeHtml(b.email || b.phone || "")}" style="font-size:0.7rem;padding:2px 8px" title="Log this buyer's response in the deal pipeline">📋 Log</button>
       </span>
       ${reasons.length ? `<span class="muted" style="font-size:0.72rem;padding-left:26px">${reasons.map(escapeHtml).join(" · ")}</span>` : ""}
     </label>`;
@@ -2716,6 +2864,26 @@ function renderBlastCheckboxes(list) {
       const id = Number(cb.value);
       if (cb.checked) sel.add(id); else sel.delete(id);
       updateSelectedCount();
+    });
+  });
+  // Per-buyer tokenized deck link — for manual DMs/texts outside a blast.
+  box.querySelectorAll(".buyer-link-btn").forEach(btn => {
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const label = btn.textContent;
+      btn.disabled = true; btn.textContent = "…";
+      try {
+        const url = await fetchDeckLink(activeBlast.cardId, Number(btn.dataset.buyerId));
+        await copyText(url);
+        btn.textContent = "✓";
+      } catch (err) {
+        alert(`Couldn't get the link: ${err.message}`);
+        btn.textContent = label; btn.disabled = false;
+        return;
+      }
+      btn.disabled = false;
+      setTimeout(() => { btn.textContent = label; }, 1500);
     });
   });
   box.querySelectorAll(".log-outcome-btn").forEach(btn => {
@@ -2975,4 +3143,16 @@ document.getElementById("lead-modal-delete").addEventListener("click", deleteLea
   wireLogout(document.getElementById("logout-btn"));
   document.getElementById("refresh-btn").addEventListener("click", loadAll);
   await loadAll();
+
+  // #deal=<card_id> deep link (Pipeline board → this deal's full card).
+  const m = location.hash.match(/^#deal=(.+)$/);
+  if (m && boardData) {
+    const cardId = decodeURIComponent(m[1]);
+    if (boardData.props.some(p => p.card_id === cardId)) {
+      expandedDealCards.add(cardId);
+      renderBoard();
+      const card = document.querySelector(`.prop-card[data-card-id="${CSS.escape(cardId)}"]`);
+      if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
 })();

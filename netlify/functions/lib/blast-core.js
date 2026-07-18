@@ -14,6 +14,7 @@
 
 const crypto = require("crypto");
 const { deckToken } = require("./deck-token");
+const { deckSlug, ensureDeckSlug } = require("./deck-slug");
 const { subtoSubject, morbySubject } = require("./subjects");
 const { fetchAllRows } = require("./fetch-all");
 const { matchesDeal, buyerCashAtClose, morbyTermRows } = require("../../../public/js/deal-shared");
@@ -123,28 +124,10 @@ function unsubUrlFor(buyerId) {
   return `${SITE_URL}/.netlify/functions/unsubscribe?b=${encodeURIComponent(unsubToken(buyerId))}`;
 }
 
-// Populate properties.deck_slug lazily the first time a deal is blasted, reusing
-// the existing deckSlug(prop) (same value as the PDF filename) so the page and
-// the PDF share one slug. Handles the rare unique-index collision by suffixing.
-async function ensureDeckSlug(prop) {
-  if (prop.deck_slug) return prop.deck_slug;
-  let base = deckSlug(prop);            // reuse existing PDF-slug generator
-  let slug = base;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      await sb(`/properties?card_id=eq.${encodeURIComponent(prop.card_id)}`, {
-        method: "PATCH", headers: { Prefer: "return=minimal" },
-        body: JSON.stringify({ deck_slug: slug }),
-      });
-      prop.deck_slug = slug;
-      return slug;
-    } catch (e) {
-      // unique collision -> disambiguate with a short card-id suffix and retry
-      slug = `${base}-${String(prop.card_id).slice(-4)}${attempt || ""}`;
-    }
-  }
-  prop.deck_slug = slug;
-  return slug;
+// Slug creation lives in lib/deck-slug.js (shared with the intake functions
+// and deck-link.js). This wrapper just binds our service-role sb helper.
+function ensureDeckSlugLocal(prop) {
+  return ensureDeckSlug(sb, prop);
 }
 
 // ── Email content ─────────────────────────────────────────────────
@@ -351,13 +334,6 @@ function buildMorbyEmail(prop, morby, unsubUrl, buyer, deckUrlForBuyer) {
   return { subject, html };
 }
 
-// A short, readable slug from the deal address — used both as the stored PDF
-// filename and the short-link path (e.g. "4951-fm-1283-pipe-creek-tx").
-function deckSlug(prop) {
-  const base = (prop.address_override || prop.name || "deal").toLowerCase();
-  return base.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "deal";
-}
-
 // Upload the generated Deal Deck PDF to the public property-photos bucket
 // (deal-decks/ prefix) so it can be linked in an SMS. One stable file per
 // deal (x-upsert), so re-sends overwrite rather than pile up. Returns a SHORT
@@ -523,7 +499,7 @@ async function runBlast(payload, user) {
     ]);
     const prop = (props || [])[0];
     if (!prop) throw httpError(404, "property not found");
-    const deckSlugVal = await ensureDeckSlug(prop);
+    const deckSlugVal = await ensureDeckSlugLocal(prop);
     const deckPageUrl = (buyerId) => `${SITE_URL}/deck/${deckSlugVal}?b=${deckToken(buyerId)}`;
     const terms = (termsRows || [])[0] || {};
     const morbyTerms = (morbyRows || [])[0] || {};

@@ -15,6 +15,8 @@ const SB_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const SB_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
+const { ensureDeckSlug } = require("./lib/deck-slug");
+
 async function sb(path, opts = {}) {
   const r = await fetch(`${SB_URL}/rest/v1${path}`, {
     ...opts,
@@ -154,6 +156,11 @@ exports.handler = async (event) => {
       body: JSON.stringify(propRow),
     });
     const property = (savedProp && savedProp[0]) || propRow;
+
+    // Eagerly mint the deck-page slug so the buyer-facing link exists the
+    // moment the card does (it used to appear only on first blast). Non-fatal:
+    // blast-core still backfills lazily if this ever fails.
+    try { await ensureDeckSlug(sb, property); } catch (e) { console.error("deck slug:", e.message); }
 
     const termsRow = {
       card_id,

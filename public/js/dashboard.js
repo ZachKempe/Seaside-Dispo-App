@@ -1738,8 +1738,10 @@ function galleryBlockHtml(p, acq) {
       <span class="muted gallery-status" style="font-size:0.78rem"></span>
     </div>
     <div class="muted" style="font-size:0.72rem;margin-top:6px">
-      Zillow: drag <a href="${escapeHtml(ZILLOW_GRABBER)}" class="zillow-grabber-link" title="Drag me to your bookmarks bar (one-time). Then on any Zillow listing, click it and paste the result here." style="display:inline-block;padding:1px 8px;border:1px solid var(--border);border-radius:6px;font-weight:600;text-decoration:none">🧲 Grab Zillow Photos</a>
-      to your bookmarks bar once → on the listing, click it → paste here. (Zillow blocks direct server pulls; this grabs every hi-res photo from your own browser tab.)
+      <b>Zillow</b> blocks direct server pulls, so photos come from your own browser tab.
+      Best: install the <b>Seaside Photo Grabber</b> extension once (<code>browser-extension/</code> — see its README) and click 📸 on any listing; photos land here with the deal preselected.
+      No-install fallback: drag <a href="${escapeHtml(ZILLOW_GRABBER)}" class="zillow-grabber-link" title="Drag me to your bookmarks bar (one-time). Then on any Zillow listing, click it and paste the result here." style="display:inline-block;padding:1px 8px;border:1px solid var(--border);border-radius:6px;font-weight:600;text-decoration:none">🧲 Grab Zillow Photos</a>
+      to your bookmarks bar, click it on the listing, and paste above.
     </div>
   </div>`;
 }
@@ -1782,6 +1784,96 @@ async function syncGalleryCount(cardId, n) {
   if (boardData && boardData.acqByCard) {
     boardData.acqByCard[cardId] = { ...(boardData.acqByCard[cardId] || { card_id: cardId }), photos_count: n };
   }
+}
+
+// Import in rounds until the source is exhausted — the function caps each run
+// at 16 photos to stay inside its time budget, and re-runs skip what's already
+// imported, so a 40-photo listing finishes without the user clicking 3 times.
+async function runImportRounds(cardId, url, onProgress) {
+  const { data: { session: s } } = await supa.auth.getSession();
+  let imported = 0, already = 0, rounds = 0;
+  while (rounds < 5) {
+    rounds++;
+    if (onProgress) onProgress(rounds === 1 ? "Fetching photos…" : `Fetching more… (${imported} so far)`);
+    const res = await fetch("/.netlify/functions/import-photos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
+      body: JSON.stringify({ card_id: cardId, url }),
+    });
+    const result = await res.json();
+    if (!res.ok) {
+      if (imported) break; // partial success already banked — report it
+      throw new Error(result.error || "Import failed");
+    }
+    imported += result.imported || 0;
+    already = result.already || 0;
+    if (!result.partial) break;
+  }
+  return { imported, already };
+}
+
+// ── Chrome-extension / bookmarklet handoff ──
+// The extension opens dashboard.html#import-photos=<urls>&addr=<address>.
+// We pick the matching deal by address (user confirms) and import — so the
+// whole Zillow flow is: click the button on the listing, confirm the deal.
+function addressMatchScore(dealName, addr) {
+  const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(Boolean);
+  const a = new Set(norm(addr));
+  const d = norm(dealName);
+  if (!a.size || !d.length) return 0;
+  return d.filter(t => a.has(t)).length;
+}
+async function handlePhotoHandoff() {
+  const m = location.hash.match(/^#import-photos=([^&]*)(?:&addr=(.*))?$/);
+  if (!m || !boardData) return;
+  const urls = decodeURIComponent(m[1] || "").split(/\s+/).map(s => s.trim()).filter(Boolean);
+  const addr = decodeURIComponent(m[2] || "");
+  history.replaceState(null, "", location.pathname); // don't re-fire on refresh
+  if (!urls.length) return;
+
+  const props = [...boardData.props].sort((x, y) =>
+    addressMatchScore(y.name, addr) - addressMatchScore(x.name, addr) ||
+    String(x.name || "").localeCompare(String(y.name || "")));
+  if (!props.length) { toast("No active deals to import into.", { type: "error" }); return; }
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="card" style="width:100%;max-width:460px">
+      <h2 style="margin-top:0">📸 Import ${urls.length} photo${urls.length === 1 ? "" : "s"}</h2>
+      <p class="muted" style="margin-top:-8px;font-size:0.86rem">${addr ? `From <b>${escapeHtml(addr)}</b>. ` : ""}Pick the deal these belong to.</p>
+      <div class="field">
+        <label>Deal</label>
+        <select id="handoff-deal">${props.map(p => `<option value="${escapeHtml(p.card_id)}">${escapeHtml(p.name)}</option>`).join("")}</select>
+      </div>
+      <div class="flex gap-8 mt-16" style="justify-content:flex-end;align-items:center">
+        <span class="muted" id="handoff-status" style="font-size:0.8rem;margin-right:auto"></span>
+        <button type="button" class="btn btn-ghost" id="handoff-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="handoff-go">Import photos</button>
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+
+  const close = () => backdrop.remove();
+  backdrop.querySelector("#handoff-cancel").addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+  backdrop.querySelector("#handoff-go").addEventListener("click", async () => {
+    const cardId = backdrop.querySelector("#handoff-deal").value;
+    const goBtn = backdrop.querySelector("#handoff-go");
+    const statusEl = backdrop.querySelector("#handoff-status");
+    goBtn.disabled = true;
+    try {
+      const { imported, already } = await runImportRounds(cardId, urls.join("\n"), (msg) => { statusEl.textContent = msg; });
+      close();
+      expandedDealCards.add(cardId);
+      toast(`✓ Imported ${imported} photo${imported === 1 ? "" : "s"}${already ? ` · ${already} already there` : ""}.`, { type: "success", duration: 7000 });
+      await loadAll();
+    } catch (e) {
+      statusEl.textContent = "";
+      goBtn.disabled = false;
+      toast(`Import failed: ${e.message}`, { type: "error", duration: 9000 });
+    }
+  });
 }
 
 function wireGalleryBlocks() {
@@ -1859,20 +1951,11 @@ function wireGalleryBlocks() {
       const btn = block.querySelector(".gallery-import-btn");
       const label = btn.textContent;
       btn.disabled = true; btn.textContent = "Importing…";
-      statusEl.textContent = "Fetching photos from the link…";
       try {
-        const { data: { session: s } } = await supa.auth.getSession();
-        const res = await fetch("/.netlify/functions/import-photos", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
-          body: JSON.stringify({ card_id: cardId, url }),
-        });
-        const result = await res.json();
-        if (!res.ok) throw new Error(result.error || "Import failed");
+        const { imported, already } = await runImportRounds(cardId, url, (msg) => { statusEl.textContent = msg; });
         statusEl.textContent = "";
-        const bits = [`✓ Imported ${result.imported} photo${result.imported === 1 ? "" : "s"}`];
-        if (result.already) bits.push(`${result.already} already in the gallery`);
-        if (result.partial) bits.push("more available — click Import again to pull the rest");
+        const bits = [`✓ Imported ${imported} photo${imported === 1 ? "" : "s"}`];
+        if (already) bits.push(`${already} already in the gallery`);
         toast(`${bits.join(" · ")}.`, { type: "success", duration: 7000 });
         await refresh();
       } catch (e) {
@@ -3337,6 +3420,10 @@ document.getElementById("lead-modal-delete").addEventListener("click", deleteLea
   wireLogout(document.getElementById("logout-btn"));
   document.getElementById("refresh-btn").addEventListener("click", loadAll);
   await loadAll();
+
+  // Photo handoff from the Chrome extension / bookmarklet (#import-photos=…).
+  // Runs first and clears the hash, so the #deal= check below can't misread it.
+  await handlePhotoHandoff();
 
   // #deal=<card_id> deep link (Pipeline board → this deal's full card).
   const m = location.hash.match(/^#deal=(.+)$/);

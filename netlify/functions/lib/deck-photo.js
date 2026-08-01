@@ -33,18 +33,43 @@ async function streetViewFor(address, { w = 640, h = 400 } = {}) {
   }
 }
 
-// Given the property row, its cover image, and address, return the photo set to
-// render. `photos` is an array of {url,name} (may be empty); `hero` is a single
-// best URL for a full-bleed banner (may be "").
-async function resolveDealPhotos(prop, cover, address) {
+// Zero-touch exterior mini-gallery: Street View front shot + close aerial +
+// neighborhood aerial, all from GOOGLE_MAPS_API_KEY. Gated on Street View
+// metadata (same guard streetViewFor uses) so a bad/unmapped address yields []
+// instead of Google's gray placeholder tiles. Used when a deal has no real
+// photos yet — every deck gets *some* visual story with zero uploads.
+async function autoExteriorShots(address, { w = 640, h = 420 } = {}) {
+  const sv = await streetViewFor(address, { w, h });
+  if (!sv) return [];
+  const loc = encodeURIComponent(address);
+  return [
+    { url: sv, name: "Street view" },
+    { url: `https://maps.googleapis.com/maps/api/staticmap?center=${loc}&zoom=19&size=${w}x${h}&maptype=satellite&key=${GOOGLE_KEY}`, name: "Aerial view" },
+    { url: `https://maps.googleapis.com/maps/api/staticmap?center=${loc}&zoom=16&size=${w}x${h}&maptype=hybrid&markers=color:0xD4A03E%7C${loc}&key=${GOOGLE_KEY}`, name: "Neighborhood" },
+  ];
+}
+
+// Given the property row, its cover image, address, and uploaded gallery
+// (lib/gallery.js), return the photo set to render. `photos` is an array of
+// {url,name} (may be empty); `hero` is a single best URL for a full-bleed
+// banner (may be ""). Priority: real gallery (cover leads it) → cover alone →
+// legacy listing photos → auto Street View/aerial set → none.
+async function resolveDealPhotos(prop, cover, address, gallery = []) {
+  const g = (gallery || []).filter(p => p && p.url);
+  if (g.length) {
+    const photos = cover && !g.some(p => p.url === cover)
+      ? [{ url: cover, name: address }, ...g]
+      : g;
+    return { photos, hero: (cover || photos[0].url), source: "gallery" };
+  }
   if (cover) return { photos: [{ url: cover, name: address }], hero: cover, source: "cover" };
   const fb = Array.isArray(prop.fb_photos) ? prop.fb_photos.filter(p => p && p.url).slice(0, 6) : [];
   if (fb.length) return { photos: fb, hero: fb[0].url, source: "listing" };
 
-  const sv = await streetViewFor(address);
-  if (sv) return { photos: [{ url: sv, name: address }], hero: sv, source: "streetview" };
+  const auto = await autoExteriorShots(address);
+  if (auto.length) return { photos: auto, hero: auto[0].url, source: "streetview" };
 
   return { photos: [], hero: "", source: "none" };
 }
 
-module.exports = { resolveDealPhotos, streetViewFor };
+module.exports = { resolveDealPhotos, streetViewFor, autoExteriorShots };

@@ -1206,12 +1206,7 @@ function renderAcqPanel(p, acq, terms) {
         <input type="text" class="acq-input" data-field="video_url" placeholder="Paste video URL…" value="${txt(a.video_url)}">
         ${!a.video_url ? `<span class="acq-media-status bad">Not uploaded</span>` : `<span class="acq-media-status ok">Uploaded</span>`}
       </div>
-      <div class="acq-media-row">
-        <span class="acq-media-icon">${a.photos_count != null && Number(a.photos_count) >= 10 ? "✅" : "❌"}</span>
-        <span class="acq-media-label">Photos</span>
-        <input type="number" class="acq-input" data-field="photos_count" placeholder="# of photos" value="${num(a.photos_count)}">
-        <span class="acq-media-status ${a.photos_count != null && Number(a.photos_count) >= 10 ? "ok" : "bad"}">${a.photos_count != null ? `${a.photos_count} photos` : "0 photos"}${(a.photos_count == null || Number(a.photos_count) < 10) ? " — need 10+" : ""}</span>
-      </div>
+      ${galleryBlockHtml(p, a)}
       <div class="acq-media-row">
         <span class="acq-media-icon">${a.mortgage_statement_url ? "✅" : "❌"}</span>
         <span class="acq-media-label">Mortgage statement</span>
@@ -1319,6 +1314,12 @@ function renderMorbyPanel(p, morby, terms, acq) {
         ${!ac.cover_image_url ? `<span class="acq-media-status bad">No banner on deck link</span>` : `<span class="acq-media-status ok">Set — shows on deck</span>`}
         ${ac.cover_image_url ? `<img src="${escapeHtml(ac.cover_image_url)}" alt="" style="width:48px;height:48px;object-fit:cover;border-radius:6px;margin-left:6px">` : ""}
       </div>
+    </div>
+
+    <!-- Section: Photo Gallery -->
+    <div class="acq-section">
+      <h4>📸 Photo Gallery</h4>
+      ${galleryBlockHtml(p, ac)}
     </div>
 
     <!-- Section: Upload LOI -->
@@ -1690,8 +1691,168 @@ function wireCardEvents() {
 
   wireAcqPanels();
   wireMorbyPanel();
+  wireGalleryBlocks();
 }
 
+
+// ── Photo gallery (deck-page photos) — Storage folder gallery/<card_id>/ ──
+// Three ways in: drag-drop/pick files (downscaled client-side), or paste ANY
+// link (Drive folder / listing page / direct image URLs) and import-photos.js
+// pulls everything server-side. photos_count auto-syncs to the real count so
+// the "Need More Photos" flag reflects reality, not a hand-typed number.
+function galleryBlockHtml(p, acq) {
+  const n = Number((acq || {}).photos_count) || 0;
+  return `
+  <div class="gallery-block" data-card-id="${escapeHtml(p.card_id)}" style="border:1px dashed var(--border);border-radius:10px;padding:10px 12px;margin-top:6px">
+    <div class="flex gap-8" style="align-items:center;flex-wrap:wrap">
+      <span class="acq-media-icon gallery-icon">${n >= 10 ? "✅" : "❌"}</span>
+      <span class="acq-media-label">Photo gallery</span>
+      <span class="acq-media-status ${n >= 10 ? "ok" : "bad"} gallery-count">${n} photo${n === 1 ? "" : "s"}${n < 10 ? " — need 10+" : ""}</span>
+      <span class="muted" style="font-size:0.72rem">powers the deck page's 📸 gallery; auto Street View + aerial shots show until real photos exist</span>
+    </div>
+    <div class="gallery-grid" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;min-height:10px"><span class="muted" style="font-size:0.76rem">Loading photos…</span></div>
+    <div class="flex gap-8 mt-8" style="flex-wrap:wrap;align-items:center">
+      <input type="file" class="gallery-file hidden" accept="image/*" multiple>
+      <button type="button" class="btn btn-ghost btn-sm gallery-add-btn">📤 Add photos</button>
+      <input type="text" class="gallery-import-url" placeholder="Paste Drive folder / listing page / image URLs — photos import automatically" value="${escapeHtml(p.drive_link || "")}" style="flex:1;min-width:220px;font-size:0.8rem;padding:6px 10px;border:1px solid var(--border);border-radius:8px">
+      <button type="button" class="btn btn-primary btn-sm gallery-import-btn">⬇ Import from link</button>
+      <span class="muted gallery-status" style="font-size:0.78rem"></span>
+    </div>
+  </div>`;
+}
+
+const GALLERY_MAX_DIM = 1600;
+function galleryPrefix(cardId) { return `gallery/${cardId}`; }
+
+async function listGallery(cardId) {
+  const { data, error } = await supa.storage.from("property-photos")
+    .list(galleryPrefix(cardId), { limit: 200, sortBy: { column: "name", order: "asc" } });
+  if (error) throw error;
+  return (data || []).filter(f => f.name && !f.name.startsWith("."));
+}
+
+// Downscale to ≤1600px JPEG before upload — a 5 MB phone photo becomes ~300 KB,
+// which is what keeps the deck page fast on a buyer's phone. Files the browser
+// can't decode (HEIC outside Safari) throw with a convert-to-JPG hint.
+async function downscalePhoto(file) {
+  let bmp;
+  try { bmp = await createImageBitmap(file); }
+  catch (_) { throw new Error(`${file.name}: this browser can't read that format (HEIC? export as JPG first)`); }
+  const scale = Math.min(1, GALLERY_MAX_DIM / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bmp.width * scale));
+  canvas.height = Math.max(1, Math.round(bmp.height * scale));
+  canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  if (bmp.close) bmp.close();
+  const blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.82));
+  if (!blob) throw new Error(`${file.name}: couldn't convert`);
+  return blob;
+}
+
+// photos_count mirrors the real gallery size (same upsert shape as saveField).
+async function syncGalleryCount(cardId, n) {
+  await supa.from("deal_acquisition").upsert(
+    { card_id: cardId, photos_count: n, updated_at: new Date().toISOString() },
+    { onConflict: "card_id" });
+  const deal = dealCache[cardId];
+  if (deal) deal.acq = { ...(deal.acq || {}), photos_count: n };
+  if (boardData && boardData.acqByCard) {
+    boardData.acqByCard[cardId] = { ...(boardData.acqByCard[cardId] || { card_id: cardId }), photos_count: n };
+  }
+}
+
+function wireGalleryBlocks() {
+  document.querySelectorAll(".gallery-block").forEach(block => {
+    const cardId = block.dataset.cardId;
+    const grid = block.querySelector(".gallery-grid");
+    const statusEl = block.querySelector(".gallery-status");
+
+    async function refresh() {
+      let files = [];
+      try { files = await listGallery(cardId); }
+      catch (e) { grid.innerHTML = `<span class="muted" style="font-size:0.76rem">Couldn't list photos: ${escapeHtml(e.message)}</span>`; return; }
+      // Keep the count chip + boardData honest without a full re-render.
+      const n = files.length;
+      const countEl = block.querySelector(".gallery-count");
+      if (countEl) { countEl.textContent = `${n} photo${n === 1 ? "" : "s"}${n < 10 ? " — need 10+" : ""}`; countEl.className = `acq-media-status ${n >= 10 ? "ok" : "bad"} gallery-count`; }
+      const iconEl = block.querySelector(".gallery-icon");
+      if (iconEl) iconEl.textContent = n >= 10 ? "✅" : "❌";
+      const cachedN = Number(((dealCache[cardId] || {}).acq || {}).photos_count) || 0;
+      if (n !== cachedN) syncGalleryCount(cardId, n); // fire-and-forget
+      if (!n) { grid.innerHTML = `<span class="muted" style="font-size:0.76rem">No photos yet — the deck page shows auto Street View + aerial shots until you add some.</span>`; return; }
+      grid.innerHTML = files.map(f => {
+        const { data } = supa.storage.from("property-photos").getPublicUrl(`${galleryPrefix(cardId)}/${f.name}`);
+        return `
+        <span style="position:relative;display:inline-block">
+          <a href="${escapeHtml(data.publicUrl)}" target="_blank" rel="noopener"><img src="${escapeHtml(data.publicUrl)}" loading="lazy" alt="" style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid var(--border)"></a>
+          <button type="button" class="gallery-del" data-name="${escapeHtml(f.name)}" title="Remove this photo" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;border:none;background:var(--red,#C53030);color:#fff;font-size:0.72rem;line-height:1;cursor:pointer">×</button>
+        </span>`;
+      }).join("");
+      grid.querySelectorAll(".gallery-del").forEach(btn => btn.addEventListener("click", async () => {
+        if (!confirm("Remove this photo from the gallery?")) return;
+        const { error } = await supa.storage.from("property-photos").remove([`${galleryPrefix(cardId)}/${btn.dataset.name}`]);
+        if (error) { toast(`Couldn't remove: ${error.message}`, { type: "error" }); return; }
+        await refresh();
+      }));
+    }
+
+    const fileInput = block.querySelector(".gallery-file");
+    block.querySelector(".gallery-add-btn").addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", async () => {
+      const files = [...(fileInput.files || [])];
+      if (!files.length) return;
+      const stamp = Date.now();
+      let ok = 0;
+      const problems = [];
+      for (let i = 0; i < files.length; i++) {
+        statusEl.textContent = `Uploading ${i + 1} of ${files.length}…`;
+        try {
+          const blob = await downscalePhoto(files[i]);
+          const path = `${galleryPrefix(cardId)}/${stamp}-${String(i).padStart(2, "0")}.jpg`;
+          const { error } = await supa.storage.from("property-photos").upload(path, blob, { upsert: true, contentType: "image/jpeg" });
+          if (error) throw new Error(`${files[i].name}: ${error.message}`);
+          ok++;
+        } catch (e) {
+          problems.push(e.message);
+        }
+      }
+      fileInput.value = "";
+      statusEl.textContent = "";
+      await refresh();
+      if (ok) toast(`✓ Added ${ok} photo${ok === 1 ? "" : "s"} to the gallery.`, { type: "success" });
+      if (problems.length) toast(`${problems.length} file${problems.length === 1 ? "" : "s"} skipped — ${problems[0]}`, { type: "error", duration: 8000 });
+    });
+
+    block.querySelector(".gallery-import-btn").addEventListener("click", async () => {
+      const url = block.querySelector(".gallery-import-url").value.trim();
+      if (!url) { statusEl.textContent = "Paste a link first."; return; }
+      const btn = block.querySelector(".gallery-import-btn");
+      const label = btn.textContent;
+      btn.disabled = true; btn.textContent = "Importing…";
+      statusEl.textContent = "Fetching photos from the link…";
+      try {
+        const { data: { session: s } } = await supa.auth.getSession();
+        const res = await fetch("/.netlify/functions/import-photos", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
+          body: JSON.stringify({ card_id: cardId, url }),
+        });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error || "Import failed");
+        statusEl.textContent = "";
+        toast(`✓ Imported ${result.imported} photo${result.imported === 1 ? "" : "s"}${result.partial ? " (more available — run import again to pull the rest)" : ""}.`, { type: "success", duration: 7000 });
+        await refresh();
+      } catch (e) {
+        statusEl.textContent = "";
+        toast(`Import failed: ${e.message}`, { type: "error", duration: 9000 });
+      } finally {
+        btn.disabled = false; btn.textContent = label;
+      }
+    });
+
+    refresh();
+  });
+}
 
 // ── Deal Info (acquisition data) — inline auto-save on blur/change ──
 function wireAcqPanels() {

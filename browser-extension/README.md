@@ -21,11 +21,17 @@ them to the dashboard, which downloads them into the gallery.
 ## Use
 
 1. Open the Zillow listing for the property (the detail page, not search results).
-2. Open the photo gallery and scroll through it once — Zillow lazy-loads
-   photos, and this grabs whatever the page has loaded.
-3. Click the gold **📸 Send photos to Seaside** button (bottom-right).
+2. Open the photo gallery and **scroll through the photos you actually want.**
+   The panel counts them live — "👁 10 of 32 photos viewed".
+3. Click **📸 Send 10 viewed** (bottom-right). Only the photos you looked at
+   are sent. "Send all 32 instead" is there if you'd rather take everything.
 4. A dashboard tab opens with the deal preselected by address — confirm, and
    the photos import into that deal's gallery.
+
+A photo counts as viewed once it's been at least half on-screen at a usable
+size, so scrolling the media wall, paging through the carousel, and the
+full-screen lightbox all count — while thumbnails that merely flick past, and
+photos from the "similar homes" section, never do.
 
 ## Notes
 

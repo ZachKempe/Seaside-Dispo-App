@@ -151,6 +151,65 @@ function grabPhotoUrls() {
   return { urls: dedupe(urls).slice(0, MAX_PHOTOS), precise };
 }
 
+// ── "Only send what I actually looked at" ──────────────────────────────────
+// A photo counts as viewed once it has been at least half on-screen at a
+// usable size — scrolling the media wall, arrowing through the full-screen
+// carousel, and the lightbox all qualify. Polling (rather than
+// IntersectionObserver) is deliberate: Zillow reuses the same <img> element
+// and swaps its src as you page through the carousel, which an observer
+// wouldn't re-fire for.
+const viewedHashes = new Set();
+const seenBest = {}; // hash -> {w, url}: largest variant actually rendered
+let onViewedChange = () => {};
+
+function photoHash(u) {
+  const m = String(u || "").match(/\/fp\/([a-f0-9]{12,})/);
+  return m ? m[1] : "";
+}
+
+function sampleVisiblePhotos() {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let changed = false;
+  for (const img of document.images) {
+    const src = img.currentSrc || img.src || "";
+    if (!src.includes("photos.zillowstatic.com")) continue;
+    const r = img.getBoundingClientRect();
+    if (r.width < 120 || r.height < 90) continue; // thumbnails/icons aren't "viewed"
+    const visW = Math.min(r.right, vw) - Math.max(r.left, 0);
+    const visH = Math.min(r.bottom, vh) - Math.max(r.top, 0);
+    if (visW <= 0 || visH <= 0) continue;
+    if (visW * visH < 0.5 * r.width * r.height) continue; // needs to be half on-screen
+    const h = photoHash(src);
+    if (!h) continue;
+    const prev = seenBest[h];
+    if (!prev || r.width > prev.w) seenBest[h] = { w: r.width, url: src };
+    if (!viewedHashes.has(h)) { viewedHashes.add(h); changed = true; }
+  }
+  return changed;
+}
+
+// The listing's full photo set, cached (the walk isn't free) and refreshed
+// until the page has hydrated.
+let canonicalCache = null;
+function canonicalPhotos({ refresh = false } = {}) {
+  if (refresh || !canonicalCache || !canonicalCache.urls.length) canonicalCache = grabPhotoUrls();
+  return canonicalCache;
+}
+
+// What to send: the listing's photos filtered to the ones you viewed, in
+// listing order. If we couldn't isolate the listing's own set, fall back to
+// the viewed photos as rendered and flag the result imprecise.
+function selection(viewedOnly) {
+  const { urls, precise } = canonicalPhotos();
+  if (!viewedOnly) return { urls, precise };
+  if (precise && urls.length) {
+    const picked = urls.filter(u => viewedHashes.has(photoHash(u)));
+    return { urls: picked, precise: true };
+  }
+  const picked = [...viewedHashes].map(h => seenBest[h] && seenBest[h].url).filter(Boolean);
+  return { urls: picked.slice(0, MAX_PHOTOS), precise: false };
+}
+
 // The listing address — lets the dashboard preselect the matching deal.
 function listingAddress() {
   const meta = document.querySelector('meta[property="og:title"]');
@@ -159,39 +218,86 @@ function listingAddress() {
   return h1 ? h1.textContent.trim() : "";
 }
 
-function mountButton() {
-  if (document.getElementById("seaside-grab-btn")) return;
-  const btn = document.createElement("button");
-  btn.id = "seaside-grab-btn";
-  btn.type = "button";
-  btn.textContent = "📸 Send photos to Seaside";
-  btn.style.cssText = [
-    "position:fixed", "right:18px", "bottom:18px", "z-index:2147483647",
-    "font:700 14px Inter,system-ui,sans-serif", "color:#112950",
-    "background:linear-gradient(180deg,#E8C878,#D4A03E)", "border:none",
-    "border-radius:12px", "padding:13px 18px", "cursor:pointer",
-    "box-shadow:0 10px 26px -10px rgba(17,41,80,.65)",
-  ].join(";");
-
-  btn.addEventListener("click", () => {
-    const { urls, precise } = grabPhotoUrls();
-    if (!urls.length) {
-      btn.textContent = "No photos found on this page";
-      setTimeout(() => { btn.textContent = "📸 Send photos to Seaside"; }, 2500);
-      return;
-    }
-    btn.textContent = `Sending ${urls.length} photos…`;
-    const hash = `#import-photos=${encodeURIComponent(urls.join("\n"))}`
-      + `&addr=${encodeURIComponent(listingAddress())}`
-      + (precise ? "" : "&approx=1");
-    window.open(`${APP_ORIGIN}/dashboard.html${hash}`, "_blank", "noopener");
-    setTimeout(() => { btn.textContent = `✓ Sent ${urls.length} — pick the deal in the new tab`; }, 400);
-    setTimeout(() => { btn.textContent = "📸 Send photos to Seaside"; }, 6000);
-  });
-
-  document.body.appendChild(btn);
+function send(viewedOnly, statusEl) {
+  const { urls, precise } = selection(viewedOnly);
+  if (!urls.length) {
+    statusEl.textContent = viewedOnly
+      ? "Open the photos and scroll through the ones you want."
+      : "No photos found on this page.";
+    return;
+  }
+  const hash = `#import-photos=${encodeURIComponent(urls.join("\n"))}`
+    + `&addr=${encodeURIComponent(listingAddress())}`
+    + (precise ? "" : "&approx=1");
+  window.open(`${APP_ORIGIN}/dashboard.html${hash}`, "_blank", "noopener");
+  statusEl.textContent = `✓ Sent ${urls.length} — pick the deal in the new tab`;
+  setTimeout(() => { statusEl.textContent = ""; }, 6000);
 }
 
-mountButton();
+function mountPanel() {
+  if (document.getElementById("seaside-grab-panel")) return;
+
+  const panel = document.createElement("div");
+  panel.id = "seaside-grab-panel";
+  panel.style.cssText = [
+    "position:fixed", "right:18px", "bottom:18px", "z-index:2147483647",
+    "font:500 13px Inter,system-ui,sans-serif", "color:#20304D",
+    "background:#FBFAF6", "border:1px solid #E7E1D3", "border-radius:14px",
+    "padding:12px 14px", "box-shadow:0 14px 34px -14px rgba(17,41,80,.6)",
+    "display:flex", "flex-direction:column", "gap:8px", "max-width:250px",
+  ].join(";");
+
+  const count = document.createElement("div");
+  count.id = "seaside-grab-count";
+
+  const sendViewed = document.createElement("button");
+  sendViewed.type = "button";
+  sendViewed.style.cssText = [
+    "font:700 14px Inter,system-ui,sans-serif", "color:#112950",
+    "background:linear-gradient(180deg,#E8C878,#D4A03E)", "border:none",
+    "border-radius:11px", "padding:11px 14px", "cursor:pointer",
+  ].join(";");
+
+  const sendAll = document.createElement("button");
+  sendAll.type = "button";
+  sendAll.style.cssText = [
+    "font:600 12px Inter,system-ui,sans-serif", "color:#1B3A6B",
+    "background:none", "border:none", "padding:0", "cursor:pointer",
+    "text-decoration:underline", "align-self:flex-start",
+  ].join(";");
+
+  const status = document.createElement("div");
+  status.style.cssText = "font-size:11.5px;color:#8A94A6;line-height:1.4";
+
+  function update() {
+    const total = canonicalPhotos().urls.length;
+    const viewed = selection(true).urls.length;
+    count.innerHTML = `👁 <b>${viewed}</b> of ${total || "?"} photo${total === 1 ? "" : "s"} viewed`;
+    sendViewed.textContent = viewed ? `📸 Send ${viewed} viewed` : "📸 Send viewed photos";
+    sendViewed.style.opacity = viewed ? "1" : ".55";
+    sendAll.textContent = total ? `Send all ${total} instead` : "";
+    sendAll.style.display = total && total !== viewed ? "block" : "none";
+    if (!viewed && !status.textContent) {
+      status.textContent = "Scroll the photos you want — only those get sent.";
+    } else if (viewed && status.textContent.startsWith("Scroll")) {
+      status.textContent = "";
+    }
+  }
+  onViewedChange = update;
+
+  sendViewed.addEventListener("click", () => send(true, status));
+  sendAll.addEventListener("click", () => send(false, status));
+
+  panel.append(count, sendViewed, sendAll, status);
+  document.body.appendChild(panel);
+  update();
+}
+
+mountPanel();
+// Poll for what's on screen (catches carousel src swaps the observer misses)
+// and refresh the panel when the viewed set grows.
+setInterval(() => { if (sampleVisiblePhotos()) onViewedChange(); }, 600);
+// Keep the listing's photo set fresh while the page hydrates.
+setInterval(() => { canonicalPhotos({ refresh: true }); onViewedChange(); }, 4000);
 // Zillow is a SPA — re-mount if it swaps the page body out.
-new MutationObserver(() => mountButton()).observe(document.documentElement, { childList: true, subtree: true });
+new MutationObserver(() => mountPanel()).observe(document.documentElement, { childList: true, subtree: true });

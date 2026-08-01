@@ -200,6 +200,13 @@ exports.handler = async (event) => {
     // ---- Photos (gallery -> cover -> listing -> auto Street View/aerial -> none) ----
     const { photos, hero: heroPhoto, source: photoSource } = await resolveDealPhotos(prop, cover, address, gallery);
     const hasGallery = photos.length > 1;
+    // Downloads are offered only for real uploaded photos in our own Storage:
+    // those URLs support `?download=` (Content-Disposition, which is what makes
+    // a cross-origin save work) and send CORS headers so the page can zip them.
+    // Google's auto Street View/aerial imagery does neither, and isn't the
+    // property's own photography to hand out.
+    const canDownload = photoSource === "gallery"
+      && photos.every(p => p.url.includes("/storage/v1/object/public/"));
 
     // ---- Presentation ----
     const canInterest = status === "active";
@@ -269,6 +276,7 @@ exports.handler = async (event) => {
           <span style="font-size:11.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:${NAVY}">Photos</span>
           <span style="flex:1;height:1px;background:linear-gradient(90deg,#E0D9C9,transparent)"></span>
           ${photoSource === "streetview" ? `<span style="font-size:10.5px;font-weight:600;color:${MUTED}">Street View &amp; aerial · Google</span>` : `<span style="font-size:11px;font-weight:700;color:${NAVY}">${photos.length} photos</span>`}
+          ${canDownload ? `<button type="button" id="dlAllBtn" style="font:700 11.5px Inter,sans-serif;color:${NAVY};background:#fff;border:1px solid #D8CFB8;border-radius:9px;padding:6px 11px;cursor:pointer;white-space:nowrap">⬇ Download all</button>` : ""}
         </div>
         <div style="display:grid;grid-auto-flow:column;grid-auto-columns:132px;gap:9px;overflow-x:auto;padding:2px 2px 8px;-webkit-overflow-scrolling:touch;scrollbar-width:thin">
           ${photos.map((p, i) => `<img class="gph" data-idx="${i}" src="${esc(p.url)}" alt="${esc(p.name || address)}" loading="lazy" style="width:132px;height:96px;object-fit:cover;border-radius:11px;border:1px solid ${LINE};cursor:pointer;box-shadow:0 8px 18px -14px rgba(17,41,80,.5)">`).join("")}
@@ -337,7 +345,8 @@ exports.handler = async (event) => {
         <div style="position:fixed;inset:0;background:rgba(10,18,35,.96);display:flex;flex-direction:column">
           <div style="display:flex;align-items:center;padding:14px 18px">
             <span id="gcount" style="font:600 13px Inter,sans-serif;color:#C9D4E6"></span>
-            <button type="button" id="gclose" style="margin-left:auto;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:10px;padding:8px 14px;font:700 14px Inter,sans-serif;cursor:pointer">✕ Close</button>
+            ${canDownload ? `<a id="gdl" href="#" download style="margin-left:auto;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:10px;padding:8px 14px;font:700 14px Inter,sans-serif;cursor:pointer;text-decoration:none">⬇ Save photo</a>` : ""}
+            <button type="button" id="gclose" style="${canDownload ? "margin-left:10px" : "margin-left:auto"};background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:10px;padding:8px 14px;font:700 14px Inter,sans-serif;cursor:pointer">✕ Close</button>
           </div>
           <div id="gmain" style="flex:1;display:flex;align-items:center;justify-content:center;min-height:0;position:relative;padding:0 4px">
             <button type="button" id="gprev" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);z-index:2;width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,255,255,.3);background:rgba(17,41,80,.55);color:#fff;font-size:22px;line-height:1;cursor:pointer">‹</button>
@@ -356,8 +365,20 @@ exports.handler = async (event) => {
           document.getElementById("gimg").src = PHOTOS[gIdx].u;
           document.getElementById("gcount").textContent = (gIdx + 1) + " / " + PHOTOS.length;
           document.getElementById("gname").textContent = PHOTOS[gIdx].n;
+          var dl = document.getElementById("gdl");
+          if (dl){ dl.href = dlUrl(gIdx); dl.setAttribute("download", dlName(gIdx)); }
         }
         function gOpen(i){ gShow(i); document.getElementById("gdlg").showModal(); }
+        // Storage URLs honour ?download=<name> (Content-Disposition: attachment),
+        // which is what makes a save work cross-origin — the HTML download
+        // attribute alone is ignored for another origin and would just open it.
+        function dlName(i){
+          var ext = (PHOTOS[i].u.split("?")[0].match(/\\.(jpe?g|png|webp)$/i) || [".jpg"])[0];
+          return SLUG + "-" + String(i + 1).padStart(2, "0") + ext;
+        }
+        function dlUrl(i){
+          return PHOTOS[i].u + (PHOTOS[i].u.indexOf("?") >= 0 ? "&" : "?") + "download=" + encodeURIComponent(dlName(i));
+        }
         document.querySelectorAll(".gph").forEach(el => el.addEventListener("click", () => gOpen(Number(el.dataset.idx) || 0)));
         const gBtn = document.getElementById("galleryBtn");
         if (gBtn) gBtn.addEventListener("click", () => gOpen(0));
@@ -378,7 +399,92 @@ exports.handler = async (event) => {
           const dx = e.changedTouches[0].clientX - gTouchX;
           gTouchX = null;
           if (Math.abs(dx) > 40) gShow(gIdx + (dx < 0 ? 1 : -1));
-        }, { passive: true });` : "";
+        }, { passive: true });
+
+        // ── Download all → one .zip ──────────────────────────────────────
+        // Storage sends Access-Control-Allow-Origin:*, so the page can fetch
+        // each photo and pack them itself. STORE (no compression) because
+        // JPEGs are already compressed — that keeps this to a few dozen lines
+        // instead of pulling in a zip library. Falls back to saving photos
+        // individually if anything here fails.
+        function crc32(u8){
+          var c, n, k, T = crc32.T;
+          if (!T){
+            T = crc32.T = [];
+            for (n = 0; n < 256; n++){
+              c = n;
+              for (k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+              T[n] = c >>> 0;
+            }
+          }
+          c = 0xFFFFFFFF;
+          for (n = 0; n < u8.length; n++) c = T[(c ^ u8[n]) & 0xFF] ^ (c >>> 8);
+          return (c ^ 0xFFFFFFFF) >>> 0;
+        }
+        function zipStore(files){
+          var enc = new TextEncoder(), parts = [], central = [], offset = 0;
+          var w2 = function(a, v){ a.push(v & 255, (v >>> 8) & 255); };
+          var w4 = function(a, v){ a.push(v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255); };
+          for (var i = 0; i < files.length; i++){
+            var name = enc.encode(files[i].name), data = files[i].data, crc = crc32(data);
+            var lh = [];
+            w4(lh, 0x04034b50); w2(lh, 20); w2(lh, 0x0800); w2(lh, 0); w2(lh, 0); w2(lh, 0);
+            w4(lh, crc); w4(lh, data.length); w4(lh, data.length); w2(lh, name.length); w2(lh, 0);
+            var lhu = new Uint8Array(lh);
+            parts.push(lhu, name, data);
+            var ch = [];
+            w4(ch, 0x02014b50); w2(ch, 20); w2(ch, 20); w2(ch, 0x0800); w2(ch, 0); w2(ch, 0); w2(ch, 0);
+            w4(ch, crc); w4(ch, data.length); w4(ch, data.length);
+            w2(ch, name.length); w2(ch, 0); w2(ch, 0); w2(ch, 0); w2(ch, 0); w4(ch, 0); w4(ch, offset);
+            central.push(new Uint8Array(ch), name);
+            offset += lhu.length + name.length + data.length;
+          }
+          var cdSize = 0;
+          for (var j = 0; j < central.length; j++) cdSize += central[j].length;
+          var eo = [];
+          w4(eo, 0x06054b50); w2(eo, 0); w2(eo, 0); w2(eo, files.length); w2(eo, files.length);
+          w4(eo, cdSize); w4(eo, offset); w2(eo, 0);
+          return new Blob(parts.concat(central, [new Uint8Array(eo)]), { type: "application/zip" });
+        }
+        function saveBlob(blob, filename){
+          var a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = filename;
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(function(){ URL.revokeObjectURL(a.href); }, 4000);
+        }
+        // Last resort: let the browser save them one by one (Storage's
+        // ?download= makes each a real save rather than a navigation).
+        function saveIndividually(){
+          PHOTOS.forEach(function(_, i){
+            setTimeout(function(){
+              var a = document.createElement("a");
+              a.href = dlUrl(i); a.download = dlName(i);
+              document.body.appendChild(a); a.click(); a.remove();
+            }, i * 350);
+          });
+        }
+        var dlAll = document.getElementById("dlAllBtn");
+        if (dlAll) dlAll.addEventListener("click", async function(){
+          var label = dlAll.textContent;
+          dlAll.disabled = true;
+          try {
+            var files = [];
+            for (var i = 0; i < PHOTOS.length; i++){
+              dlAll.textContent = "Preparing " + (i + 1) + "/" + PHOTOS.length + "…";
+              var res = await fetch(PHOTOS[i].u, { mode: "cors" });
+              if (!res.ok) throw new Error("fetch " + res.status);
+              files.push({ name: dlName(i), data: new Uint8Array(await res.arrayBuffer()) });
+            }
+            dlAll.textContent = "Zipping…";
+            saveBlob(zipStore(files), SLUG + "-photos.zip");
+            dlAll.textContent = "✓ Downloaded";
+          } catch (e) {
+            dlAll.textContent = "Saving photos…";
+            saveIndividually();
+          }
+          setTimeout(function(){ dlAll.textContent = label; dlAll.disabled = false; }, 3500);
+        });` : "";
 
     const script = `
       <script>

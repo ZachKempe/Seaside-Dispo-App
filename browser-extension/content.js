@@ -158,6 +158,15 @@ function grabPhotoUrls() {
 // IntersectionObserver) is deliberate: Zillow reuses the same <img> element
 // and swaps its src as you page through the carousel, which an observer
 // wouldn't re-fire for.
+//
+// Detection must be rendering-agnostic. Zillow's full-screen photo viewer
+// mounts inside a SHADOW DOM and some photos are painted as CSS
+// background-images, not <img> tags — so a plain `document.images` scan (the
+// old approach) only ever caught the first hero image and missed everything
+// you paged through. We now: (1) collect <img> across the light DOM AND every
+// open shadow root, and (2) sample what's actually under the centre of the
+// screen with elementsFromPoint (piercing shadow roots), reading both <img>
+// src and computed background-image. Whatever is filling your viewport counts.
 const viewedHashes = new Set();
 const seenBest = {}; // hash -> {w, url}: largest variant actually rendered
 let onViewedChange = () => {};
@@ -167,23 +176,96 @@ function photoHash(u) {
   return m ? m[1] : "";
 }
 
+// Every document/shadow-root in the tree (light DOM + all open shadow roots).
+function allRoots() {
+  const roots = [];
+  const stack = [document];
+  while (stack.length) {
+    const root = stack.pop();
+    roots.push(root);
+    let all;
+    try { all = root.querySelectorAll("*"); } catch (e) { all = []; }
+    for (const el of all) if (el.shadowRoot) stack.push(el.shadowRoot);
+  }
+  return roots;
+}
+
+// The zillowstatic photo URL an element represents, whether it's an <img> or
+// carries a background-image — else "".
+function photoUrlOf(el) {
+  if (!el || el.nodeType !== 1) return "";
+  if (el.tagName === "IMG") {
+    const s = el.currentSrc || el.src || "";
+    if (s.includes("photos.zillowstatic.com")) return s;
+  }
+  let bg;
+  try { bg = getComputedStyle(el).backgroundImage; } catch (e) { return ""; }
+  const m = (bg || "").match(/https:\/\/photos\.zillowstatic\.com\/[^"')]+/);
+  return m ? m[0] : "";
+}
+
+// elementsFromPoint, but descending into open shadow roots at that point.
+function deepElementsFromPoint(x, y) {
+  const out = [];
+  const seen = new Set();
+  const roots = [document];
+  while (roots.length) {
+    const root = roots.pop();
+    let els = [];
+    try { els = root.elementsFromPoint(x, y); } catch (e) { els = []; }
+    for (const el of els) {
+      if (seen.has(el)) continue;
+      seen.add(el);
+      out.push(el);
+      if (el.shadowRoot) roots.push(el.shadowRoot);
+    }
+  }
+  return out;
+}
+
+function markViewed(url, w) {
+  const h = photoHash(url);
+  if (!h) return false;
+  const prev = seenBest[h];
+  if (!prev || w > prev.w) seenBest[h] = { w: w || (prev ? prev.w : 0), url };
+  if (viewedHashes.has(h)) return false;
+  viewedHashes.add(h);
+  return true;
+}
+
 function sampleVisiblePhotos() {
   const vw = window.innerWidth, vh = window.innerHeight;
   let changed = false;
-  for (const img of document.images) {
-    const src = img.currentSrc || img.src || "";
-    if (!src.includes("photos.zillowstatic.com")) continue;
-    const r = img.getBoundingClientRect();
-    if (r.width < 120 || r.height < 90) continue; // thumbnails/icons aren't "viewed"
-    const visW = Math.min(r.right, vw) - Math.max(r.left, 0);
-    const visH = Math.min(r.bottom, vh) - Math.max(r.top, 0);
-    if (visW <= 0 || visH <= 0) continue;
-    if (visW * visH < 0.5 * r.width * r.height) continue; // needs to be half on-screen
-    const h = photoHash(src);
-    if (!h) continue;
-    const prev = seenBest[h];
-    if (!prev || r.width > prev.w) seenBest[h] = { w: r.width, url: src };
-    if (!viewedHashes.has(h)) { viewedHashes.add(h); changed = true; }
+
+  // 1) <img> across light + shadow DOM, at least half on-screen and usable size.
+  for (const root of allRoots()) {
+    let imgs;
+    try { imgs = root.querySelectorAll("img"); } catch (e) { continue; }
+    for (const img of imgs) {
+      const src = img.currentSrc || img.src || "";
+      if (!src.includes("photos.zillowstatic.com")) continue;
+      const r = img.getBoundingClientRect();
+      if (r.width < 120 || r.height < 90) continue; // thumbnails/icons aren't "viewed"
+      const visW = Math.min(r.right, vw) - Math.max(r.left, 0);
+      const visH = Math.min(r.bottom, vh) - Math.max(r.top, 0);
+      if (visW <= 0 || visH <= 0) continue;
+      if (visW * visH < 0.5 * r.width * r.height) continue;
+      if (markViewed(src, r.width)) changed = true;
+    }
+  }
+
+  // 2) Whatever is under the centre of the screen — catches the full-screen
+  // viewer's photo whether it's an <img>, a background-image, or nested in a
+  // shadow root the walk above didn't reach.
+  const pts = [[0.5, 0.45], [0.4, 0.45], [0.6, 0.45], [0.5, 0.3], [0.5, 0.62]];
+  for (const [fx, fy] of pts) {
+    for (const el of deepElementsFromPoint(Math.round(vw * fx), Math.round(vh * fy))) {
+      const url = photoUrlOf(el);
+      if (!url) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 200 || r.height < 150) continue; // the centred element is the main photo
+      if (markViewed(url, r.width)) changed = true;
+    }
   }
   return changed;
 }

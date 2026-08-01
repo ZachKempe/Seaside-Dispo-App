@@ -2,18 +2,12 @@
 // and the email footer. Verifies a signed per-buyer token, flips email_opt_out,
 // and shows a small confirmation page. Supports RFC 8058 one-click POST too.
 
-const crypto = require("crypto");
+// Minting and verifying live together in lib/unsub.js — they have to agree
+// exactly, and every link already sitting in someone's inbox depends on it.
+const { verifyToken } = require("./lib/unsub");
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const UNSUB_SECRET = process.env.UNSUB_SECRET || SB_KEY || "seaside-unsub";
-
-function verifyToken(token) {
-  const [id, h] = String(token || "").split(".");
-  if (!id || !h) return null;
-  const good = crypto.createHmac("sha256", UNSUB_SECRET).update(String(id)).digest("hex").slice(0, 16);
-  return h === good ? Number(id) : null;
-}
 
 async function optOut(buyerId) {
   const r = await fetch(`${SB_URL}/rest/v1/buyers?id=eq.${buyerId}`, {

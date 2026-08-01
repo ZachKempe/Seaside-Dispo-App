@@ -8,6 +8,7 @@ const {
   fmtMoney, fmtPct, matchesDeal, buyerCashAtClose,
   dscrMonthlyPayment, subtoSummaryRows, morbyTermRows,
   engagementScore, engagementLevel,
+  buyBoxCompleteness, buyBoxSplit, nearMissDeal,
 } = require("../public/js/deal-shared");
 
 // ── Formatting ────────────────────────────────────────────────────
@@ -58,6 +59,83 @@ test("price / PITI / beds caps only apply when both sides have a value", () => {
   assert.equal(matchesDeal(buyer({ min_beds: 3 }), "subto", "", 0, 0, 2), false);
   assert.equal(matchesDeal(buyer({ min_beds: 3 }), "subto", "", 0, 0, 4), true);
   assert.equal(matchesDeal(buyer({ min_beds: 3 }), "subto", "", 0, 0, 0), true); // beds unknown
+});
+
+// ── Buy-box completeness (B4.1) ───────────────────────────────────
+test("completeness: a buyer with nothing on file is a wildcard", () => {
+  assert.equal(buyBoxCompleteness(buyer()), "wildcard");
+  assert.equal(buyBoxCompleteness({}), "wildcard");
+  assert.equal(buyBoxCompleteness(null), "wildcard");
+  // "all" is not a strategy — it is the absence of one
+  assert.equal(buyBoxCompleteness(buyer({ strategy: "all" })), "wildcard");
+  assert.equal(buyBoxCompleteness(buyer({ strategy: " All " })), "wildcard");
+});
+
+test("completeness: any single real constraint lifts a buyer out of wildcard", () => {
+  assert.equal(buyBoxCompleteness(buyer({ states: "FL" })), "partial");
+  assert.equal(buyBoxCompleteness(buyer({ strategy: "subto" })), "partial");
+  assert.equal(buyBoxCompleteness(buyer({ max_price: 300000 })), "partial");
+  assert.equal(buyBoxCompleteness(buyer({ max_piti: 2000 })), "partial");
+  // a bed floor filters real deals, so it is not "matches everything" either
+  assert.equal(buyBoxCompleteness(buyer({ min_beds: 3 })), "partial");
+});
+
+test("completeness: full needs a market AND a strategy AND a money cap", () => {
+  assert.equal(buyBoxCompleteness(buyer({ states: "FL", strategy: "subto", max_price: 300000 })), "full");
+  assert.equal(buyBoxCompleteness(buyer({ states: "FL", strategy: "subto", max_piti: 2000 })), "full");
+  assert.equal(buyBoxCompleteness(buyer({ states: "FL", strategy: "subto" })), "partial");
+  assert.equal(buyBoxCompleteness(buyer({ states: "FL", strategy: "all", max_price: 300000 })), "partial");
+});
+
+test("completeness split counts an audience", () => {
+  const split = buyBoxSplit([
+    buyer(),
+    buyer({ strategy: "all" }),
+    buyer({ states: "FL" }),
+    buyer({ states: "FL", strategy: "subto", max_price: 300000 }),
+  ]);
+  assert.deepEqual(split, { full: 1, partial: 1, wildcard: 2, total: 4 });
+  assert.deepEqual(buyBoxSplit([]), { full: 0, partial: 0, wildcard: 0, total: 0 });
+});
+
+// ── Tolerance bands / near misses (B4.4) ──────────────────────────
+test("near miss: an actual match is never a near miss", () => {
+  assert.equal(nearMissDeal(buyer({ max_price: 400000 }), "subto", "FL", 350000, 0, 0), null);
+});
+
+test("near miss: just over a money cap, but not far over", () => {
+  // $330k against a $300k cap = 10% over → inside the band
+  const hit = nearMissDeal(buyer({ max_price: 300000 }), "subto", "", 330000, 0, 0);
+  assert.ok(hit);
+  assert.match(hit.reasons[0], /10% over their \$300,000 price cap/);
+  // $340k = 13% over → outside
+  assert.equal(nearMissDeal(buyer({ max_price: 300000 }), "subto", "", 340000, 0, 0), null);
+  // PITI band works the same way
+  assert.ok(nearMissDeal(buyer({ max_piti: 2000 }), "subto", "", 0, 2100, 0));
+  assert.equal(nearMissDeal(buyer({ max_piti: 2000 }), "subto", "", 0, 2500, 0), null);
+});
+
+test("near miss: one bedroom short counts, two does not", () => {
+  assert.ok(nearMissDeal(buyer({ min_beds: 3 }), "subto", "", 0, 0, 2));
+  assert.equal(nearMissDeal(buyer({ min_beds: 3 }), "subto", "", 0, 0, 1), null);
+});
+
+test("near miss: wrong state or wrong strategy is never close", () => {
+  // out of market, money fine
+  assert.equal(nearMissDeal(buyer({ states: "FL" }), "subto", "TX", 0, 0, 0), null);
+  // wrong strategy, money fine
+  assert.equal(nearMissDeal(buyer({ strategy: "cash" }), "subto", "", 0, 0, 0), null);
+  // out of market AND barely over budget — still not a near miss
+  assert.equal(nearMissDeal(buyer({ states: "FL", max_price: 300000 }), "subto", "TX", 310000, 0, 0), null);
+});
+
+test("near miss: tolerance is caller-overridable and collects every reason", () => {
+  const wide = nearMissDeal(buyer({ max_price: 300000 }), "subto", "", 340000, 0, 0, 0.25);
+  assert.ok(wide);
+  const both = nearMissDeal(buyer({ max_price: 300000, min_beds: 3 }), "subto", "", 310000, 0, 2);
+  assert.equal(both.reasons.length, 2);
+  // a zero tolerance band leaves nothing near
+  assert.equal(nearMissDeal(buyer({ max_price: 300000 }), "subto", "", 310000, 0, 0, 0), null);
 });
 
 // ── buyerCashAtClose (the headline number in Morby emails/SMS/deck) ──
@@ -147,6 +225,34 @@ test("engagement: clamps to 100 and levels band correctly", () => {
   assert.equal(engagementLevel(45), "warm");
   assert.equal(engagementLevel(10), "quiet");
   assert.equal(engagementLevel(0), "none");
+});
+
+test("engagement: a spam complaint outweighs any positive history", () => {
+  const busy = { interest: 5, reply: 5, view: 5, click: 5, open: 5 };
+  assert.equal(engagementScore(busy, daysAgo(0), NOW), 100);
+  assert.equal(engagementScore({ ...busy, complaint: 1 }, daysAgo(0), NOW), 0);
+  assert.equal(engagementLevel(engagementScore({ ...busy, complaint: 1 }, daysAgo(0), NOW)), "none");
+});
+
+test("engagement: hard bounces dock the score without erasing it", () => {
+  const counts = { view: 3, open: 5 };
+  const clean = engagementScore(counts, daysAgo(1), NOW);          // 24 + 10 = 34
+  const bounced = engagementScore({ ...counts, bounce: 1 }, daysAgo(1), NOW);
+  assert.equal(clean, 34);
+  assert.equal(bounced, 19);                                       // 34 − 15
+  // the bounce penalty is capped, so a bounce loop can't drive it far negative
+  assert.equal(engagementScore({ ...counts, bounce: 9 }, daysAgo(1), NOW), 4); // 34 − 30
+});
+
+test("engagement: penalties don't fade with recency the way signals do", () => {
+  // Positives decay (×0.35 past 30 days), the complaint does not.
+  assert.equal(engagementScore({ view: 3, open: 5 }, daysAgo(60), NOW), 12);
+  assert.equal(engagementScore({ view: 3, open: 5, complaint: 1 }, daysAgo(60), NOW), 0);
+});
+
+test("engagement: a penalty alone still scores 0, never negative", () => {
+  assert.equal(engagementScore({ complaint: 1 }, daysAgo(1), NOW), 0);
+  assert.equal(engagementScore({ bounce: 2 }, daysAgo(1), NOW), 0);
 });
 
 // ── Term rows (what the deck page + Morby email tables show) ──────

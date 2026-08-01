@@ -37,6 +37,80 @@
     return true;
   }
 
+  // ── B4.1 Buy-box completeness ───────────────────────────────────
+  // matchesDeal treats every blank buyer field as a wildcard: no states means
+  // every state, max_price 0 means any price. That is deliberate (a buyer we
+  // know nothing about still hears about deals) but it means a "300 matched"
+  // audience can be mostly blanks. This classifier is what lets the UI say so.
+  //
+  //   wildcard — no state, no real strategy, no money cap, no bed floor:
+  //              this buyer matches literally every deal we will ever send.
+  //   full     — market + strategy + a money cap, i.e. a box worth trusting.
+  //   partial  — something on file, but not enough to call it a buy box.
+  //
+  // Purely descriptive: it must never be wired into matchesDeal or the send
+  // path. Who receives a blast does not change because of this function.
+  function buyBoxCompleteness(buyer) {
+    const b = buyer || {};
+    const strats = String(b.strategy || "").toLowerCase().split(",").map(s => s.trim()).filter(Boolean);
+    const hasStrategy = strats.length > 0 && !strats.includes("all");
+    const hasStates = !!String(b.states || "").trim();
+    const hasMoney = Number(b.max_price) > 0 || Number(b.max_piti) > 0;
+    const hasBeds = Number(b.min_beds) > 0;
+    if (!hasStates && !hasStrategy && !hasMoney && !hasBeds) return "wildcard";
+    return (hasStates && hasStrategy && hasMoney) ? "full" : "partial";
+  }
+
+  // Audience split for the blast modal: how much of a matched list is a real
+  // match versus a blank passing through.
+  function buyBoxSplit(buyers) {
+    const out = { full: 0, partial: 0, wildcard: 0, total: 0 };
+    for (const b of (buyers || [])) { out[buyBoxCompleteness(b)]++; out.total++; }
+    return out;
+  }
+
+  // ── B4.4 Tolerance bands (near misses) ──────────────────────────
+  // matchesDeal is a hard cutoff, which is right for the send: a $340k cap
+  // means $340k. But a buyer $10k under on a deal they'd obviously look at is
+  // invisible today, and their cap is usually a number they typed once.
+  //
+  // A near miss fails matchesDeal ONLY on the numeric constraints, and only
+  // just. State and strategy are never "close" — a Florida buyer is not a
+  // near miss on an Ohio deal — so a mismatch there disqualifies outright.
+  //
+  // Advisory only. Near misses are surfaced for the human to opt in one at a
+  // time; nothing here loosens matchesDeal or the audience a blast sends to.
+  const NEAR_MISS_TOLERANCE = 0.10; // 10% over a money cap
+  const NEAR_MISS_BED_SLACK = 1;    // one bedroom short of their minimum
+
+  function nearMissDeal(buyer, dealStrategy, state, price, piti, beds, tolerance) {
+    const b = buyer || {};
+    const tol = tolerance == null ? NEAR_MISS_TOLERANCE : Number(tolerance) || 0;
+    if (matchesDeal(b, dealStrategy, state, price, piti, beds)) return null;
+
+    // Hard filters: must pass exactly, same as matchesDeal.
+    const strats = String(b.strategy || "").toLowerCase().split(",").map(s => s.trim()).filter(Boolean);
+    if (strats.length && !strats.includes("all") && dealStrategy && !strats.includes(dealStrategy)) return null;
+    const states = String(b.states || "").trim();
+    if (states && state && !states.split(",").map(s => s.trim().toUpperCase()).includes(state.toUpperCase())) return null;
+
+    const reasons = [];
+    const overPct = (n, cap) => Math.round(((n - cap) / cap) * 100);
+    if (b.max_price > 0 && price > 0 && price > b.max_price) {
+      if (price > b.max_price * (1 + tol)) return null;
+      reasons.push(`${overPct(price, b.max_price)}% over their ${fmtMoney(b.max_price)} price cap`);
+    }
+    if (b.max_piti > 0 && piti > 0 && piti > b.max_piti) {
+      if (piti > b.max_piti * (1 + tol)) return null;
+      reasons.push(`${overPct(piti, b.max_piti)}% over their ${fmtMoney(b.max_piti)}/mo PITI cap`);
+    }
+    if (b.min_beds > 0 && beds > 0 && beds < b.min_beds) {
+      if (b.min_beds - beds > NEAR_MISS_BED_SLACK) return null;
+      reasons.push(`${beds} bd vs their ${b.min_beds} bd minimum`);
+    }
+    return reasons.length ? { reasons } : null;
+  }
+
   // ── Morby / Stack Method money math ─────────────────────────────
   // Cash the buyer receives at close = their 50% share of the assignment:
   //   loan proceeds (purchase × DSCR LTV: 75% SFH / 70% commercial)
@@ -81,7 +155,20 @@
     open:      { pts: 2,  cap: 10 }, // email opens (weak signal, low cap)
   };
 
-  // counts: {interest, reply, view, longDwell, pdf, click, open} (missing = 0)
+  // B4.6 — the score has to be able to go DOWN. Opens and clicks alone can
+  // make someone who reported us for spam look like a live buyer, and the
+  // score is what the "call today" strip and the sort order run on.
+  //
+  // A complaint is disqualifying on its own (resend-events.js already sets
+  // email_opt_out on one), so it outweighs a full positive score. A hard
+  // bounce is weaker: the address is dead, the person may not be.
+  const ENGAGEMENT_PENALTIES = {
+    complaint: { pts: -100, cap: -100 }, // marked an email as spam
+    bounce:    { pts: -15,  cap: -30 },  // hard bounce — this address is dead
+  };
+
+  // counts: {interest, reply, view, longDwell, pdf, click, open,
+  //          complaint, bounce} (missing = 0)
   // lastTouchAt: ISO string / Date of the buyer's most recent signal.
   function engagementScore(counts, lastTouchAt, now = Date.now()) {
     counts = counts || {};
@@ -91,9 +178,22 @@
       raw += Math.min((Number(counts[k]) || 0) * pts, cap);
     }
     if (!raw) return 0;
+    let penalty = 0;
+    for (const k in ENGAGEMENT_PENALTIES) {
+      const { pts, cap } = ENGAGEMENT_PENALTIES[k];
+      penalty += Math.max((Number(counts[k]) || 0) * pts, cap);
+    }
     const days = lastTouchAt ? (now - new Date(lastTouchAt).getTime()) / 86400000 : Infinity;
     const decay = days <= 7 ? 1 : days <= 30 ? 0.6 : days <= 90 ? 0.35 : 0.2;
-    return Math.max(1, Math.min(100, Math.round(raw * decay)));
+    // Positives are clamped to the 0–100 scale BEFORE the penalty is applied,
+    // so a complaint (−100) is disqualifying no matter how much history sits
+    // behind it — otherwise a buyer with a maxed-out raw score would survive
+    // reporting us for spam. The penalty is not itself decayed: a complaint
+    // doesn't become less true because it was a while ago.
+    const positive = Math.min(100, raw * decay);
+    const score = positive + penalty;
+    if (score <= 0) return 0;
+    return Math.max(1, Math.round(score));
   }
 
   function engagementLevel(score) {
@@ -134,5 +234,7 @@
   return {
     fmtMoney, fmtPct, matchesDeal, buyerCashAtClose, dscrMonthlyPayment,
     subtoSummaryRows, morbyTermRows, engagementScore, engagementLevel, ENGAGEMENT_WEIGHTS,
+    ENGAGEMENT_PENALTIES, buyBoxCompleteness, buyBoxSplit,
+    nearMissDeal, NEAR_MISS_TOLERANCE, NEAR_MISS_BED_SLACK,
   };
 });

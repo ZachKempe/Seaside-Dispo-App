@@ -60,7 +60,13 @@ modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline eit
   contract + optional mortgage-statement PDFs → Claude extracts `deal_terms` and creates
   the card (`card_id` `subto-…`); a second call writes 3 marketing copy variations FROM
   the saved structured terms so copy numbers can't drift from `deal_terms`.
-- `onboard-buyers.js` — one-time buy-box request email to new buyers (`onboarded_at` gate).
+- `onboard-buyers.js` — buy-box request sequence: up to 3 asks per buyer, each ≥5 days
+  after that buyer's own last one, the final one by SMS when they're textable
+  (`onboard_touches` / `onboard_last_at` / `onboard_last_channel`, migration 033 —
+  without it the function refuses follow-ups it couldn't record and behaves like the old
+  one-email-ever version). Stops asking anyone whose `buyBoxCompleteness` is `full`,
+  honors email opt-out/bounce and the SMS STOP list, and `{preview:true}` reports exactly
+  what would go out without sending. GHL sending is `lib/ghl-sms.js`, shared with blast-core.
 - `unsubscribe.js` — HMAC-tokenized opt-out.
 - `ghl-inbound.js` — webhook for inbound GHL SMS; attributes the text to the deal most
   recently SMS-blasted to that phone (7-day window via `blast_recipients`).
@@ -79,6 +85,22 @@ emails, and the deck page all import from it, so what you preview is what sends.
 re-implement `matchesDeal`, `buyerCashAtClose`, `dscrMonthlyPayment`, `engagementScore`, or
 the term-row builders locally — past drift between copies caused real bugs.
 
+Two Block 4 companions to `matchesDeal`, both **advisory** — neither may ever be wired into
+the send path, and `matchesDeal` stays the sole authority on who receives a blast:
+
+- `buyBoxCompleteness(buyer)` → `full` / `partial` / `wildcard`. A wildcard has no state,
+  strategy, money cap or bed floor, so `matchesDeal` passes them on *every* deal. The
+  buyers-page header and the blast modal both show the split so a "300 matched" audience
+  can't quietly be 180 blanks; `onboard-buyers.js` uses `full` as "stop asking".
+- `nearMissDeal(...)` → the tolerance band (10% over a money cap, or one bed short). State
+  and strategy mismatches are never near misses. Near misses render as their own group in
+  the blast picker, unselected — adding one is always a deliberate click.
+
+`engagementScore` can go **down**: `ENGAGEMENT_PENALTIES` docks hard bounces (−15, capped
+at −30, keyed off `email_bounced_at` so transient bounces don't count) and zeroes anyone
+who filed a spam complaint. Positives are clamped to 100 *before* the penalty applies, so
+a complaint outweighs any amount of open/click history, and penalties don't decay.
+
 Engagement data model: `deck_views` (page views + PDF downloads + dwell + `source`:
 which channel the link came from — `sms`/`email`/`dm`/`''`=direct, migration 030;
 blast-core tags every deck link with `&s=<channel>`), `email_events`
@@ -88,7 +110,14 @@ buyers.html aggregates these into the per-buyer score and timeline; dashboard.ht
 the "Call today" strip from leads + recent deck views, and the follow-up nudge
 (`followUpInfo`) from non-engaged blast recipients 48h+ after a send. A follow-up send is
 marked `[follow-up]` in `deal_blasts.detail` — that marker is what caps it at one per deal. Other cross-function helpers live in `netlify/functions/lib/` (`capture.js`,
-`deck-token.js`, `deck-photo.js`, `heartbeat.js`).
+`deck-token.js`, `deck-photo.js`, `heartbeat.js`, `ghl-sms.js`, `unsub.js`,
+`onboard-sequence.js`). `unsub.js` owns both minting and verifying the unsubscribe token —
+they must agree or live links in already-sent email break (pinned in `tests/unsub.test.js`).
+
+Buyer records are deduped on **digits-only phone / lower-cased email** — the CSV importer
+(`classifyImport`) and the Add Buyer form (`findDuplicateBuyer`) must keep using the same
+keys, and the form additionally checks soft-deleted rows so a removed buyer is restored
+rather than duplicated.
 
 Scheduled functions must log every run through `lib/heartbeat.js` → `sync_runs` (powers the
 dashboard "✓ synced" indicator and the consecutive-failure email alert).
@@ -96,7 +125,7 @@ dashboard "✓ synced" indicator and the consecutive-failure email alert).
 ## Database / migrations
 
 Numbered SQL files in `sql/`, **run manually** in the Supabase SQL editor — there is no
-migration runner. Take the next number (highest is `028_schema_migrations.sql`). Every new
+migration runner. Take the next number (highest is `033_onboard_sequence.sql`). Every new
 migration must END with `insert into schema_migrations (filename) values ('0XX_name.sql')
 on conflict do nothing;` so applied state stays queryable. Migrations must be
 additive/idempotent (`if not exists`, `do $$` policy guards) and the frontend must fail soft

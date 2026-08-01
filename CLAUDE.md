@@ -45,6 +45,16 @@ modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline eit
   `properties.deck_slug` (slugs are minted eagerly at intake; this backfills legacy cards)
   and returns the plain or per-buyer tokenized deck URL. Slug generation is shared via
   `lib/deck-slug.js` — never inline a second copy.
+- `import-photos.js` — "Import from link" for the per-deal photo gallery: pulls every
+  image from a Drive folder (Drive API via `GOOGLE_API_KEY`, falls back to
+  `GOOGLE_MAPS_API_KEY`), a listing page, or direct URLs into
+  `property-photos/gallery/<card_id>/` (convention + helpers in `lib/gallery.js` — the
+  dashboard uploads there directly, deck.js lists it). `deal_acquisition.photos_count`
+  auto-syncs to the real gallery size; when a deal has no photos the deck page shows an
+  auto Street View + aerial set (`autoExteriorShots` in `lib/deck-photo.js`). Zillow
+  bot-walls servers, so Zillow photos come from the user's own browser via
+  `browser-extension/` (📸 button → `dashboard.html#import-photos=…`) or the 🧲
+  bookmarklet in the dashboard gallery block.
 - `parse-loi.js` — sends an LOI PDF to the Claude API, extracts Morby deal terms.
 - `parse-subto.js` / `generate-copy.js` — the Sub-To intake (Trello retired July 2026):
   contract + optional mortgage-statement PDFs → Claude extracts `deal_terms` and creates

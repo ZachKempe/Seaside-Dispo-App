@@ -10,6 +10,7 @@
 const { verifyDeckToken, viewToken } = require("./lib/deck-token");
 const { fmtMoney, buyerCashAtClose, subtoSummaryRows, morbyTermRows } = require("../../public/js/deal-shared");
 const { resolveDealPhotos } = require("./lib/deck-photo");
+const { listGalleryPhotos } = require("./lib/gallery");
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -85,6 +86,7 @@ function page(title, body) {
   .hero-card{margin:30px auto 0!important;width:calc(100% - 96px);max-width:700px;padding:40px 36px 34px!important}
   .money{font-size:76px!important}
   .activity{margin:16px auto 0!important;width:calc(100% - 96px);max-width:700px}
+  .photos-sec{margin:26px auto 0!important;width:calc(100% - 96px);max-width:700px}
   .terms-sec{margin:26px auto 0!important;width:calc(100% - 96px);max-width:700px}
   .term-cell{padding:17px 22px!important}
   .term-cell .term-v{font-size:19px!important}
@@ -134,7 +136,7 @@ exports.handler = async (event) => {
     const encCard = encodeURIComponent(cardId);
     const iso = (ms) => encodeURIComponent(new Date(Date.now() - ms).toISOString());
     // Counts run BEFORE this visitor's own view is logged, so they only reflect others.
-    const [termsRows, morbyRows, acqRows, statusRows, views24, views7d, pdfCount] = await Promise.all([
+    const [termsRows, morbyRows, acqRows, statusRows, views24, views7d, pdfCount, gallery] = await Promise.all([
       sb(`/deal_terms?card_id=eq.${encCard}&select=*&limit=1`),
       sb(`/morby_deals?card_id=eq.${encCard}&select=*&limit=1`),
       sb(`/deal_acquisition?card_id=eq.${encCard}&select=cover_image_url&limit=1`),
@@ -142,6 +144,7 @@ exports.handler = async (event) => {
       sbCount(`/deck_views?card_id=eq.${encCard}&kind=eq.view&viewed_at=gte.${iso(24 * 3600e3)}`),
       sbCount(`/deck_views?card_id=eq.${encCard}&kind=eq.view&viewed_at=gte.${iso(7 * 24 * 3600e3)}`),
       sbCount(`/deck_views?card_id=eq.${encCard}&kind=eq.pdf`),
+      listGalleryPhotos(cardId), // fails soft to []
     ]);
     const terms = (termsRows || [])[0] || {};
     const morby = (morbyRows || [])[0] || {};
@@ -173,8 +176,9 @@ exports.handler = async (event) => {
       viewId = vRows && vRows[0] && vRows[0].id;
     } catch (e) { console.warn("deck_view log failed:", e.message); }
 
-    // ---- Photo (listing -> cover -> Street View -> none) ----
-    const { hero: heroPhoto, source: photoSource } = await resolveDealPhotos(prop, cover, address);
+    // ---- Photos (gallery -> cover -> listing -> auto Street View/aerial -> none) ----
+    const { photos, hero: heroPhoto, source: photoSource } = await resolveDealPhotos(prop, cover, address, gallery);
+    const hasGallery = photos.length > 1;
 
     // ---- Presentation ----
     const canInterest = status === "active";
@@ -199,6 +203,7 @@ exports.handler = async (event) => {
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
             ${cityLine ? `<div style="display:flex;align-items:center;gap:7px;color:#D9E2F0;font-size:14px;font-weight:500"><span style="width:5px;height:5px;border-radius:50%;background:${GOLD};box-shadow:0 0 0 3px rgba(212,160,62,.25)"></span>${esc(cityLine)}</div>` : ""}
             <a href="${esc(mapHref)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;color:#fff;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.3);padding:6px 12px;border-radius:999px">📍 View on map</a>
+            ${hasGallery ? `<button type="button" id="galleryBtn" style="display:inline-flex;align-items:center;gap:6px;font:700 12.5px Inter,sans-serif;color:${NAVY_DARK};background:${GOLD_LT};border:none;padding:7px 13px;border-radius:999px;cursor:pointer">📸 ${photos.length} photos</button>` : ""}
           </div>
         </div>
       </div>`;
@@ -234,6 +239,20 @@ exports.handler = async (event) => {
     if (pdfCount >= 2) chips.push(`<span style="${chipStyle}">📄&nbsp;<b style="color:${INK};font-weight:800">${pdfCount}</b>&nbsp;PDF downloads</span>`);
     const activity = chips.length ? `
       <div class="activity" style="margin:14px 20px 0;display:flex;justify-content:center;align-items:center;gap:9px;flex-wrap:wrap">${chips.join("")}</div>` : "";
+
+    // Photo strip — tap any thumb (or the banner 📸 pill) for the full-screen
+    // gallery. Auto Street View/aerial imagery is labeled as such.
+    const photosSec = hasGallery ? `
+      <div class="photos-sec" style="margin:24px 20px 0">
+        <div style="display:flex;align-items:center;gap:10px;margin:0 4px 12px">
+          <span style="font-size:11.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:${NAVY}">Photos</span>
+          <span style="flex:1;height:1px;background:linear-gradient(90deg,#E0D9C9,transparent)"></span>
+          ${photoSource === "streetview" ? `<span style="font-size:10.5px;font-weight:600;color:${MUTED}">Street View &amp; aerial · Google</span>` : `<span style="font-size:11px;font-weight:700;color:${NAVY}">${photos.length} photos</span>`}
+        </div>
+        <div style="display:grid;grid-auto-flow:column;grid-auto-columns:132px;gap:9px;overflow-x:auto;padding:2px 2px 8px;-webkit-overflow-scrolling:touch;scrollbar-width:thin">
+          ${photos.map((p, i) => `<img class="gph" data-idx="${i}" src="${esc(p.url)}" alt="${esc(p.name || address)}" loading="lazy" style="width:132px;height:96px;object-fit:cover;border-radius:11px;border:1px solid ${LINE};cursor:pointer;box-shadow:0 8px 18px -14px rgba(17,41,80,.5)">`).join("")}
+        </div>
+      </div>` : "";
 
     // Deal terms grid
     const rows = isMorby ? morbyTermRows(morby) : subtoSummaryRows(terms);
@@ -291,8 +310,58 @@ exports.handler = async (event) => {
         </div>
       </div></dialog>`;
 
+    // Full-screen swipeable lightbox (vanilla, like everything else here).
+    const galleryDialog = hasGallery ? `
+      <dialog id="gdlg" style="max-width:100vw;width:100vw;height:100vh;max-height:100vh;margin:0;padding:0;background:transparent">
+        <div style="position:fixed;inset:0;background:rgba(10,18,35,.96);display:flex;flex-direction:column">
+          <div style="display:flex;align-items:center;padding:14px 18px">
+            <span id="gcount" style="font:600 13px Inter,sans-serif;color:#C9D4E6"></span>
+            <button type="button" id="gclose" style="margin-left:auto;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:10px;padding:8px 14px;font:700 14px Inter,sans-serif;cursor:pointer">✕ Close</button>
+          </div>
+          <div id="gmain" style="flex:1;display:flex;align-items:center;justify-content:center;min-height:0;position:relative;padding:0 4px">
+            <button type="button" id="gprev" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);z-index:2;width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,255,255,.3);background:rgba(17,41,80,.55);color:#fff;font-size:22px;line-height:1;cursor:pointer">‹</button>
+            <img id="gimg" src="" alt="" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:6px">
+            <button type="button" id="gnext" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);z-index:2;width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,255,255,.3);background:rgba(17,41,80,.55);color:#fff;font-size:22px;line-height:1;cursor:pointer">›</button>
+          </div>
+          <div id="gname" style="text-align:center;padding:12px 18px calc(14px + env(safe-area-inset-bottom));font:500 12.5px Inter,sans-serif;color:#8FA0BC"></div>
+        </div>
+      </dialog>` : "";
+
+    const galleryScript = hasGallery ? `
+        const PHOTOS = ${JSON.stringify(photos.map(p => ({ u: p.url, n: p.name || "" })))};
+        let gIdx = 0;
+        function gShow(i){
+          gIdx = (i + PHOTOS.length) % PHOTOS.length;
+          document.getElementById("gimg").src = PHOTOS[gIdx].u;
+          document.getElementById("gcount").textContent = (gIdx + 1) + " / " + PHOTOS.length;
+          document.getElementById("gname").textContent = PHOTOS[gIdx].n;
+        }
+        function gOpen(i){ gShow(i); document.getElementById("gdlg").showModal(); }
+        document.querySelectorAll(".gph").forEach(el => el.addEventListener("click", () => gOpen(Number(el.dataset.idx) || 0)));
+        const gBtn = document.getElementById("galleryBtn");
+        if (gBtn) gBtn.addEventListener("click", () => gOpen(0));
+        const bannerImg = document.querySelector(".banner-img");
+        if (bannerImg){ bannerImg.style.cursor = "pointer"; bannerImg.addEventListener("click", () => gOpen(0)); }
+        document.getElementById("gclose").addEventListener("click", () => document.getElementById("gdlg").close());
+        document.getElementById("gprev").addEventListener("click", () => gShow(gIdx - 1));
+        document.getElementById("gnext").addEventListener("click", () => gShow(gIdx + 1));
+        document.getElementById("gdlg").addEventListener("keydown", (e) => {
+          if (e.key === "ArrowLeft") gShow(gIdx - 1);
+          if (e.key === "ArrowRight") gShow(gIdx + 1);
+        });
+        let gTouchX = null;
+        const gMain = document.getElementById("gmain");
+        gMain.addEventListener("touchstart", (e) => { gTouchX = e.changedTouches[0].clientX; }, { passive: true });
+        gMain.addEventListener("touchend", (e) => {
+          if (gTouchX == null) return;
+          const dx = e.changedTouches[0].clientX - gTouchX;
+          gTouchX = null;
+          if (Math.abs(dx) > 40) gShow(gIdx + (dx < 0 ? 1 : -1));
+        }, { passive: true });` : "";
+
     const script = `
       <script>
+        ${galleryScript}
         const HAS_BUYER = ${buyerId ? "true" : "false"};
         const SLUG = ${JSON.stringify(cleanSlug)};
         const TOKEN = ${JSON.stringify(q.b || "")};
@@ -375,6 +444,7 @@ exports.handler = async (event) => {
         ${greeting}
         ${heroCard}
         ${activity}
+        ${photosSec}
         ${termsSec}
         ${contactSec}
         <div class="foot" style="text-align:center;padding:26px 24px 10px;color:#A6AEBC;font-size:11.5px;line-height:1.6">
@@ -383,6 +453,7 @@ exports.handler = async (event) => {
       </div>
       ${actionBar}
       ${dialog}
+      ${galleryDialog}
       ${script}`;
 
     return { statusCode: 200, headers: { "Content-Type": "text/html", "Cache-Control": "no-store" }, body: page(address, body) };

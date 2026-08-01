@@ -12,12 +12,13 @@
 // Lives in lib/ so Netlify doesn't deploy it as its own function. Callers
 // verify auth (verifyUser) and map thrown errors' `.status` to HTTP codes.
 
-const crypto = require("crypto");
 const { deckToken } = require("./deck-token");
 const { deckSlug, ensureDeckSlug } = require("./deck-slug");
 const { subtoSubject, morbySubject } = require("./subjects");
 const { fetchAllRows } = require("./fetch-all");
 const { suppressedPhoneDigits } = require("./sms-optout");
+const { sendSms } = require("./ghl-sms");
+const { unsubUrlFor } = require("./unsub");
 const { digitsOnly } = require("./capture");
 const { matchesDeal, buyerCashAtClose, morbyTermRows } = require("../../../public/js/deal-shared");
 
@@ -36,12 +37,12 @@ const GMAIL_FROM_ADDRESS = process.env.GMAIL_FROM_ADDRESS || "";
 const GMAIL_FROM_NAME = process.env.GMAIL_FROM_NAME || "Seaside Horizon";
 const GMAIL_REPLY_TO = process.env.GMAIL_REPLY_TO || GMAIL_FROM_ADDRESS;
 
+// Only used to decide whether SMS is available at all — the send itself is
+// lib/ghl-sms.js, which reads its own env.
 const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_FROM_NUMBER = process.env.GHL_FROM_NUMBER;
-const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
 
 const SITE_URL = process.env.PUBLIC_SITE_URL || "https://seaside-dispo-app.netlify.app";
-const UNSUB_SECRET = process.env.UNSUB_SECRET || SB_SERVICE_KEY || "seaside-unsub";
 
 const CONTACT_NAME = process.env.MARKETING_CONTACT_NAME || "Seaside Horizon";
 const CONTACT_PHONE = process.env.MARKETING_CONTACT_PHONE || "";
@@ -117,14 +118,8 @@ async function logBlast(cardId, address, channel, status, detail, variation) {
   await sb(`/deal_blasts`, { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(row) });
 }
 
-// ── D1: per-buyer unsubscribe token ──────────────────────────────
-function unsubToken(buyerId) {
-  const h = crypto.createHmac("sha256", UNSUB_SECRET).update(String(buyerId)).digest("hex").slice(0, 16);
-  return `${buyerId}.${h}`;
-}
-function unsubUrlFor(buyerId) {
-  return `${SITE_URL}/.netlify/functions/unsubscribe?b=${encodeURIComponent(unsubToken(buyerId))}`;
-}
+// ── D1: per-buyer unsubscribe token — lib/unsub.js, shared with the
+// unsubscribe function that has to verify what we mint here.
 
 // Slug creation lives in lib/deck-slug.js (shared with the intake functions
 // and deck-link.js). This wrapper just binds our service-role sb helper.
@@ -428,50 +423,9 @@ async function sendViaGmail(accessToken, to, subject, html, unsubUrl) {
 }
 
 // ── GHL SMS ───────────────────────────────────────────────────────
-function normalizePhone(phone) {
-  let p = (phone || "").replace(/[\s\-().]/g, "");
-  if (!p) return "";
-  if (!p.startsWith("+")) p = p.length === 10 ? `+1${p}` : `+${p}`;
-  return p;
-}
-async function ghlContactId(phone) {
-  const headers = { Authorization: `Bearer ${GHL_API_KEY}`, "Content-Type": "application/json", Version: "2021-07-28" };
-  // v2 duplicate search needs locationId + number (not "phone"). Find the
-  // existing contact first so we don't try to re-create it.
-  const searchUrl = `https://services.leadconnectorhq.com/contacts/search/duplicate?locationId=${encodeURIComponent(GHL_LOCATION_ID)}&number=${encodeURIComponent(phone)}`;
-  let r = await fetch(searchUrl, { headers });
-  if (r.ok) {
-    const data = await r.json();
-    if (data && data.contact && data.contact.id) return data.contact.id;
-  }
-  // Otherwise create. If GHL rejects it as a duplicate, it returns the existing
-  // contact's id in meta — reuse that rather than failing.
-  r = await fetch(`https://services.leadconnectorhq.com/contacts/`, {
-    method: "POST", headers, body: JSON.stringify({ phone, locationId: GHL_LOCATION_ID }),
-  });
-  const bodyText = await r.text();
-  if (!r.ok) {
-    try {
-      const err = JSON.parse(bodyText);
-      if (err && err.meta && err.meta.contactId) return err.meta.contactId;
-    } catch (_) { /* fall through to throw */ }
-    throw new Error(`GHL create contact -> ${r.status}: ${bodyText}`);
-  }
-  const data = JSON.parse(bodyText);
-  if (!data || !data.contact || !data.contact.id) throw new Error("GHL: no contact id returned");
-  return data.contact.id;
-}
-async function sendSms(phone, message) {
-  const e164 = normalizePhone(phone);
-  if (!e164) throw new Error("no phone");
-  const contactId = await ghlContactId(e164);
-  const r = await fetch(`https://services.leadconnectorhq.com/conversations/messages`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${GHL_API_KEY}`, "Content-Type": "application/json", Version: "2021-04-15" },
-    body: JSON.stringify({ type: "SMS", contactId, fromNumber: GHL_FROM_NUMBER, message }),
-  });
-  if (!r.ok) throw new Error(`GHL send SMS -> ${r.status}: ${await r.text()}`);
-}
+// The contact-upsert + send lives in lib/ghl-sms.js — onboard-buyers.js texts
+// too, and a second copy of the v2 API dance is exactly the kind of drift
+// this repo has been bitten by before.
 
 // ── Core runner ───────────────────────────────────────────────────
 // Returns the result summary object; throws Error with a `.status` for

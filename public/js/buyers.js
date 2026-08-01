@@ -5,6 +5,10 @@ let lastContactByBuyer = {};
 let selectedId = null;
 let matchActive = false;
 let deal = { state: "", price: "", strategy: "" };
+// Buy-box completeness filter (B4.1): "" = everyone, or one of the
+// DealShared.buyBoxCompleteness buckets. View-only — it narrows the list on
+// screen and nothing else. Blast audiences are unaffected.
+let boxFilter = "";
 const MATCH_THRESHOLD = 70;   // "strong match" cutoff
 // Do the structured buy-box columns (migration 024) exist yet? Detected
 // from the loaded rows; until then close speed/status/asset are parsed
@@ -59,7 +63,7 @@ function buyBox(b) {
 let engByBuyer = {};
 const INTEREST_STAGES = new Set(["interested", "offer", "under_contract", "closed"]);
 
-function buildEngagement(activity, dViews, dLeads, eEvents, propNames) {
+function buildEngagement(activity, dViews, dLeads, eEvents, propNames, buyers) {
   const nameByCard = Object.fromEntries((propNames || []).map(p => [p.card_id, p.name]));
   const dealName = (cardId, fallback) => {
     const n = nameByCard[cardId] || fallback || "";
@@ -97,8 +101,17 @@ function buildEngagement(activity, dViews, dLeads, eEvents, propNames) {
     if (ev.event === "opened") { bump(ev.buyer_id, "open"); log(ev.buyer_id, "✉️", `Opened email${dealName(ev.card_id)}`, ev.created_at); touch(ev.buyer_id, ev.created_at); }
     else if (ev.event === "clicked") { bump(ev.buyer_id, "click"); log(ev.buyer_id, "🔗", `Clicked email link${dealName(ev.card_id)}`, ev.created_at); touch(ev.buyer_id, ev.created_at); }
     else if (ev.event === "bounced") log(ev.buyer_id, "⚠️", "Email bounced", ev.created_at);
-    else if (ev.event === "complained") log(ev.buyer_id, "🚫", "Marked email as spam (opted out)", ev.created_at);
+    else if (ev.event === "complained") {
+      // Scored (negatively) — see ENGAGEMENT_PENALTIES. Deliberately no
+      // touch(): a complaint is not a sign of life to sort them up by.
+      bump(ev.buyer_id, "complaint");
+      log(ev.buyer_id, "🚫", "Marked email as spam (opted out)", ev.created_at);
+    }
   }
+  // The bounce penalty keys off email_bounced_at (031), not the bounced
+  // event rows: only PERMANENT bounces set that column, and a mailbox that
+  // was full for a day shouldn't cost anyone points.
+  for (const b of (buyers || [])) if (b.email_bounced_at) bump(b.id, "bounce");
   for (const a of activity) {
     if (!a.buyer_id) continue;
     if (a.channel === "email" || a.channel === "sms") {
@@ -134,7 +147,7 @@ function engBadgeHtml(id) {
   const level = DealShared.engagementLevel(score);
   if (level === "none") return "";
   const s = ENG_BADGE[level];
-  return `<span title="Engagement ${score}/100 — deck views, opens, clicks, replies, recency" style="display:inline-flex;align-items:center;gap:4px;background:${s.bg};color:${s.fg};font-size:0.72rem;font-weight:800;border-radius:999px;padding:2px 9px">${s.icon} ${score}</span>`;
+  return `<span title="Engagement ${score}/100 — deck views, opens, clicks, replies, recency; spam complaints and hard bounces subtract" style="display:inline-flex;align-items:center;gap:4px;background:${s.bg};color:${s.fg};font-size:0.72rem;font-weight:800;border-radius:999px;padding:2px 9px">${s.icon} ${score}</span>`;
 }
 
 // ── Match scoring (0–100, clamped) ──
@@ -189,7 +202,7 @@ async function loadBuyers() {
     const cur = lastContactByBuyer[a.buyer_id];
     if (!cur || new Date(a.created_at) > new Date(cur)) lastContactByBuyer[a.buyer_id] = a.created_at;
   }
-  buildEngagement(activity || [], dViews || [], dLeads || [], eEvents || [], propNames || []);
+  buildEngagement(activity || [], dViews || [], dLeads || [], eEvents || [], propNames || [], allBuyers);
   hasBuyboxCols = allBuyers.length > 0 && Object.prototype.hasOwnProperty.call(allBuyers[0], "close_speed");
   document.querySelectorAll(".buybox-col-field").forEach(el => el.classList.toggle("hidden", !hasBuyboxCols));
   document.getElementById("buybox-note").classList.toggle("hidden", hasBuyboxCols);
@@ -236,6 +249,7 @@ function visibleBuyers() {
   const q = document.getElementById("list-search").value.trim().toLowerCase();
   let list = allBuyers;
   if (q) list = list.filter(b => `${b.name} ${b.email} ${b.phone}`.toLowerCase().includes(q));
+  if (boxFilter) list = list.filter(b => DealShared.buyBoxCompleteness(b) === boxFilter);
   const scored = list.map(b => ({ b, info: matchActive ? matchInfo(b) : null }));
   const sortMode = document.getElementById("list-sort").value;
   if (matchActive) scored.sort((x, y) => (y.info.score - x.info.score) || (x.b.name || "").localeCompare(y.b.name || ""));
@@ -257,10 +271,26 @@ const RENDER_CAP = 300;
 function renderAll() {
   const scored = visibleBuyers();
 
-  // Header count line
+  // Header count line. The completeness split (B4.1) is the number that says
+  // how much of the list is real targeting versus blanks that match every
+  // deal — clicking a bucket filters the list to exactly those buyers.
   const ready = allBuyers.filter(b => buyBox(b).status).length;
-  document.getElementById("buyer-count").textContent =
-    `${allBuyers.length} buyer${allBuyers.length === 1 ? "" : "s"} · ${ready} ready to buy now`;
+  const split = DealShared.buyBoxSplit(allBuyers);
+  const bucket = (key, count, label, title) => {
+    const on = boxFilter === key;
+    return `<button type="button" class="box-filter-btn" data-key="${key}" title="${escapeHtml(title)}"
+      style="background:${on ? "var(--navy, #1B3A6B)" : "none"};color:${on ? "#fff" : "inherit"};border:none;border-radius:999px;padding:0 7px;cursor:pointer;font:inherit;text-decoration:${on ? "none" : "underline dotted"}">${count} ${label}${on ? " ✕" : ""}</button>`;
+  };
+  document.getElementById("buyer-count").innerHTML =
+    `${allBuyers.length} buyer${allBuyers.length === 1 ? "" : "s"} · ` +
+    bucket("full", split.full, "full buy box", "Market, strategy and a budget on file — click to show only these") + ` · ` +
+    bucket("wildcard", split.wildcard, "wildcard", "No market, strategy or budget on file — these buyers match every deal you send. Click to show only these") +
+    ` · ${ready} ready to buy now`;
+  document.querySelectorAll("#buyer-count .box-filter-btn").forEach(btn =>
+    btn.addEventListener("click", () => {
+      boxFilter = boxFilter === btn.dataset.key ? "" : btn.dataset.key;
+      renderAll();
+    }));
   document.getElementById("list-count").textContent =
     scored.length === allBuyers.length ? `${scored.length}` : `${scored.length}/${allBuyers.length}`;
 
@@ -324,6 +354,7 @@ function renderDetail() {
   }
   const tier = tierInfo(b.tier);
   const box = buyBox(b);
+  const completeness = DealShared.buyBoxCompleteness(b);
   const info = matchActive ? matchInfo(b) : null;
   const eng = engInfo(b.id);
   const lastContact = fmtDate(lastContactByBuyer[b.id]);
@@ -350,6 +381,12 @@ function renderDetail() {
     eng.counts.click && `🔗 ${eng.counts.click} click${eng.counts.click === 1 ? "" : "s"}`,
     eng.counts.open && `✉️ ${eng.counts.open} open${eng.counts.open === 1 ? "" : "s"}`,
   ].filter(Boolean);
+  // Negative signals, shown apart from the positives so a docked score is
+  // explainable rather than mysterious.
+  const penaltyChips = [
+    eng.counts.complaint && `🚫 marked spam — score zeroed`,
+    eng.counts.bounce && `⚠️ email hard-bounced — address dead`,
+  ].filter(Boolean);
   const engColor = engLevel === "hot" ? "#C05621" : engLevel === "warm" ? "#975A16" : "var(--text-3)";
   const engagementHtml = `
     <div style="margin-top:16px;background:#F7FAFC;border:1px solid var(--border);border-radius:10px;padding:12px 14px">
@@ -361,6 +398,9 @@ function renderDetail() {
       ${countChips.length
         ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:9px">${countChips.map(c => `<span style="font-size:0.76rem;color:var(--text-2);background:#fff;border:1px solid var(--border);border-radius:999px;padding:3px 10px">${c}</span>`).join("")}</div>`
         : `<div class="muted" style="font-size:0.8rem;margin-top:8px">No engagement recorded yet — no deck views, opens, or replies from this buyer.</div>`}
+      ${penaltyChips.length
+        ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">${penaltyChips.map(c => `<span style="font-size:0.76rem;color:#C53030;background:#FFF5F5;border:1px solid #FEB2B2;border-radius:999px;padding:3px 10px">${c}</span>`).join("")}</div>`
+        : ""}
     </div>`;
 
   // Activity timeline: newest first, capped for readability.
@@ -409,7 +449,13 @@ function renderDetail() {
     ${engagementHtml}
 
     <div style="margin-top:18px">
-      <div class="bd-seclabel" style="margin-bottom:12px">Buy-box</div>
+      <div class="bd-seclabel" style="margin-bottom:12px;display:flex;align-items:center;gap:8px">Buy-box ${
+        completeness === "wildcard"
+          ? `<span title="No market, strategy or budget on file — this buyer matches every deal you send" style="background:#FFF5F5;color:#C53030;border:1px solid #FEB2B2;border-radius:999px;padding:2px 9px;font-size:0.68rem;font-weight:700;text-transform:none;letter-spacing:0">⚠ Wildcard — matches every deal</span>`
+          : completeness === "partial"
+            ? `<span title="Some criteria on file, but not a market + strategy + budget" style="background:#FFFAF0;color:#B7791F;border:1px solid #FBD38D;border-radius:999px;padding:2px 9px;font-size:0.68rem;font-weight:700;text-transform:none;letter-spacing:0">Partial box</span>`
+            : `<span title="Market, strategy and budget on file" style="background:#F0FFF4;color:#2F855A;border:1px solid #9AE6B4;border-radius:999px;padding:2px 9px;font-size:0.68rem;font-weight:700;text-transform:none;letter-spacing:0">✓ Full box</span>`
+      }</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px 20px">
         <div style="grid-column:1/-1">
           <div class="bd-sublabel">Markets</div>
@@ -501,6 +547,38 @@ async function removeBuyer(b) {
   }});
   if (selectedId === b.id) selectedId = null;
   await loadBuyers();
+}
+
+// ── B4.3 Manual-add dedupe ──
+// The CSV importer has always deduped by phone/email (classifyImport); the
+// Add Buyer form never did, so re-typing someone already on the list created
+// a second active record — and every blast then hit them twice. Same keys as
+// the importer: digits-only phone, lower-cased email.
+function findDuplicateBuyer(payload, excludeId) {
+  const pd = digitsOnly(payload.phone);
+  const em = (payload.email || "").trim().toLowerCase();
+  if (!pd && !em) return null;
+  return allBuyers.find(b =>
+    Number(b.id) !== Number(excludeId) &&
+    ((pd && digitsOnly(b.phone) === pd) || (em && (b.email || "").toLowerCase() === em))
+  ) || null;
+}
+
+// Removed buyers are soft-deleted (active=false) and so aren't in allBuyers —
+// the local check can't see them, and re-adding one would leave two rows for
+// the same person. Ask the DB directly. Fails soft: a lookup error just means
+// we fall through to the normal insert rather than blocking a save.
+async function findRemovedBuyer(payload) {
+  const em = (payload.email || "").trim().toLowerCase();
+  const phone = (payload.phone || "").trim();
+  const parts = [];
+  if (em && !/[,()]/.test(em)) parts.push(`email.ilike.${em}`);
+  if (phone && !/[,()]/.test(phone)) parts.push(`phone.eq.${phone}`);
+  if (!parts.length) return null;
+  const { data, error } = await supa.from("buyers")
+    .select("id,name,email,phone").eq("active", false).or(parts.join(",")).limit(1);
+  if (error) { console.warn("removed-buyer dedupe check failed:", error.message); return null; }
+  return (data && data[0]) || null;
 }
 
 function openModal(b) {
@@ -803,22 +881,50 @@ async function callOnboard(payload) {
   if (!r.ok) { alert(`Failed: ${out.error || r.status}`); return null; }
   return out;
 }
+// B4.2 — the ask is a short sequence now (up to 3 touches, spaced, last one
+// by text), so the button asks the function what's actually due instead of
+// guessing from onboarded_at. Preview sends nothing.
 async function onboardBuyers() {
-  // How many would be targeted? (email, never onboarded)
-  const pending = allBuyers.filter(b => b.email && /@/.test(b.email) && !b.onboarded_at);
-  if (!pending.length) {
-    alert("No new buyers to ask — everyone with an email has already gotten a buy-box request.");
+  const plan = await callOnboard({ preview: true });
+  if (!plan) return;
+  const p = plan.plan || {};
+  if (!plan.due) {
+    const s = plan.skipped || {};
+    alert(`Nobody is due for a buy-box request right now.\n\n`
+      + `${s.box_complete || 0} already gave us a full buy box\n`
+      + `${s.not_due || 0} were asked recently (each touch is spaced out)\n`
+      + `${s.sequence_finished || 0} have had every touch in the sequence\n`
+      + `${s.unreachable || 0} have no reachable email or textable phone`
+      + (plan.note ? `\n\n⚠ ${plan.note}` : ""));
     return;
   }
-  if (confirm(`Send a TEST of the buy-box email to yourself first?\n\n(Recommended before emailing ${pending.length} real buyers.)`)) {
+  const lines = [
+    `${plan.due} buyer${plan.due === 1 ? "" : "s"} are due for a buy-box request:`,
+    ``,
+    `${p.touch1 || 0} first ask · ${p.touch2 || 0} follow-up · ${p.touch3 || 0} final`,
+    `${p.email || 0} by email · ${p.sms || 0} by text`,
+  ];
+  if (plan.note) lines.push(``, `⚠ ${plan.note}`);
+
+  if (confirm(`${lines.join("\n")}\n\nSend a TEST to yourself first? (Recommended)`)) {
     const t = await callOnboard({ test: true });
-    if (t) alert(`Test sent to ${t.to}. Check your inbox, then confirm the live send.`);
-    else return;
+    if (!t) return;
+    alert(`Test email sent to ${t.to}. Check your inbox.`);
+    if ((p.sms || 0) > 0) {
+      const phone = prompt(`${p.sms} of these go out as a TEXT. Send a test text to which number?\n\n(Leave blank to skip.)`, "");
+      if (phone && phone.trim()) {
+        const ts = await callOnboard({ test: true, channel: "sms", test_phone: phone.trim() });
+        if (ts) alert(`Test text sent to ${ts.to}.`);
+      }
+    }
   }
-  if (!confirm(`Send the buy-box request to ${pending.length} new buyer${pending.length === 1 ? "" : "s"} now?\n\nThis emails real buyers. Each is asked only once.`)) return;
+  if (!confirm(`${lines.join("\n")}\n\nSend for real now? This messages real buyers.`)) return;
   const res = await callOnboard({});
   if (res) {
-    alert(`Sent ${res.sent} buy-box request${res.sent === 1 ? "" : "s"}.` + (res.failed ? ` ${res.failed} failed.` : ""));
+    const by = res.by_channel || {};
+    alert(`Sent ${res.sent} buy-box request${res.sent === 1 ? "" : "s"}`
+      + ` (${by.email || 0} email · ${by.sms || 0} text).`
+      + (res.failed ? `\n${res.failed} failed — check the function log.` : ""));
     await loadBuyers();
   }
 }
@@ -929,12 +1035,47 @@ function closeImport() { document.getElementById("import-backdrop").classList.ad
       payload.status = document.getElementById("b-status").value;
       payload.asset_type = document.getElementById("b-asset").value.trim();
     }
+    // Dedupe before writing. On an edit this only fires when the new contact
+    // details collide with a DIFFERENT buyer.
+    const dupe = findDuplicateBuyer(payload, id);
+    if (dupe) {
+      const how = digitsOnly(payload.phone) && digitsOnly(dupe.phone) === digitsOnly(payload.phone) ? "phone number" : "email address";
+      if (id) {
+        if (!confirm(`${dupe.name} already has that ${how}.\n\nSaving will leave two buyers sharing it, and both will receive every blast. Save anyway?`)) return;
+      } else {
+        if (confirm(`${dupe.name} is already on your list with that ${how}.\n\nOpen their record instead of adding a duplicate?`)) {
+          closeModal();
+          selectedId = dupe.id;
+          boxFilter = "";
+          document.getElementById("list-search").value = "";
+          renderAll();
+        } else {
+          toast(`Not added — ${dupe.name} already has that ${how}.`, { type: "error" });
+        }
+        return;
+      }
+    }
+    // Not in the visible list, but possibly removed earlier: restore rather
+    // than create a second row for the same person.
+    let restoreId = null;
+    if (!id) {
+      const removed = await findRemovedBuyer(payload);
+      if (removed) {
+        if (confirm(`${removed.name} was removed from your list but still has that contact info.\n\nRestore them with these details? (Cancel adds a separate new buyer.)`)) {
+          restoreId = removed.id;
+        }
+      }
+    }
+
     const { error } = id
       ? await supa.from("buyers").update(payload).eq("id", id)
-      : await supa.from("buyers").insert({ ...payload, list_source: "direct", active: true });
+      : restoreId
+        ? await supa.from("buyers").update({ ...payload, active: true }).eq("id", restoreId)
+        : await supa.from("buyers").insert({ ...payload, list_source: "direct", active: true });
     if (error) { toast(`Couldn't save buyer: ${error.message}`, { type: "error" }); return; }
     closeModal();
-    toast(id ? "Buyer saved." : "Buyer added.", { type: "success" });
+    toast(id ? "Buyer saved." : restoreId ? "Buyer restored." : "Buyer added.", { type: "success" });
+    if (restoreId) selectedId = restoreId;
     await loadBuyers();
   });
 

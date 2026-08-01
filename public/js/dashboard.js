@@ -506,8 +506,16 @@ function renderBoard() {
   const { props, buyers, leads, deckViews, activities, termsByCard, statusByCard, fbByCard, leadsByCard,
           blastsByCard, recipsByCard, viewsByCard, eventsByCard, acqByCard, morbyByCard, tasksByCard } = boardData;
 
-  document.getElementById("prop-count").textContent =
-    `${props.length} active under-contract propert${props.length === 1 ? "y" : "ies"}`;
+  // B4.1 — the buy-box completeness number, on the page Zach opens daily. A
+  // wildcard buyer has no state, strategy or budget on file, so they land in
+  // the audience for every deal; the count is the list-quality metric.
+  const boxSplit = DealShared.buyBoxSplit(buyers);
+  document.getElementById("prop-count").innerHTML =
+    `${props.length} active under-contract propert${props.length === 1 ? "y" : "ies"}`
+    + ` · <a href="/buyers.html" style="color:inherit" title="Buyers with a market, strategy and budget on file">${boxSplit.full} of ${boxSplit.total} buyers have a full buy box</a>`
+    + (boxSplit.wildcard
+      ? ` · <span style="color:#B7791F" title="No market, strategy or budget on file — these buyers match every deal you send. Open the Buyers page and click “wildcard” to see them.">${boxSplit.wildcard} wildcard</span>`
+      : "");
 
   // Attention score per deal — drives the default sort and the ⚠ filter.
   const attByCard = {};
@@ -706,6 +714,23 @@ function matchedBuyersForDeal(p, t, buyers) {
       return { ...b, _score: score, _reasons: reasons, _missing: missing };
     })
     .sort((a, b) => b._score - a._score);
+}
+
+// B4.4 — buyers who fail matchesDeal ONLY on a numeric cap, and only just
+// (nearMissDeal in deal-shared.js owns the band). They are never included in
+// a blast automatically: they show up as their own group in the picker so
+// they can be added one at a time, on purpose.
+function nearMissBuyersForDeal(p, t, buyers) {
+  const state = p.state, price = Number(t.price) || 0, piti = Number(t.piti) || 0, beds = Number(t.beds) || 0;
+  const dealStrategy = p.deal_type === "morby" ? "morby" : "subto";
+  const out = [];
+  for (const b of buyers) {
+    const near = DealShared.nearMissDeal(b, dealStrategy, state, price, piti, beds);
+    if (!near) continue;
+    const { score, missing } = scoreBuyerForDeal(b, state, price, piti, beds);
+    out.push({ ...b, _score: score, _missing: missing, _near: true, _reasons: near.reasons.map(r => `⚠ ${r}`) });
+  }
+  return out.sort((a, b) => b._score - a._score);
 }
 
 // Buyer "method" = their strategy field. Used to group the blast modal's
@@ -907,7 +932,7 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
   const acq = acqByCard[p.card_id] || {};
   const morby = (morbyByCard && morbyByCard[p.card_id]) || {};
   const dealType = p.deal_type || "subto";
-  dealCache[p.card_id] = { prop: p, terms: t, matched, leads, acq, morby };
+  dealCache[p.card_id] = { prop: p, terms: t, matched, nearMiss: nearMissBuyersForDeal(p, t, buyers), leads, acq, morby };
 
   // ── Triage: collapsed (compact) mode is the default. One row per deal;
   // click to expand into the full working card. ──
@@ -3138,13 +3163,14 @@ function openBlastModal(btn, { isMorbyDeck = false, dealDeckPdf = null, followUp
   const statusEl = btn.closest(".flex-between")?.querySelector(".blast-status") || btn.closest(".card")?.querySelector(".blast-status") || btn;
   const deal = dealCache[cardId];
   const matched = (deal && deal.matched) || [];
+  const nearMiss = (deal && deal.nearMiss) || [];
   const variations = isMorbyDeck ? [] : ((deal && deal.prop && deal.prop.variations) || []);
   // Deal params let us score any buyer (even ones not auto-matched) when the
   // user filters the "Choose specific buyers" list by method.
   const dealParams = deal
     ? { state: deal.prop.state, price: Number(deal.terms?.price) || 0, piti: Number(deal.terms?.piti) || 0, beds: Number(deal.terms?.beds) || 0 }
     : { state: "", price: 0, piti: 0, beds: 0 };
-  activeBlast = { cardId, address, statusEl, matched, variations, isMorbyDeck, dealDeckPdf, dealParams, selectedIds: new Set() };
+  activeBlast = { cardId, address, statusEl, matched, nearMiss, variations, isMorbyDeck, dealDeckPdf, dealParams, selectedIds: new Set() };
 
   const varSel = document.getElementById("blast-variation-select");
   const varField = document.getElementById("blast-variation-field");
@@ -3169,6 +3195,7 @@ function openBlastModal(btn, { isMorbyDeck = false, dealDeckPdf = null, followUp
   document.getElementById("blast-modal-sub").textContent = isMorbyDeck
     ? `Deal Deck PDF will be emailed to ${matched.length} Stack Method buyer${matched.length === 1 ? "" : "s"}.`
     : `${matched.length} buyer${matched.length === 1 ? "" : "s"} match this deal's state${matched.some(b=>b.max_price||b.max_piti||b.min_beds) ? " & criteria" : ""}.`;
+  renderAudienceSplit(matched, nearMiss);
   document.getElementById("blast-mode-all").checked = true;
   document.getElementById("blast-buyer-list").classList.add("hidden");
   document.getElementById("blast-all-count").textContent = `(${matched.length})`;
@@ -3192,11 +3219,35 @@ function openBlastModal(btn, { isMorbyDeck = false, dealDeckPdf = null, followUp
     document.getElementById("blast-modal-title").textContent = `Follow-up — ${address}`;
     document.getElementById("blast-modal-sub").textContent =
       `${followUpIds.length} recipient${followUpIds.length === 1 ? "" : "s"} never opened, clicked, or viewed the first blast. Only they will get this.`;
+    // The audience here is the follow-up list, not the matched list — the
+    // split above it would be describing a different set of people.
+    document.getElementById("blast-audience-split").innerHTML = "";
     if (variations.length > 1) { varSel.value = "1"; varSel.onchange && varSel.onchange(); }
     selectMethodGroup("__matched");
   }
 
   document.getElementById("blast-modal-backdrop").classList.remove("hidden");
+}
+
+// B4.1 — what the matched count is actually made of. A wildcard buyer has no
+// state, strategy or budget on file, so they match every deal we ever send;
+// seeing that split at the moment of sending is the whole point. This is
+// display only — the audience is unchanged.
+function renderAudienceSplit(matched, nearMiss) {
+  const el = document.getElementById("blast-audience-split");
+  if (!el) return;
+  if (!matched.length && !(nearMiss || []).length) { el.innerHTML = ""; return; }
+  const split = DealShared.buyBoxSplit(matched);
+  const real = split.full + split.partial;
+  const pct = split.total ? Math.round((split.wildcard / split.total) * 100) : 0;
+  const near = (nearMiss || []).length;
+  el.innerHTML = `
+    <div style="background:#F7FAFC;border:1px solid var(--border);border-radius:8px;padding:8px 11px;font-size:0.78rem;color:var(--text-2);margin-bottom:10px">
+      <div><strong style="color:var(--text-1)">${real}</strong> matched on their stated buy box ·
+        <strong style="color:${split.wildcard ? "#B7791F" : "var(--text-1)"}">${split.wildcard}</strong> wildcard (no box on file)
+        ${split.wildcard ? `<span class="muted"> — ${pct}% of this audience matches every deal you send</span>` : ""}</div>
+      ${near ? `<div style="margin-top:5px;color:#B7791F">⚠ ${near} near miss${near === 1 ? "" : "es"} just outside their cap — not included. Pick “Choose specific buyers” → “Near miss” to add any.</div>` : ""}
+    </div>`;
 }
 
 // Score any buyer against the active deal (matched buyers arrive pre-scored).
@@ -3218,6 +3269,8 @@ function renderMethodChips() {
   }
   activeBlast.methodGroups = groups;
   const chips = [{ key: "__matched", label: "Matched to this deal", count: activeBlast.matched.length }];
+  // Near misses get their own group so adding one is always a deliberate act.
+  if ((activeBlast.nearMiss || []).length) chips.push({ key: "__near", label: "Near miss", count: activeBlast.nearMiss.length });
   for (const key of METHOD_ORDER) if (groups[key] && groups[key].length) chips.push({ key, label: METHOD_LABELS[key], count: groups[key].length });
   wrap.innerHTML = chips.map(c =>
     `<button type="button" class="btn btn-ghost btn-sm blast-method-chip" data-key="${c.key}" style="font-size:0.74rem">${escapeHtml(c.label)} <span class="muted">(${c.count})</span></button>`
@@ -3233,10 +3286,12 @@ function selectMethodGroup(key) {
     chip.style.background = on ? "var(--navy, #1B3A6B)" : "";
     chip.style.color = on ? "#fff" : "";
   });
-  const list = key === "__matched"
-    ? activeBlast.matched
+  const list = key === "__matched" ? activeBlast.matched
+    : key === "__near" ? (activeBlast.nearMiss || [])
     : (activeBlast.methodGroups[key] || []).map(decorateBuyer).sort((a, b) => b._score - a._score);
-  renderBlastCheckboxes(list);
+  renderBlastCheckboxes(list, key === "__near"
+    ? `These buyers are just outside their own stated cap on this deal — within ${Math.round(DealShared.NEAR_MISS_TOLERANCE * 100)}% on price/PITI, or one bedroom short. None are selected; tick anyone you'd still send this to.`
+    : "");
 }
 
 function updateSelectedCount() {
@@ -3244,10 +3299,13 @@ function updateSelectedCount() {
   if (el) el.textContent = `${activeBlast.selectedIds.size} selected total`;
 }
 
-function renderBlastCheckboxes(list) {
+function renderBlastCheckboxes(list, note = "") {
   const box = document.getElementById("blast-buyer-checkboxes");
   const sel = activeBlast.selectedIds;
-  box.innerHTML = list.map(raw => {
+  const noteHtml = note
+    ? `<div style="background:#FFFAF0;border:1px solid #FBD38D;color:#B7791F;border-radius:8px;padding:7px 10px;font-size:0.76rem;margin-bottom:8px">${escapeHtml(note)}</div>`
+    : "";
+  box.innerHTML = noteHtml + list.map(raw => {
     const b = decorateBuyer(raw);
     const score = b._score ?? 0;
     const reasons = b._reasons || [];
@@ -3263,13 +3321,15 @@ function renderBlastCheckboxes(list) {
         <strong>${escapeHtml(b.name)}</strong>
         <span class="muted">${escapeHtml(b.email || b.phone || "")}</span>
         ${b.sms_opt_in ? '<span class="muted" style="font-size:0.7rem">📱</span>' : ""}
+        ${DealShared.buyBoxCompleteness(b) === "wildcard" ? '<span style="font-size:0.66rem;color:#B7791F;font-weight:600" title="No market, strategy or budget on file — this buyer matches every deal, so this isn\'t a real match">✳ wildcard</span>' : ""}
         ${missing.length ? `<span style="font-size:0.66rem;color:#C53030;font-weight:600" title="Missing ${missing.join(', ')}">⚠ no ${missing.join("/")}</span>` : ""}
         <button type="button" class="btn btn-ghost btn-sm buyer-link-btn" data-buyer-id="${b.id}" style="margin-left:auto;font-size:0.7rem;padding:2px 8px" title="Copy this buyer's personal tracked deck link — views and Interested taps from it attribute to them, same as a blast">🔗</button>
         <button type="button" class="btn btn-ghost btn-sm log-outcome-btn" data-buyer-id="${b.id}" data-name="${escapeHtml(b.name)}" data-contact="${escapeHtml(b.email || b.phone || "")}" style="font-size:0.7rem;padding:2px 8px" title="Log this buyer's response in the deal pipeline">📋 Log</button>
       </span>
       ${reasons.length ? `<span class="muted" style="font-size:0.72rem;padding-left:26px">${reasons.map(escapeHtml).join(" · ")}</span>` : ""}
     </label>`;
-  }).join("") || `<span class="muted" style="font-size:0.84rem">No buyers in this group.</span>`;
+  }).join("");
+  if (!list.length) box.innerHTML = noteHtml + `<span class="muted" style="font-size:0.84rem">No buyers in this group.</span>`;
 
   box.querySelectorAll(".blast-buyer-cb").forEach(cb => {
     cb.addEventListener("change", () => {
@@ -3348,8 +3408,11 @@ async function runBlast({ test }) {
     // "↻ Retry failed" can finish the job tomorrow — or upgrade the plan).
     const RESEND_FREE_DAILY_LIMIT = 100;
     const idSet = buyerIds ? new Set(buyerIds) : null;
+    // Hand-picked near misses (B4.4) aren't in `matched` but are really sent,
+    // so they have to count against the daily email budget too.
+    const audiencePool = idSet ? activeBlast.matched.concat(activeBlast.nearMiss || []) : activeBlast.matched;
     const emailAudience = channels.includes("email")
-      ? activeBlast.matched.filter(b => (!idSet || idSet.has(Number(b.id))) && b.email && !b.email_opt_out && !b.email_bounced_at).length
+      ? audiencePool.filter(b => (!idSet || idSet.has(Number(b.id))) && b.email && !b.email_opt_out && !b.email_bounced_at).length
       : 0;
     const budgetWarning = emailAudience > RESEND_FREE_DAILY_LIMIT
       ? `\n\n⚠️ Resend free tier: only ~${RESEND_FREE_DAILY_LIMIT} of these ${emailAudience} emails can send today — the rest will log as failed. Use "↻ Retry failed" tomorrow to finish, or upgrade Resend.`

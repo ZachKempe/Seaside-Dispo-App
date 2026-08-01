@@ -74,13 +74,22 @@ function buildEngagement(activity, dViews, dLeads, eEvents, propNames) {
   };
   const log = (id, icon, label, at) => ensure(id).events.push({ icon, label, at });
 
+  // deck_views.source (migration 030) records which channel the link came
+  // from — SMS and email links were always tokenized alike, so both have
+  // always been attributed; this is what tells them apart. Rows written
+  // before 030 (and forwarded/copied links) have no source.
+  const SOURCE_LABELS = { sms: "SMS", email: "email", dm: "DM" };
+  const via = (v) => SOURCE_LABELS[v.source] ? ` via ${SOURCE_LABELS[v.source]}` : "";
   for (const v of dViews) {
-    if (v.kind === "pdf") { bump(v.buyer_id, "pdf"); log(v.buyer_id, "📄", `Downloaded deck PDF${dealName(v.card_id)}`, v.viewed_at); }
+    if (v.kind === "pdf") { bump(v.buyer_id, "pdf"); log(v.buyer_id, "📄", `Downloaded deck PDF${dealName(v.card_id)}${via(v)}`, v.viewed_at); }
     else {
       bump(v.buyer_id, "view");
+      if (v.source) bump(v.buyer_id, `view_${v.source}`); // per-channel counts
       if ((v.dwell_seconds || 0) >= 60) bump(v.buyer_id, "longDwell");
+      const e = ensure(v.buyer_id);
+      e.dwellTotal = (e.dwellTotal || 0) + (Number(v.dwell_seconds) || 0);
       const dwell = (v.dwell_seconds || 0) >= 60 ? ` (${Math.round(v.dwell_seconds / 60)}m on page)` : "";
-      log(v.buyer_id, "👀", `Viewed deck${dealName(v.card_id)}${dwell}`, v.viewed_at);
+      log(v.buyer_id, "👀", `Viewed deck${dealName(v.card_id)}${via(v)}${dwell}`, v.viewed_at);
     }
     touch(v.buyer_id, v.viewed_at);
   }
@@ -164,7 +173,10 @@ async function loadBuyers() {
   const [{ data, error }, { data: activity }, { data: dViews }, { data: dLeads }, { data: eEvents }, { data: propNames }] = await Promise.all([
     fetchAllRows(() => supa.from("buyers").select("*").eq("active", true).order("date_added", { ascending: false }).order("id")),
     fetchAllRows(() => supa.from("buyer_activity").select("buyer_id,channel,detail,card_id,address,created_at").order("created_at", { ascending: false }).order("id"), { maxRows: 4000 }),
-    fetchAllRows(() => supa.from("deck_views").select("buyer_id,card_id,kind,dwell_seconds,viewed_at").not("buyer_id", "is", null).order("viewed_at", { ascending: false }).order("id"), { maxRows: 4000 }),
+    // `source` (030) tells SMS views from email views. Falls back to the
+    // pre-030 column set so the page still loads before the migration runs.
+    fetchAllRows(() => supa.from("deck_views").select("buyer_id,card_id,kind,source,dwell_seconds,viewed_at").not("buyer_id", "is", null).order("viewed_at", { ascending: false }).order("id"), { maxRows: 4000 })
+      .then(r => r.error ? fetchAllRows(() => supa.from("deck_views").select("buyer_id,card_id,kind,dwell_seconds,viewed_at").not("buyer_id", "is", null).order("viewed_at", { ascending: false }).order("id"), { maxRows: 4000 }) : r),
     fetchAllRows(() => supa.from("deal_leads").select("buyer_id,card_id,address,stage,source,created_at,updated_at").not("buyer_id", "is", null).order("updated_at", { ascending: false }).order("id"), { maxRows: 4000 }),
     fetchAllRows(() => supa.from("email_events").select("buyer_id,card_id,event,link_url,created_at").not("buyer_id", "is", null).order("created_at", { ascending: false }).order("id"), { maxRows: 4000 }),
     fetchAllRows(() => supa.from("properties").select("card_id,name").order("card_id")),
@@ -321,10 +333,19 @@ function renderDetail() {
 
   // Engagement summary: score + which signals produced it.
   const engLevel = DealShared.engagementLevel(eng.score);
+  // Deck views split by the channel the link came from (030). Only channels
+  // with views appear, so pre-030 history just shows the plain view count.
+  const viewSplit = [
+    eng.counts.view_sms && `${eng.counts.view_sms} SMS`,
+    eng.counts.view_email && `${eng.counts.view_email} email`,
+    eng.counts.view_dm && `${eng.counts.view_dm} DM`,
+  ].filter(Boolean).join(" · ");
+  const dwellMins = Math.round((eng.dwellTotal || 0) / 60);
   const countChips = [
     eng.counts.interest && `⭐ ${eng.counts.interest} interested`,
     eng.counts.reply && `💬 ${eng.counts.reply} repl${eng.counts.reply === 1 ? "y" : "ies"}`,
-    eng.counts.view && `👀 ${eng.counts.view} deck view${eng.counts.view === 1 ? "" : "s"}`,
+    eng.counts.view && `👀 ${eng.counts.view} deck view${eng.counts.view === 1 ? "" : "s"}${viewSplit ? ` (${viewSplit})` : ""}`,
+    (eng.dwellTotal || 0) >= 60 && `⏱ ${dwellMins}m on deck`,
     eng.counts.pdf && `📄 ${eng.counts.pdf} PDF${eng.counts.pdf === 1 ? "" : "s"}`,
     eng.counts.click && `🔗 ${eng.counts.click} click${eng.counts.click === 1 ? "" : "s"}`,
     eng.counts.open && `✉️ ${eng.counts.open} open${eng.counts.open === 1 ? "" : "s"}`,

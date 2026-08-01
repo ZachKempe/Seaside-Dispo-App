@@ -57,8 +57,10 @@ exports.handler = async (event) => {
     if (!prop) return { statusCode: 404, body: JSON.stringify({ error: "Deal not found" }) };
 
     const slug = await ensureDeckSlug(sb, prop);
+    // s=dm marks a link copied for a manual text/DM, so its views are told
+    // apart from blast-driven SMS and email views (migration 030).
     const url = buyer_id
-      ? `${SITE_URL}/deck/${slug}?b=${encodeURIComponent(deckToken(buyer_id))}`
+      ? `${SITE_URL}/deck/${slug}?b=${encodeURIComponent(deckToken(buyer_id))}&s=dm`
       : `${SITE_URL}/deck/${slug}`;
 
     return {

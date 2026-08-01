@@ -43,6 +43,14 @@ async function sbCount(path) {
     return Number.isFinite(n) ? n : 0;
   } catch { return 0; }
 }
+// Which channel this visit's link came from (?s=…). Whitelisted so a stray or
+// crafted value can't pollute the rollups; anything unknown logs as "" and
+// reads as "direct" (a copied/forwarded link).
+const VIEW_SOURCES = new Set(["sms", "email", "dm"]);
+function viewSource(s) {
+  const v = String(s || "").toLowerCase();
+  return VIEW_SOURCES.has(v) ? v : "";
+}
 function esc(s) {
   return String(s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -118,8 +126,11 @@ exports.handler = async (event) => {
     try {
       const p = await sb(`/properties?deck_slug=eq.${encodeURIComponent(cleanSlug)}&select=card_id&limit=1`);
       if (p && p[0]) {
-        await sb(`/deck_views`, { method: "POST", headers: { Prefer: "return=minimal" },
-          body: JSON.stringify({ card_id: p[0].card_id, buyer_id: verifyDeckToken(q.b) || null, kind: "pdf", user_agent: (event.headers["user-agent"] || "").slice(0, 300) }) });
+        const row = { card_id: p[0].card_id, buyer_id: verifyDeckToken(q.b) || null, kind: "pdf", user_agent: (event.headers["user-agent"] || "").slice(0, 300) };
+        const logPdf = (r) => sb(`/deck_views`, { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(r) });
+        // Retry without `source` if migration 030 hasn't run yet.
+        try { await logPdf({ ...row, source: viewSource(q.s) }); }
+        catch (e) { await logPdf(row); }
       }
     } catch (e) { console.warn("pdf download log failed:", e.message); }
     const url = `${SB_URL}/storage/v1/object/public/property-photos/deal-decks/${cleanSlug}.pdf`;
@@ -170,11 +181,21 @@ exports.handler = async (event) => {
     // deck-dwell.js on exit; if the insert fails the page still renders, just
     // without dwell tracking.
     let viewId = null;
-    try {
-      const vRows = await sb(`/deck_views`, { method: "POST", headers: { Prefer: "return=representation" },
-        body: JSON.stringify({ card_id: cardId, buyer_id: buyerId || null, user_agent: (event.headers["user-agent"] || "").slice(0, 300) }) });
-      viewId = vRows && vRows[0] && vRows[0].id;
-    } catch (e) { console.warn("deck_view log failed:", e.message); }
+    {
+      const base = { card_id: cardId, buyer_id: buyerId || null, user_agent: (event.headers["user-agent"] || "").slice(0, 300) };
+      const logView = async (row) => {
+        const vRows = await sb(`/deck_views`, { method: "POST", headers: { Prefer: "return=representation" },
+          body: JSON.stringify(row) });
+        return vRows && vRows[0] && vRows[0].id;
+      };
+      try {
+        viewId = await logView({ ...base, source: viewSource(q.s) });
+      } catch (e) {
+        // `source` column missing (030 not run yet) — log without it.
+        try { viewId = await logView(base); }
+        catch (e2) { console.warn("deck_view log failed:", e2.message); }
+      }
+    }
 
     // ---- Photos (gallery -> cover -> listing -> auto Street View/aerial -> none) ----
     const { photos, hero: heroPhoto, source: photoSource } = await resolveDealPhotos(prop, cover, address, gallery);

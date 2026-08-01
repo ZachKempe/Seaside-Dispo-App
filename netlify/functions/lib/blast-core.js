@@ -500,7 +500,12 @@ async function runBlast(payload, user) {
     const prop = (props || [])[0];
     if (!prop) throw httpError(404, "property not found");
     const deckSlugVal = await ensureDeckSlugLocal(prop);
-    const deckPageUrl = (buyerId) => `${SITE_URL}/deck/${deckSlugVal}?b=${deckToken(buyerId)}`;
+    // `s` tags which channel the link went out on, so deck_views can report
+    // whether a buyer opened the deal from the text or the email (migration
+    // 030). SMS links were always tokenized like email links — this is what
+    // finally lets the two be told apart.
+    const deckPageUrl = (buyerId, source) =>
+      `${SITE_URL}/deck/${deckSlugVal}?b=${deckToken(buyerId)}${source ? `&s=${source}` : ""}`;
     const terms = (termsRows || [])[0] || {};
     const morbyTerms = (morbyRows || [])[0] || {};
     const coverImageUrl = ((acqRows || [])[0] || {}).cover_image_url || "";
@@ -650,7 +655,7 @@ async function runBlast(payload, user) {
             const chunk = emailBuyers.slice(i, i + EMAIL_CONCURRENCY);
             await Promise.all(chunk.map(async (b) => {
               const unsubUrl = unsubUrlFor(b.id);
-              const { subject, html } = buildEmail(unsubUrl, b, deckPageUrl(b.id));
+              const { subject, html } = buildEmail(unsubUrl, b, deckPageUrl(b.id, "email"));
               try {
                 if (useResend) await sendViaResend(b.email, subject, html, unsubUrl, pdfAttachments, { buyer_id: b.id, card_id });
                 else await sendViaGmail(token, b.email, subject, html, unsubUrl);
@@ -696,7 +701,7 @@ async function runBlast(payload, user) {
           let sent = 0, failed = 0;
           const message = dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms, deckUrl, wantEmail) : buildDealCopyText(prop, terms);
           for (const b of smsBuyers) {
-            const perMsg = message + `\n\nView deal & respond: ${deckPageUrl(b.id)}`;
+            const perMsg = message + `\n\nView deal & respond: ${deckPageUrl(b.id, "sms")}`;
             try {
               await sendSms(b.phone, perMsg); sent++;
               pendingRecipients.push(recipientRow(card_id, b, address, "sms", b.phone, "sent", variation));

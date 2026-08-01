@@ -79,7 +79,9 @@ emails, and the deck page all import from it, so what you preview is what sends.
 re-implement `matchesDeal`, `buyerCashAtClose`, `dscrMonthlyPayment`, `engagementScore`, or
 the term-row builders locally — past drift between copies caused real bugs.
 
-Engagement data model: `deck_views` (page views + PDF downloads + dwell), `email_events`
+Engagement data model: `deck_views` (page views + PDF downloads + dwell + `source`:
+which channel the link came from — `sms`/`email`/`dm`/`''`=direct, migration 030;
+blast-core tags every deck link with `&s=<channel>`), `email_events`
 (opens/clicks from Resend), `buyer_activity` (inbound replies + manual touches),
 `deal_leads` (pipeline stages), `deal_tasks` (next actions with due dates, pipeline page).
 buyers.html aggregates these into the per-buyer score and timeline; dashboard.html builds

@@ -154,6 +154,42 @@ function findCopyMismatches(t, variations) {
 // Priority 2: leads who replied (stage 'responded').
 // Priority 3: buyers who opened a deck page in the last 72h but didn't tap.
 // One entry per person, highest priority + most recent wins.
+// ── Deck-view channel reporting (deck_views.source, migration 030) ──
+// SMS and email deck links have always been tokenized the same way, so both
+// were attributed to the buyer; `source` is what lets them be told apart.
+// Rows written before 030 (and copied/forwarded links) have no source and
+// read as "direct".
+const VIEW_SOURCE_LABELS = { sms: "SMS", email: "email", dm: "DM", "": "direct" };
+function sourceLabel(s) { return VIEW_SOURCE_LABELS[s || ""] || "direct"; }
+
+// How a set of views arrived: "SMS", "SMS + email", "SMS + email + direct".
+// There are only four possible sources and the labels are short, so naming
+// them all beats a vague "+2 others" — most-used channel first.
+function channelSummary(views) {
+  const counts = {};
+  for (const v of (views || [])) {
+    const k = v.source || "";
+    counts[k] = (counts[k] || 0) + 1;
+  }
+  return Object.keys(counts)
+    .sort((a, b) => counts[b] - counts[a])
+    .map(sourceLabel)
+    .join(" + ");
+}
+
+// Total time on the deck across views — the "combined time viewed".
+function totalDwell(views) {
+  return (views || []).reduce((n, v) => n + (Number(v.dwell_seconds) || 0), 0);
+}
+function fmtDuration(secs) {
+  secs = Math.round(secs || 0);
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60), s = secs % 60;
+  if (m < 60) return s ? `${m}m ${s}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
 function timeAgoShort(iso) {
   const mins = Math.max(1, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
   if (mins < 60) return `${mins}m ago`;
@@ -197,12 +233,32 @@ function buildCallList(props, leads, deckViews, buyers, activities) {
     else if (l.stage === "offer") add(key, { ...entry, priority: 1, reason: `💰 Offer stage — ${deal}` });
     else if (l.stage === "responded") add(key, { ...entry, priority: 2, reason: `💬 Replied — ${deal}` });
   }
+  // Group each buyer's recent views per deal so the tile can report the
+  // channel(s) they came in on and their combined time on the page.
+  const recentViews = {};
   for (const v of (deckViews || [])) {
     if (!v.buyer_id) continue;
     if ((now - new Date(v.viewed_at)) / 3600000 > 72) continue;
-    const b = buyerById[v.buyer_id];
+    if (v.kind === "pdf") continue; // PDF taps aren't page views
+    (recentViews[`${v.buyer_id}|${v.card_id}`] ||= []).push(v);
+  }
+  for (const [key, group] of Object.entries(recentViews)) {
+    const buyerId = Number(key.split("|")[0]);
+    const b = buyerById[buyerId];
     if (!b) continue;
-    add(`b${v.buyer_id}`, { name: b.name, phone: b.phone, email: b.email, at: v.viewed_at, buyerId: Number(v.buyer_id), cardId: v.card_id || "", priority: 3, reason: `👀 Viewed ${dealOf[v.card_id] || "a deck"}` });
+    const latest = group.reduce((a, v) => new Date(v.viewed_at) > new Date(a.viewed_at) ? v : a);
+    const via = channelSummary(group);
+    const dwell = totalDwell(group);
+    const detail = [
+      via ? `via ${via}` : "",
+      group.length > 1 ? `${group.length}×` : "",
+      dwell >= 15 ? fmtDuration(dwell) : "",
+    ].filter(Boolean).join(" · ");
+    add(`b${buyerId}`, {
+      name: b.name, phone: b.phone, email: b.email, at: latest.viewed_at,
+      buyerId, cardId: latest.card_id || "", priority: 3,
+      reason: `👀 Viewed ${dealOf[latest.card_id] || "a deck"}${detail ? ` — ${detail}` : ""}`,
+    });
   }
   return Object.values(best)
     .filter(e => !(e.buyerId && touchedAt[e.buyerId] && touchedAt[e.buyerId] > new Date(e.at).getTime()))
@@ -368,7 +424,11 @@ async function loadAll() {
     // Paged (F3): one blast writes a recipient row per buyer, and deck views /
     // email opens multiply per blast — all three blow past 1,000 rows first.
     fetchAllRows(() => supa.from("blast_recipients").select("card_id,channel,status,buyer_id").in("card_id", cardIds).order("id")),
-    fetchAllRows(() => supa.from("deck_views").select("card_id,buyer_id,viewed_at").in("card_id", cardIds).order("id")),
+    // `source`/`dwell_seconds` power the per-channel view rollup (SMS vs email).
+    // Falls back to the pre-030 column set so the board still loads if the
+    // migration hasn't been run yet.
+    fetchAllRows(() => supa.from("deck_views").select("card_id,buyer_id,viewed_at,kind,source,dwell_seconds").in("card_id", cardIds).order("id"))
+      .then(r => r.error ? fetchAllRows(() => supa.from("deck_views").select("card_id,buyer_id,viewed_at").in("card_id", cardIds).order("id")) : r),
     fetchAllRows(() => supa.from("email_events").select("card_id,buyer_id,event").in("card_id", cardIds).order("id")),
     // Pipeline-page data the dashboard folds in (fails soft pre-027): next
     // actions drive the "task overdue" attention signal + the card's Next line.
@@ -864,10 +924,20 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
 
   // ── Pipeline: sorted by stage progression (closest-to-closing first) ──
   // Deck engagement (§7): views for this deal + a buyer_id -> view-count map.
-  const views = (viewsByCard && viewsByCard[p.card_id]) || [];
+  const allViews = (viewsByCard && viewsByCard[p.card_id]) || [];
+  const views = allViews.filter(v => v.kind !== "pdf"); // page views only
   const totalViews = views.length;
   const viewsByBuyer = new Map();
   for (const v of views) if (v.buyer_id != null) viewsByBuyer.set(Number(v.buyer_id), (viewsByBuyer.get(Number(v.buyer_id)) || 0) + 1);
+  // Where the views came from (SMS vs email vs direct) + combined time on page.
+  const viewsBySource = {};
+  for (const v of views) { const k = v.source || ""; viewsBySource[k] = (viewsBySource[k] || 0) + 1; }
+  const sourceBreakdown = Object.keys(viewsBySource).length
+    ? Object.entries(viewsBySource)
+        .sort((a, b) => b[1] - a[1])
+        .map(([s, n]) => `${n} ${sourceLabel(s)}`).join(" · ")
+    : "";
+  const dwellTotal = totalDwell(views);
   const interestedCount = leads.filter(l => ["interested", "offer", "under_contract"].includes(l.stage)).length;
   // Surface deck-page "interested" leads (the call-now list) to the top, then by stage rank.
   const isCallNow = (l) => l.source === "deck_page" && l.stage === "interested";
@@ -1055,7 +1125,7 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
           <label style="margin:0">Pipeline (${leads.length})</label>
           <button type="button" class="btn btn-ghost btn-sm add-lead-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}">+ Add Lead</button>
         </div>
-        <div class="muted" style="font-size:0.76rem;margin:2px 0 4px">👁 ${totalViews} view${totalViews === 1 ? "" : "s"} · ${interestedCount} interested</div>
+        <div class="muted" style="font-size:0.76rem;margin:2px 0 4px">👁 ${totalViews} view${totalViews === 1 ? "" : "s"}${sourceBreakdown ? ` (${escapeHtml(sourceBreakdown)})` : ""}${dwellTotal >= 15 ? ` · ⏱ ${escapeHtml(fmtDuration(dwellTotal))} total` : ""} · ${interestedCount} interested</div>
         ${leads.length ? `
           <div class="flex gap-8" style="flex-wrap:wrap;margin:6px 0 8px">
             ${STAGES.filter(s => stageCounts[s.key]).map(s => `<span class="pill" style="background:${s.color}22;color:${s.color};font-size:0.7rem;font-weight:700">${s.label} · ${stageCounts[s.key]}</span>`).join("")}

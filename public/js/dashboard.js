@@ -1709,12 +1709,38 @@ function wireCardEvents() {
 // in import-photos.js (same URL pattern, largest-variant-per-photo).
 const ZILLOW_GRABBER = [
   "javascript:(async()=>{",
-  "const re=/https:\\/\\/photos\\.zillowstatic\\.com\\/fp\\/([a-f0-9]{12,})-[a-zA-Z_]*?(\\d{2,4})[0-9_]*\\.(?:jpe?g|webp)/g;",
+  // 1) Exact: this listing's own photo array from the embedded page data
+  //    (a listing page also carries "similar homes" photos — a blind scan of
+  //    the page returns hundreds of other people's houses).
+  "const zp=(location.pathname.match(/\\/(\\d+)_zpid/)||[])[1]||'';",
+  "const big=p=>{const s=(p&&p.mixedSources)||{},l=[].concat(s.jpeg||[],s.webp||[]);let b=null;",
+  "for(const x of l)if(x&&x.url&&(!b||(x.width||0)>(b.width||0)))b=x;return b?b.url:((p&&(p.url||p.hiResImageLink))||'')};",
+  "let urls=[],ex=null,fb=null;",
+  "const el=document.getElementById('__NEXT_DATA__');",
+  "if(el){try{const seen=new WeakSet();const walk=(n,d)=>{if(ex||d>14||!n)return;",
+  "if(typeof n==='string'){if(n.length>200&&(n[0]==='{'||n[0]==='[')){try{walk(JSON.parse(n),d+1)}catch(e){}}return}",
+  "if(typeof n!=='object')return;if(seen.has(n))return;seen.add(n);",
+  "if(Array.isArray(n)){for(const v of n)walk(v,d+1);return}",
+  "const ph=n.responsivePhotos||n.photos;",
+  "if(Array.isArray(ph)&&ph.length&&ph.some(p=>p&&p.mixedSources)){const u=ph.map(big).filter(Boolean);",
+  "if(u.length){if(zp&&String(n.zpid||'')===zp){ex=u;return}if(!fb)fb=u}}",
+  "for(const k in n)walk(n[k],d+1)};walk(JSON.parse(el.textContent),0)}catch(e){}}",
+  "urls=ex||fb||[];let precise=urls.length>0;",
+  // 2) Fallback: scoped to the gallery container only
+  "if(!urls.length){for(const s of ['[data-testid=\"hollywood-vertical-media-wall\"] img','ul.photo-tile-list img','[class*=\"media-wall\"] img']){",
+  "const u=[...document.querySelectorAll(s)].map(i=>{const ss=i.getAttribute('srcset')||'';let b={w:0,u:i.currentSrc||i.src||''};",
+  "for(const q of ss.split(',')){const t=q.trim().split(/\\s+/),w=+(t[1]||'').replace('w','')||0;if(t[0]&&w>b.w)b={w:w,u:t[0]}}return b.u})",
+  ".filter(u=>u&&u.includes('photos.zillowstatic.com'));if(u.length>=3){urls=u;precise=true;break}}}",
+  // 3) Last resort: whole page (imprecise — warn)
+  "if(!urls.length){const re=/https:\\/\\/photos\\.zillowstatic\\.com\\/fp\\/([a-f0-9]{12,})-[a-zA-Z_]*?(\\d{2,4})[0-9_]*\\.(?:jpe?g|webp)/g;",
   "const h=document.documentElement.innerHTML,best={},order=[];let m;",
   "while((m=re.exec(h))){const id=m[1],w=+m[2];if(!best[id]){best[id]={w:0,u:''};order.push(id)}if(w>best[id].w)best[id]={w:w,u:m[0]}}",
-  "const urls=order.filter(id=>best[id].w>=300).map(id=>best[id].u);",
-  "if(!urls.length){alert('No Zillow photos found on this page. Open the listing (not search results) and try again.');return}",
-  "try{await navigator.clipboard.writeText(urls.join('\\n'));alert('\\u2713 Copied '+urls.length+' photo links. Paste them into the deal\\u2019s \\u201cImport from link\\u201d box.')}",
+  "urls=order.filter(id=>best[id].w>=300).map(id=>best[id].u);precise=false}",
+  // dedupe by photo hash + cap
+  "const seenH=new Set();urls=urls.filter(u=>{const k=(u.match(/\\/fp\\/([a-f0-9]{12,})/)||[,u])[1];if(seenH.has(k))return false;seenH.add(k);return true}).slice(0,60);",
+  "if(!urls.length){alert('No Zillow photos found. Open the listing page (not search results) and try again.');return}",
+  "const note=precise?'':'\\n\\nHeads-up: these could not be matched to this listing exactly, so some may be from \\u201csimilar homes\\u201d on the page — review the gallery after importing.';",
+  "try{await navigator.clipboard.writeText(urls.join('\\n'));alert('\\u2713 Copied '+urls.length+' photo links. Paste them into the deal\\u2019s \\u201cImport from link\\u201d box.'+note)}",
   "catch(e){prompt('Copy these photo links:',urls.join(' '))}",
   "})()",
 ].join("");
@@ -1824,17 +1850,31 @@ function addressMatchScore(dealName, addr) {
   return d.filter(t => a.has(t)).length;
 }
 async function handlePhotoHandoff() {
-  const m = location.hash.match(/^#import-photos=([^&]*)(?:&addr=(.*))?$/);
+  const m = location.hash.match(/^#import-photos=([^&]*)(?:&addr=([^&]*))?(?:&approx=(\d))?$/);
   if (!m || !boardData) return;
-  const urls = decodeURIComponent(m[1] || "").split(/\s+/).map(s => s.trim()).filter(Boolean);
+  const allUrls = decodeURIComponent(m[1] || "").split(/\s+/).map(s => s.trim()).filter(Boolean);
   const addr = decodeURIComponent(m[2] || "");
+  const approx = m[3] === "1"; // grabber couldn't isolate THIS listing's photos
   history.replaceState(null, "", location.pathname); // don't re-fire on refresh
-  if (!urls.length) return;
+  if (!allUrls.length) return;
+
+  // A real listing is a few dozen photos. A much larger set means the page
+  // held other listings' photos too ("similar homes" etc.) — import a sane
+  // first slice rather than flooding the gallery with neighbours' houses.
+  const SANE_MAX = 40;
+  const urls = allUrls.slice(0, SANE_MAX);
+  const trimmed = allUrls.length - urls.length;
 
   const props = [...boardData.props].sort((x, y) =>
     addressMatchScore(y.name, addr) - addressMatchScore(x.name, addr) ||
     String(x.name || "").localeCompare(String(y.name || "")));
   if (!props.length) { toast("No active deals to import into.", { type: "error" }); return; }
+
+  const warn = (approx || trimmed)
+    ? `<p style="margin:0 0 12px;padding:9px 12px;background:#FFFAF0;border:1px solid #F6C468;border-radius:9px;font-size:0.8rem;color:#7B5A16">
+         ⚠️ These photos couldn't be matched to this listing exactly${trimmed ? ` (${allUrls.length} found — importing the first ${urls.length})` : ""}, so a few may belong to "similar homes" shown on the page. Review the gallery after importing and delete any that aren't this property.
+       </p>`
+    : "";
 
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
@@ -1842,6 +1882,7 @@ async function handlePhotoHandoff() {
     <div class="card" style="width:100%;max-width:460px">
       <h2 style="margin-top:0">📸 Import ${urls.length} photo${urls.length === 1 ? "" : "s"}</h2>
       <p class="muted" style="margin-top:-8px;font-size:0.86rem">${addr ? `From <b>${escapeHtml(addr)}</b>. ` : ""}Pick the deal these belong to.</p>
+      ${warn}
       <div class="field">
         <label>Deal</label>
         <select id="handoff-deal">${props.map(p => `<option value="${escapeHtml(p.card_id)}">${escapeHtml(p.name)}</option>`).join("")}</select>

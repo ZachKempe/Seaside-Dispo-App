@@ -1700,6 +1700,25 @@ function wireCardEvents() {
 // link (Drive folder / listing page / direct image URLs) and import-photos.js
 // pulls everything server-side. photos_count auto-syncs to the real count so
 // the "Need More Photos" flag reflects reality, not a hand-typed number.
+// 🧲 Zillow grabber bookmarklet. Zillow bot-walls its PAGES against servers,
+// but Zach's own browser on the listing already has every photo URL — and the
+// photo CDN (photos.zillowstatic.com) is not bot-walled, so import-photos.js
+// can download whatever this harvests. One-time install: drag to bookmarks
+// bar; on a listing, click it → all hi-res photo URLs land on the clipboard →
+// paste into the Import box. Keep the logic in sync with zillowPhotoUrls()
+// in import-photos.js (same URL pattern, largest-variant-per-photo).
+const ZILLOW_GRABBER = [
+  "javascript:(async()=>{",
+  "const re=/https:\\/\\/photos\\.zillowstatic\\.com\\/fp\\/([a-f0-9]{12,})-[a-zA-Z_]*?(\\d{2,4})[0-9_]*\\.(?:jpe?g|webp)/g;",
+  "const h=document.documentElement.innerHTML,best={},order=[];let m;",
+  "while((m=re.exec(h))){const id=m[1],w=+m[2];if(!best[id]){best[id]={w:0,u:''};order.push(id)}if(w>best[id].w)best[id]={w:w,u:m[0]}}",
+  "const urls=order.filter(id=>best[id].w>=300).map(id=>best[id].u);",
+  "if(!urls.length){alert('No Zillow photos found on this page. Open the listing (not search results) and try again.');return}",
+  "try{await navigator.clipboard.writeText(urls.join('\\n'));alert('\\u2713 Copied '+urls.length+' photo links. Paste them into the deal\\u2019s \\u201cImport from link\\u201d box.')}",
+  "catch(e){prompt('Copy these photo links:',urls.join(' '))}",
+  "})()",
+].join("");
+
 function galleryBlockHtml(p, acq) {
   const n = Number((acq || {}).photos_count) || 0;
   return `
@@ -1714,9 +1733,13 @@ function galleryBlockHtml(p, acq) {
     <div class="flex gap-8 mt-8" style="flex-wrap:wrap;align-items:center">
       <input type="file" class="gallery-file hidden" accept="image/*" multiple>
       <button type="button" class="btn btn-ghost btn-sm gallery-add-btn">📤 Add photos</button>
-      <input type="text" class="gallery-import-url" placeholder="Paste Drive folder / listing page / image URLs — photos import automatically" value="${escapeHtml(p.drive_link || "")}" style="flex:1;min-width:220px;font-size:0.8rem;padding:6px 10px;border:1px solid var(--border);border-radius:8px">
+      <input type="text" class="gallery-import-url" placeholder="Paste Zillow photo links (🧲), a Drive folder, listing page, or image URLs" value="${escapeHtml(p.drive_link || "")}" style="flex:1;min-width:220px;font-size:0.8rem;padding:6px 10px;border:1px solid var(--border);border-radius:8px">
       <button type="button" class="btn btn-primary btn-sm gallery-import-btn">⬇ Import from link</button>
       <span class="muted gallery-status" style="font-size:0.78rem"></span>
+    </div>
+    <div class="muted" style="font-size:0.72rem;margin-top:6px">
+      Zillow: drag <a href="${escapeHtml(ZILLOW_GRABBER)}" class="zillow-grabber-link" title="Drag me to your bookmarks bar (one-time). Then on any Zillow listing, click it and paste the result here." style="display:inline-block;padding:1px 8px;border:1px solid var(--border);border-radius:6px;font-weight:600;text-decoration:none">🧲 Grab Zillow Photos</a>
+      to your bookmarks bar once → on the listing, click it → paste here. (Zillow blocks direct server pulls; this grabs every hi-res photo from your own browser tab.)
     </div>
   </div>`;
 }
@@ -1796,6 +1819,13 @@ function wireGalleryBlocks() {
       }));
     }
 
+    // The 🧲 link is for dragging to the bookmarks bar — clicking it here
+    // can't run (and shouldn't), so turn a click into instructions.
+    block.querySelectorAll(".zillow-grabber-link").forEach(a => a.addEventListener("click", (e) => {
+      e.preventDefault();
+      toast("Drag the 🧲 button up to your bookmarks bar (one-time). Then on any Zillow listing, click that bookmark — it copies every photo link — and paste into the Import box here.", { type: "info", duration: 9000 });
+    }));
+
     const fileInput = block.querySelector(".gallery-file");
     block.querySelector(".gallery-add-btn").addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", async () => {
@@ -1840,7 +1870,10 @@ function wireGalleryBlocks() {
         const result = await res.json();
         if (!res.ok) throw new Error(result.error || "Import failed");
         statusEl.textContent = "";
-        toast(`✓ Imported ${result.imported} photo${result.imported === 1 ? "" : "s"}${result.partial ? " (more available — run import again to pull the rest)" : ""}.`, { type: "success", duration: 7000 });
+        const bits = [`✓ Imported ${result.imported} photo${result.imported === 1 ? "" : "s"}`];
+        if (result.already) bits.push(`${result.already} already in the gallery`);
+        if (result.partial) bits.push("more available — click Import again to pull the rest");
+        toast(`${bits.join(" · ")}.`, { type: "success", duration: 7000 });
         await refresh();
       } catch (e) {
         statusEl.textContent = "";

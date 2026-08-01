@@ -13,12 +13,18 @@
 //      separated) are fetched as-is.
 //   3. Any other web page (agent photo link, simple listing page) — the HTML
 //      is scanned for og:image / <img> / srcset / JSON-LD images; big real
-//      photos are kept, logos and icons skipped. Sites with bot walls
-//      (notably Zillow) will refuse; the error says so and suggests 1/2.
+//      photos are kept, logos and icons skipped. Zillow pages get a dedicated
+//      __NEXT_DATA__ scan (full hi-res carousel) when the fetch succeeds, but
+//      Zillow usually bot-walls servers — the 🧲 Grab Zillow Photos
+//      bookmarklet (dashboard gallery block) harvests the URLs from the
+//      user's own browser tab instead, and those paste in as shape 2. The
+//      photo CDN itself (photos.zillowstatic.com) downloads fine from here.
 //
 // Sync function budget is ~10s, so downloads run concurrently, are capped at
 // MAX_PHOTOS per run, and stop starting new work near the deadline — the
 // response reports found/imported/skipped so a partial run is visible.
+
+const crypto = require("crypto");
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_ANON_KEY = process.env.SUPABASE_ANON_KEY;
@@ -64,16 +70,46 @@ async function driveCandidates(folderId) {
 }
 
 const IMAGE_EXT_RE = /\.(jpe?g|png|webp)(\?|#|$)/i;
+const ZILLOW_HINT = "Zillow blocks server access to its pages — on the listing, click the 🧲 Grab Zillow Photos bookmarklet (in the deal's Photo Gallery section) and paste what it copies here. The photos themselves download fine.";
+
+// Zillow photo URLs embedded in a listing page (__NEXT_DATA__ lists every
+// size of every carousel photo). Group by photo hash, keep the largest
+// variant, preserve first-appearance order. The photo CDN
+// (photos.zillowstatic.com) is NOT bot-walled, so once we have these URLs the
+// downloads succeed even though the page itself usually refuses servers.
+function zillowPhotoUrls(html) {
+  const re = /https:\/\/photos\.zillowstatic\.com\/fp\/([a-f0-9]{12,})-[a-zA-Z_]*?(\d{2,4})[0-9_]*\.(?:jpe?g|webp)/g;
+  const best = {};
+  const order = [];
+  let m;
+  while ((m = re.exec(html))) {
+    const [url, id, w] = [m[0], m[1], Number(m[2])];
+    if (!best[id]) { best[id] = { w: 0, url: "" }; order.push(id); }
+    if (w > best[id].w) best[id] = { w, url };
+  }
+  // <300px best-variant means avatars/UI thumbs (search pages are full of
+  // 48px ones), not carousel photos — drop them.
+  return order.filter(id => best[id].w >= 300).map(id => ({ url: best[id].url, name: "" }));
+}
 
 // Generic page → likely photo URLs, in page order, junk filtered out.
 async function scrapePageCandidates(pageUrl) {
+  const isZillow = /(^|\.)zillow\.com/i.test(new URL(pageUrl).hostname);
   const r = await fetch(pageUrl, {
     headers: { "User-Agent": BROWSER_UA, Accept: "text/html,application/xhtml+xml,*/*" },
     redirect: "follow",
     signal: AbortSignal.timeout(6000),
   });
-  if (!r.ok) throw new Error(`The page returned HTTP ${r.status} — it likely blocks automated access (Zillow and most MLS portals do). Use the Google Drive folder or direct image links instead.`);
+  if (!r.ok) {
+    if (isZillow) throw new Error(`Zillow refused the request (HTTP ${r.status}). ${ZILLOW_HINT}`);
+    throw new Error(`The page returned HTTP ${r.status} — it likely blocks automated access (most MLS portals do). Use the Google Drive folder or direct image links instead.`);
+  }
   const html = await r.text();
+  // Zillow (or any page embedding zillowstatic photos): the __NEXT_DATA__ scan
+  // finds the FULL hi-res carousel, which og:image/<img> scanning would miss.
+  const zp = zillowPhotoUrls(html);
+  if (zp.length >= 3) return zp;
+  if (isZillow) throw new Error(`Zillow served a bot-check page instead of the listing. ${ZILLOW_HINT}`);
   const seen = new Set();
   const out = [];
   const push = (u) => {
@@ -121,11 +157,15 @@ exports.handler = async (event) => {
     // ── Collect candidates by source shape ──
     const tokens = String(url).split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
     let candidates;
+    let candidateCap = 40; // scraped pages stay tight to keep junk bounded
     const folderId = driveFolderId(tokens[0]);
     if (folderId) {
       candidates = await driveCandidates(folderId);
+      candidateCap = 100;
     } else if (tokens.every(t => /^https?:\/\//i.test(t) && IMAGE_EXT_RE.test(t))) {
+      // Explicit URL pastes are intentional (bookmarklet output can be 50+).
       candidates = tokens.map(t => ({ url: t, name: "" }));
+      candidateCap = 100;
     } else if (/^https?:\/\//i.test(tokens[0])) {
       candidates = await scrapePageCandidates(tokens[0]);
     } else {
@@ -133,18 +173,30 @@ exports.handler = async (event) => {
     }
 
     const existing = await listGalleryPhotos(card_id);
+    // Hashes of source URLs already imported (encoded in the stored filenames)
+    // — re-running the same link skips them instantly, so "run again to pull
+    // the rest" of a big listing works without duplicating photos.
+    const importedHashes = new Set();
+    for (const p of existing) {
+      const m = p.name.match(/-([a-f0-9]{10})-imp\./);
+      if (m) importedHashes.add(m[1]);
+    }
+    const urlHash = (u) => crypto.createHash("sha1").update(u).digest("hex").slice(0, 10);
+
     const found = candidates.length;
-    candidates = candidates.slice(0, 40); // don't even attempt a 300-image page
+    candidates = candidates.slice(0, candidateCap);
 
     // ── Download + filter + upload, concurrently, inside the time budget ──
-    const stamp = Date.now();
-    let imported = 0, skipped = 0, seq = 0;
+    let imported = 0, skipped = 0, already = 0;
     const errors = [];
     let next = 0;
     async function worker() {
       while (next < candidates.length && imported < MAX_PHOTOS) {
         if (Date.now() - started > TIME_BUDGET_MS) return;
-        const c = candidates[next++];
+        const idx = next++;
+        const c = candidates[idx];
+        const hash = urlHash(c.url);
+        if (importedHashes.has(hash)) { already++; continue; }
         try {
           const r = await fetch(c.url, {
             headers: { "User-Agent": BROWSER_UA, Accept: "image/*,*/*" },
@@ -158,8 +210,9 @@ exports.handler = async (event) => {
           const buf = Buffer.from(await r.arrayBuffer());
           if (buf.length < MIN_BYTES || buf.length > MAX_BYTES) { skipped++; continue; }
           if (imported >= MAX_PHOTOS) return;
-          const mySeq = seq++;
-          await uploadGalleryImage(card_id, `${stamp}-${String(mySeq).padStart(2, "0")}-import.${ext}`, buf, type.startsWith("image/") ? type : "image/jpeg");
+          // Deterministic name: candidate position (keeps display order) + the
+          // source-URL hash (makes re-imports idempotent via the skip above).
+          await uploadGalleryImage(card_id, `${String(idx).padStart(3, "0")}-${hash}-imp.${ext}`, buf, type.startsWith("image/") ? type : "image/jpeg");
           imported++;
         } catch (e) {
           skipped++;
@@ -170,7 +223,7 @@ exports.handler = async (event) => {
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
     const total = await syncPhotosCount(card_id);
-    if (!imported) {
+    if (!imported && !already) {
       const hint = errors.length ? ` (${errors[0]})` : "";
       return { statusCode: 422, body: JSON.stringify({ error: `Found ${found} image link${found === 1 ? "" : "s"} but none were importable${hint}. The site may block downloads — try the Drive folder or direct image links.`, found, skipped }) };
     }
@@ -178,9 +231,8 @@ exports.handler = async (event) => {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        imported, found, skipped, total,
-        partial: imported >= MAX_PHOTOS || Date.now() - started > TIME_BUDGET_MS,
-        already_had: existing.length,
+        imported, found, skipped, already, total,
+        partial: (imported >= MAX_PHOTOS || Date.now() - started > TIME_BUDGET_MS) && (imported + already) < found,
       }),
     };
   } catch (err) {

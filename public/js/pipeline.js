@@ -201,6 +201,7 @@ function openDetail(cardId) {
           <span class="pl-tag pl-tag-${p.deal_type === "morby" ? "morby" : "subto"}">${dealType}</span>
           ${p.state ? `<span class="pill pill-state">${escapeHtml(p.state)}</span>` : ""}
           ${price ? `<span class="muted" style="font-size:0.82rem">${price}</span>` : ""}
+          <a href="/dashboard.html#deal=${encodeURIComponent(p.card_id)}" style="font-size:0.82rem" title="Open this deal's full card on the Posting dashboard (terms, copy, blasts, leads)">Posting ↗</a>
           ${p.trello_url ? `<a href="${escapeHtml(p.trello_url)}" target="_blank" rel="noopener" style="font-size:0.82rem">Trello ↗</a>` : ""}
         </div>
       </div>
@@ -463,4 +464,11 @@ document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if
   document.getElementById("stages-btn").addEventListener("click", openStages);
   await loadDispoStages();
   await loadBoard();
+
+  // #deal=<card_id> deep link (Posting dashboard → this deal's detail modal).
+  const m = location.hash.match(/^#deal=(.+)$/);
+  if (m) {
+    const cardId = decodeURIComponent(m[1]);
+    if (propById[cardId]) openDetail(cardId);
+  }
 })();

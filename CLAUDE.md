@@ -41,6 +41,10 @@ modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline eit
   in the Resend dashboard.
 - `deck-dwell.js` — sendBeacon target that fills `deck_views.dwell_seconds` (view-token
   signed, only-increases).
+- `deck-link.js` — auth'd resolver behind the dashboard's 🔗 Copy-link buttons: ensures
+  `properties.deck_slug` (slugs are minted eagerly at intake; this backfills legacy cards)
+  and returns the plain or per-buyer tokenized deck URL. Slug generation is shared via
+  `lib/deck-slug.js` — never inline a second copy.
 - `parse-loi.js` — sends an LOI PDF to the Claude API, extracts Morby deal terms.
 - `parse-subto.js` / `generate-copy.js` — the Sub-To intake (Trello retired July 2026):
   contract + optional mortgage-statement PDFs → Claude extracts `deal_terms` and creates

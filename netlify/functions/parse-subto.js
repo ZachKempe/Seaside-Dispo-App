@@ -16,6 +16,7 @@ const SB_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 const { ensureDeckSlug } = require("./lib/deck-slug");
+const { int0 } = require("./lib/num");
 
 async function sb(path, opts = {}) {
   const r = await fetch(`${SB_URL}/rest/v1${path}`, {
@@ -74,13 +75,6 @@ Extract the following and return ONLY a valid JSON object — no explanation, no
   "sqft": integer or null — living area square footage, if stated,
   "year_built": integer or null — year built, if stated
 }`;
-
-// Keep the decimal point when stripping formatting: "$1,543.21" must become
-// 1543 (rounded), never 154321.
-const int0 = (v) => {
-  const n = Math.round(Number(String(v ?? "").replace(/[^\d.-]/g, "")));
-  return Number.isFinite(n) ? n : 0;
-};
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method not allowed" };

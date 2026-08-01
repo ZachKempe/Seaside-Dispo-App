@@ -17,6 +17,8 @@ const { deckToken } = require("./deck-token");
 const { deckSlug, ensureDeckSlug } = require("./deck-slug");
 const { subtoSubject, morbySubject } = require("./subjects");
 const { fetchAllRows } = require("./fetch-all");
+const { suppressedPhoneDigits } = require("./sms-optout");
+const { digitsOnly } = require("./capture");
 const { matchesDeal, buyerCashAtClose, morbyTermRows } = require("../../../public/js/deal-shared");
 
 const SB_URL = process.env.SUPABASE_URL;
@@ -598,6 +600,14 @@ async function runBlast(payload, user) {
       catch (e) { console.warn("deck PDF upload failed (SMS will omit link):", e.message); }
     }
 
+    // SMS audience gate: opted in, has a phone, and the number isn't in
+    // sms_suppressions (migration 032 — STOP replies that matched no buyer
+    // row land only there, so sms_opt_in alone can't cover them; fails soft
+    // to an empty set until the migration runs). Compared on normalized
+    // digits like every other phone match.
+    const suppressedSms = wantSms ? await suppressedPhoneDigits(sb) : new Set();
+    const smsAllowed = (b) => !!(b.sms_opt_in && b.phone && !suppressedSms.has(digitsOnly(b.phone)));
+
     // ── TEST MODE: single preview to the caller; no real buyers, no logging ──
     if (isTest) {
       if (wantEmail) {
@@ -625,8 +635,8 @@ async function runBlast(payload, user) {
           try {
             await sendSms(to, `[TEST]\n${dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms, deckUrl, wantEmail) : buildSubtoSms(prop, terms)}`);
             const smsWouldReach = targeted
-              ? matched.filter(b => b.sms_opt_in && b.phone).length
-              : matched.filter(b => b.tier === "A" && b.sms_opt_in && b.phone).length;
+              ? matched.filter(smsAllowed).length
+              : matched.filter(b => b.tier === "A" && smsAllowed(b)).length;
             result.sms = { sent: 1, failed: 0, to, would_reach: smsWouldReach };
           } catch (e) { result.sms = { sent: 0, failed: 1, error: e.message }; }
         }
@@ -695,8 +705,8 @@ async function runBlast(payload, user) {
         // Full auto blast: A-tier opted-in only (matches the old behavior).
         // Targeted: honor picks but still require opt-in + phone.
         let smsBuyers = targeted
-          ? matched.filter(b => b.sms_opt_in && b.phone)
-          : matched.filter(b => b.tier === "A" && b.sms_opt_in && b.phone);
+          ? matched.filter(smsAllowed)
+          : matched.filter(b => b.tier === "A" && smsAllowed(b));
         if (retryMode) {
           const [failed, sent] = await Promise.all([
             buyerIdsByStatus(card_id, "sms", "failed"),

@@ -11,18 +11,20 @@
 // blast_recipients). Falls back to a deal-less capture when there's no match.
 
 const { sb, markSeen, captureResponder, findBuyer, digitsOnly } = require("./lib/capture");
+const { OPT_OUT_RE, recordSmsSuppression } = require("./lib/sms-optout");
 
-// TCPA opt-out keywords (incl. the FCC's 2025 revocation list). Only matches
-// when the message IS the keyword (trailing punctuation ok) — "please don't
-// stop sending these" must not opt anyone out.
-const OPT_OUT_RE = /^\s*(stop|stop\s?all|unsubscribe|cancel|end|quit|revoke|opt\s?out)[\s.!]*$/i;
-
-// Honor an SMS opt-out: flip the buyer's sms_opt_in off (that flag is what
-// blast-core filters on) and log the touch. GHL applies its own DND too, but
-// our audience filter must not depend on it.
+// Honor an SMS opt-out: record the number in sms_suppressions (durable even
+// when no buyer row matches — an unknown number that texts STOP must never be
+// texted again), then flip the matching buyer's sms_opt_in off and log the
+// touch. blast-core's audience filter checks both. GHL applies its own DND
+// too, but our filter must not depend on it.
 async function handleOptOut(phone, text) {
+  let suppressed = false;
+  try { suppressed = await recordSmsSuppression(sb, phone); }
+  catch (e) { console.warn("sms_suppressions insert failed (migration 032 not run?):", e.message); }
+
   const buyer = await findBuyer("", phone);
-  if (!buyer) return { ok: true, optedOut: false, note: "no matching buyer" };
+  if (!buyer) return { ok: true, optedOut: suppressed, suppressed, note: "no matching buyer — suppressed by phone" };
   await sb(`/buyers?id=eq.${buyer.id}`, {
     method: "PATCH",
     headers: { Prefer: "return=minimal" },
@@ -36,7 +38,7 @@ async function handleOptOut(phone, text) {
       channel: "sms", detail: `SMS opt-out ("${text.trim().slice(0, 40)}") — sms_opt_in turned off`,
     }),
   });
-  return { ok: true, optedOut: true, buyerId: buyer.id };
+  return { ok: true, optedOut: true, suppressed, buyerId: buyer.id };
 }
 
 // Most recent SMS blast sent to this phone in the last 7 days -> its deal.

@@ -105,6 +105,27 @@ exports.handler = async (event) => {
       });
     }
 
+    // Hard (permanent) bounce = the address is undeliverable; every further
+    // send to it damages sender reputation. Stamp the buyer so the blast
+    // audience filters skip them. Transient bounces (mailbox full, greylisting)
+    // are left alone.
+    if (kind === "bounced" && buyerId) {
+      const bounceType = String((data.bounce && data.bounce.type) || "").toLowerCase();
+      if (bounceType !== "transient") {
+        try {
+          await sb(`/buyers?id=eq.${buyerId}`, {
+            method: "PATCH",
+            headers: { Prefer: "return=minimal" },
+            body: JSON.stringify({ email_bounced_at: new Date().toISOString() }),
+          });
+        } catch (e) {
+          // Fail soft until migration 031 adds the column — the email_events
+          // row above is already stored either way.
+          console.warn("bounce suppression skipped (031 not run?):", e.message);
+        }
+      }
+    }
+
     return { statusCode: 200, body: "ok" };
   } catch (err) {
     console.error("resend-events error:", err.message);

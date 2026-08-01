@@ -410,13 +410,16 @@ async function loadAll() {
   // blast × buyer), so pulling whole tables gets slow at scale — we only
   // ever need rows for the active cards on screen.
   const cardIds = (props || []).map(p => p.card_id);
-  const [{ data: terms }, { data: statuses }, { data: fbPosts }, { data: buyers }, { data: leads }, { data: blasts }, { data: acq }, { data: morby }, { data: recips }, { data: deckViews }, { data: emailEvents }, { data: tasks }, { data: activities }] = await Promise.all([
+  const [{ data: terms, error: termsErr }, { data: statuses, error: statusesErr }, { data: fbPosts, error: fbErr }, { data: buyers, error: buyersErr }, { data: leads, error: leadsErr }, { data: blasts, error: blastsErr }, { data: acq, error: acqErr }, { data: morby, error: morbyErr }, { data: recips, error: recipsErr }, { data: deckViews }, { data: emailEvents }, { data: tasks }, { data: activities, error: actErr }] = await Promise.all([
     supa.from("deal_terms").select("*").in("card_id", cardIds),
     supa.from("property_status").select("*").in("card_id", cardIds),
     supa.from("facebook_posts").select("*").in("card_id", cardIds),
     // Paged (F3): this is the blast-preview audience — must be complete, or
     // the preview understates who a live send reaches past 1,000 buyers.
-    fetchAllRows(() => supa.from("buyers").select("id,name,email,phone,tier,states,strategy,sms_opt_in,max_price,max_piti,min_beds,email_opt_out").eq("active", true).order("id")),
+    // email_bounced_at (031) feeds bounce suppression; falls back to the
+    // pre-031 column set so the board still loads before the migration runs.
+    fetchAllRows(() => supa.from("buyers").select("id,name,email,phone,tier,states,strategy,sms_opt_in,max_price,max_piti,min_beds,email_opt_out,email_bounced_at").eq("active", true).order("id"))
+      .then(r => r.error ? fetchAllRows(() => supa.from("buyers").select("id,name,email,phone,tier,states,strategy,sms_opt_in,max_price,max_piti,min_beds,email_opt_out").eq("active", true).order("id")) : r),
     supa.from("deal_leads").select("*").in("card_id", cardIds).order("updated_at", { ascending: false }),
     supa.from("deal_blasts").select("card_id,channel,status,detail,variation_index,variation_title,blasted_at").in("card_id", cardIds),
     supa.from("deal_acquisition").select("*").in("card_id", cardIds),
@@ -446,6 +449,21 @@ async function loadAll() {
     content.innerHTML = `<div class="empty">Couldn't load properties: ${escapeHtml(pErr.message)}</div>`;
     return;
   }
+  // H10: a failed buyers query must never render as an empty audience — with
+  // zero buyers every blast preview would show 0 matches while a live send
+  // (which refetches server-side) would still reach everyone.
+  if (buyersErr) {
+    content.innerHTML = `<div class="empty">Couldn't load buyers: ${escapeHtml(buyersErr.message)}<br>Refusing to show the board — blast previews would wrongly show an empty audience. <a href="#" onclick="location.reload();return false">Reload</a>.</div>`;
+    return;
+  }
+  // Everything else degrades to a visible warning (kept out of this list: the
+  // queries that intentionally fail soft before their migration runs —
+  // deal_tasks 027, email_events 026, deck_views 030, dispo stages 022).
+  const loadErrors = [
+    ["deal terms", termsErr], ["statuses", statusesErr], ["FB posts", fbErr],
+    ["leads", leadsErr], ["blast log", blastsErr], ["acquisition info", acqErr],
+    ["Morby terms", morbyErr], ["send ledger", recipsErr], ["buyer activity", actErr],
+  ].filter(([, e]) => e);
 
   const termsByCard = Object.fromEntries((terms || []).map(t => [t.card_id, t]));
   const statusByCard = Object.fromEntries((statuses || []).map(s => [s.card_id, s]));
@@ -475,6 +493,7 @@ async function loadAll() {
     activities: activities || [],
     termsByCard, statusByCard, fbByCard, leadsByCard, blastsByCard, recipsByCard,
     viewsByCard, eventsByCard, acqByCard, morbyByCard, tasksByCard,
+    loadErrors,
   };
   renderBoard();
 }
@@ -536,7 +555,12 @@ function renderBoard() {
   const noMatch = `<div class="empty">No deals match the current search/filter — <a href="#" class="deal-clear-filters">clear filters</a>.</div>`;
   const stack = (cards) => `<div style="display:flex;flex-direction:column;gap:12px">${cards.map(renderArgs).join("")}</div>`;
 
+  const loadErrorBanner = (boardData.loadErrors || []).length
+    ? `<div class="card" style="margin-bottom:14px;padding:10px 14px;border-left:4px solid #C53030;background:#FFF5F5;color:#742A2A;font-size:0.85rem"><strong>⚠ Some data failed to load:</strong> ${boardData.loadErrors.map(([name, e]) => `${escapeHtml(name)} (${escapeHtml(e.message || String(e))})`).join(" · ")}. Counts and previews on this board may be wrong — reload before sending anything.</div>`
+    : "";
+
   content.innerHTML = `
+    ${loadErrorBanner}
     ${renderCallList(buildCallList(props, leads, deckViews, buyers, activities))}
     <div class="card" id="deal-triage" style="padding:10px 14px;margin-bottom:14px;display:flex;gap:8px;row-gap:8px;flex-wrap:wrap;align-items:center">
       <input type="search" id="deal-search" placeholder="Search address or state…" value="${escapeHtml(dealView.query)}" style="flex:1 1 200px;max-width:320px;padding:6px 10px;border:1px solid var(--border,#CBD5E0);border-radius:8px;font-size:0.85rem">
@@ -3325,7 +3349,7 @@ async function runBlast({ test }) {
     const RESEND_FREE_DAILY_LIMIT = 100;
     const idSet = buyerIds ? new Set(buyerIds) : null;
     const emailAudience = channels.includes("email")
-      ? activeBlast.matched.filter(b => (!idSet || idSet.has(Number(b.id))) && b.email && !b.email_opt_out).length
+      ? activeBlast.matched.filter(b => (!idSet || idSet.has(Number(b.id))) && b.email && !b.email_opt_out && !b.email_bounced_at).length
       : 0;
     const budgetWarning = emailAudience > RESEND_FREE_DAILY_LIMIT
       ? `\n\n⚠️ Resend free tier: only ~${RESEND_FREE_DAILY_LIMIT} of these ${emailAudience} emails can send today — the rest will log as failed. Use "↻ Retry failed" tomorrow to finish, or upgrade Resend.`

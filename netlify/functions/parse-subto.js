@@ -75,8 +75,10 @@ Extract the following and return ONLY a valid JSON object — no explanation, no
   "year_built": integer or null — year built, if stated
 }`;
 
+// Keep the decimal point when stripping formatting: "$1,543.21" must become
+// 1543 (rounded), never 154321.
 const int0 = (v) => {
-  const n = parseInt(String(v ?? "").replace(/[^\d-]/g, ""), 10);
+  const n = Math.round(Number(String(v ?? "").replace(/[^\d.-]/g, "")));
   return Number.isFinite(n) ? n : 0;
 };
 

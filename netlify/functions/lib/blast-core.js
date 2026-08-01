@@ -379,6 +379,13 @@ function buildMorbySms(prop, morby, deckUrl, alsoEmailed) {
   return lines.join("\n");
 }
 
+// Sub-To SMS body: the shared deal copy plus the opt-out line SMS marketing
+// requires. Kept out of buildDealCopyText itself because that text is also
+// the email body, where "Reply STOP" makes no sense.
+function buildSubtoSms(prop, terms) {
+  return buildDealCopyText(prop, terms) + `\nReply STOP to opt out.`;
+}
+
 // ── Gmail fallback ────────────────────────────────────────────────
 async function gmailAccessToken() {
   const r = await fetch("https://oauth2.googleapis.com/token", {
@@ -519,6 +526,12 @@ async function runBlast(payload, user) {
       ? (buyers || []).filter(b => targetIdSet.has(Number(b.id)))
       : (buyers || []).filter(b => matchesDeal(b, dealStrategy, prop.state, price, piti, beds));
 
+    // Email audience gate: has an address, hasn't opted out, and hasn't hard-
+    // bounced (email_bounced_at, migration 031 — undefined before it runs,
+    // which keeps the filter a no-op). Dashboard preview applies the same
+    // three conditions.
+    const emailable = (b) => b.email && !b.email_opt_out && !b.email_bounced_at;
+
     const result = { email: null, sms: null, test: isTest, targeted, retry: retryMode, esp: useResend ? "resend" : "gmail" };
 
     // R3 ledger rows are flushed incrementally (per email chunk / every few
@@ -591,7 +604,7 @@ async function runBlast(payload, user) {
         const to = test_email || user.email;
         const { subject, html } = buildEmail(unsubUrlFor("preview"), null, `${SITE_URL}/deck/${deckSlugVal}?b=preview`);
         const testSubject = `[TEST] ${subject}`;
-        const banner = `<div style="background:#FEEBC8;color:#7B341E;padding:10px 16px;font:600 13px Arial;border-radius:8px 8px 0 0">⚠️ TEST SEND — preview only, sent to ${escapeHtml(to)}, would normally go to ${matched.filter(b => b.email && !b.email_opt_out).length} matching buyer(s)</div>`;
+        const banner = `<div style="background:#FEEBC8;color:#7B341E;padding:10px 16px;font:600 13px Arial;border-radius:8px 8px 0 0">⚠️ TEST SEND — preview only, sent to ${escapeHtml(to)}, would normally go to ${matched.filter(emailable).length} matching buyer(s)</div>`;
         if (!to) {
           result.email = { sent: 0, failed: 1, error: "no test email address available" };
         } else if (!useResend && (!GMAIL_CLIENT_ID || !GMAIL_REFRESH_TOKEN)) {
@@ -600,7 +613,7 @@ async function runBlast(payload, user) {
           try {
             if (useResend) await sendViaResend(to, testSubject, banner + html, null, pdfAttachments);
             else await sendViaGmail(await gmailAccessToken(), to, testSubject, banner + html, null);
-            result.email = { sent: 1, failed: 0, to, would_reach: matched.filter(b => b.email && !b.email_opt_out).length };
+            result.email = { sent: 1, failed: 0, to, would_reach: matched.filter(emailable).length };
           } catch (e) { result.email = { sent: 0, failed: 1, error: e.message }; }
         }
       }
@@ -610,7 +623,7 @@ async function runBlast(payload, user) {
         else if (!to) result.sms = { sent: 0, failed: 1, error: "no test phone number available" };
         else {
           try {
-            await sendSms(to, `[TEST]\n${dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms, deckUrl, wantEmail) : buildDealCopyText(prop, terms)}`);
+            await sendSms(to, `[TEST]\n${dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms, deckUrl, wantEmail) : buildSubtoSms(prop, terms)}`);
             const smsWouldReach = targeted
               ? matched.filter(b => b.sms_opt_in && b.phone).length
               : matched.filter(b => b.tier === "A" && b.sms_opt_in && b.phone).length;
@@ -631,7 +644,7 @@ async function runBlast(payload, user) {
       if (!useResend && (!GMAIL_CLIENT_ID || !GMAIL_REFRESH_TOKEN)) {
         result.email = { sent: 0, failed: 0, error: "No email provider configured" };
       } else {
-        let emailBuyers = matched.filter(b => b.email && !b.email_opt_out);
+        let emailBuyers = matched.filter(emailable);
         // R3: recipient-level idempotency. A normal full blast skips anyone
         // already 'sent'; retry mode targets only prior failures.
         if (retryMode) {
@@ -699,7 +712,7 @@ async function runBlast(payload, user) {
           result.sms = { sent: 0, failed: 0, note: retryMode ? "no failed texts to retry" : "no new opted-in buyers with a phone" };
         } else {
           let sent = 0, failed = 0;
-          const message = dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms, deckUrl, wantEmail) : buildDealCopyText(prop, terms);
+          const message = dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms, deckUrl, wantEmail) : buildSubtoSms(prop, terms);
           for (const b of smsBuyers) {
             const perMsg = message + `\n\nView deal & respond: ${deckPageUrl(b.id, "sms")}`;
             try {

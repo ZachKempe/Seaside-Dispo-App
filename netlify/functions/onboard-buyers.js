@@ -23,7 +23,10 @@ const GMAIL_FROM_ADDRESS = process.env.GMAIL_FROM_ADDRESS || "";
 const GMAIL_FROM_NAME = process.env.GMAIL_FROM_NAME || "Seaside Horizon";
 const GMAIL_REPLY_TO = process.env.GMAIL_REPLY_TO || GMAIL_FROM_ADDRESS;
 
-const FORM_URL = process.env.BUYER_FORM_URL || "https://nimble-scone-f6b3c4.netlify.app/";
+// Default = the live buyer questionnaire (the site NETLIFY_FORMS_SITE_ID
+// points at, same URL buyers.html shares). The old nimble-scone-f6b3c4
+// default 404s — never point back at it.
+const FORM_URL = process.env.BUYER_FORM_URL || "https://seaside-buyer-questionnaire.netlify.app/";
 const LOGO_URL = "https://seaside-dispo-app.netlify.app/img/logo.png";
 const BRAND_NAVY = "#1B3A6B";
 const BRAND_NAVY_DARK = "#112950";

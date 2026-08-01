@@ -150,4 +150,4 @@ async function captureResponder({ channel, name, email, phone, cardId, address, 
   return { ok: true, buyerId: buyer.id, isNewBuyer, leadCreated, leadBumped };
 }
 
-module.exports = { sb, markSeen, captureResponder, digitsOnly };
+module.exports = { sb, markSeen, captureResponder, findBuyer, digitsOnly };

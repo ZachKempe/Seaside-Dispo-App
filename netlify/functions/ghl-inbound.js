@@ -10,7 +10,34 @@
 // deal we most recently texted this phone number about (7-day window, via
 // blast_recipients). Falls back to a deal-less capture when there's no match.
 
-const { sb, markSeen, captureResponder, digitsOnly } = require("./lib/capture");
+const { sb, markSeen, captureResponder, findBuyer, digitsOnly } = require("./lib/capture");
+
+// TCPA opt-out keywords (incl. the FCC's 2025 revocation list). Only matches
+// when the message IS the keyword (trailing punctuation ok) — "please don't
+// stop sending these" must not opt anyone out.
+const OPT_OUT_RE = /^\s*(stop|stop\s?all|unsubscribe|cancel|end|quit|revoke|opt\s?out)[\s.!]*$/i;
+
+// Honor an SMS opt-out: flip the buyer's sms_opt_in off (that flag is what
+// blast-core filters on) and log the touch. GHL applies its own DND too, but
+// our audience filter must not depend on it.
+async function handleOptOut(phone, text) {
+  const buyer = await findBuyer("", phone);
+  if (!buyer) return { ok: true, optedOut: false, note: "no matching buyer" };
+  await sb(`/buyers?id=eq.${buyer.id}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({ sms_opt_in: false }),
+  });
+  await sb(`/buyer_activity`, {
+    method: "POST",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify({
+      buyer_id: buyer.id, card_id: "", address: "",
+      channel: "sms", detail: `SMS opt-out ("${text.trim().slice(0, 40)}") — sms_opt_in turned off`,
+    }),
+  });
+  return { ok: true, optedOut: true, buyerId: buyer.id };
+}
 
 // Most recent SMS blast sent to this phone in the last 7 days -> its deal.
 // Phones are stored in varied formats, so match on digits in code.
@@ -52,6 +79,12 @@ exports.handler = async (event) => {
     const messageId = b.messageId || b.message_id || b.id || `ghl-${phone}-${text}`.slice(0, 180);
     const fresh = await markSeen(messageId, "sms");
     if (!fresh) return { statusCode: 200, body: "duplicate — ignored" };
+
+    // STOP etc. is a compliance action, not a lead — never capture it as one.
+    if (OPT_OUT_RE.test(text)) {
+      const res = await handleOptOut(phone, text);
+      return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(res) };
+    }
 
     const recent = await dealRecentlyTexted(phone);
     const res = await captureResponder({

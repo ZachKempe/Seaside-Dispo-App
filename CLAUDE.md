@@ -36,7 +36,8 @@ modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline eit
   AND soft offers into `deal_leads` (`source='deck_page'`; an offer amount sets
   `stage='offer'`, plain interest never downgrades an existing offer). Every hand-raise
   sends two emails: the 🔥 alert to `NOTIFY_EMAIL`, and an instant receipt to the investor
-  (deck link + PDF + `CALENDLY_URL` booking button, content in `lib/interest-receipt.js`).
+  (deck link + PDF + a booking button that always renders, content in
+  `lib/interest-receipt.js`).
   The receipt is best-effort — it can never fail the lead capture — and is skipped for
   hard-bounced buyers and for untokenized contacts that aren't an email address. It's
   tagged with `buyer_id` but deliberately **not** `card_id`, so a complaint still suppresses
@@ -156,8 +157,11 @@ Push to `main` deploys via Netlify. Key env vars (set in Netlify): `SUPABASE_URL
 `GMAIL_*` (fallback sender + reply capture), `GHL_*` (SMS),
 `ANTHROPIC_API_KEY` (LOI/contract parsing + copy generation), `PUBLIC_SITE_URL`, `UNSUB_SECRET`, `DECK_TOKEN_SECRET`,
 `NOTIFY_EMAIL` (interest + sync-failure alerts), `GOOGLE_MAPS_API_KEY` (deck photo fallback),
-`CAPTURE_WEBHOOK_SECRET` (GHL webhook), `CALENDLY_URL` (booking button on the deck-page
-interest receipt — the button is omitted when unset).
+`CAPTURE_WEBHOOK_SECRET` (GHL webhook), `CALENDLY_URL` (**optional** override for the
+booking button on the deck-page interest receipt — `lib/interest-receipt.js` hardcodes
+`DEFAULT_CALENDLY_URL` as the fallback, so the button renders whether or not this is set.
+Relying on the env var alone silently stripped the button from live receipts once, because
+Netlify only injects env vars into functions at deploy time).
 
 ## Conventions
 

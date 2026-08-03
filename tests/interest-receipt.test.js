@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { emailish, firstNameOf, receiptSubject, buildReceiptHtml } =
+const { emailish, firstNameOf, receiptSubject, buildReceiptHtml,
+        resolveCalendlyUrl, DEFAULT_CALENDLY_URL } =
   require("../netlify/functions/lib/interest-receipt");
 
 const base = {
@@ -63,15 +64,43 @@ test("the PDF button only renders when a PDF URL is supplied", () => {
   assert.ok(withPdf.includes("https://x.test/deck/s.pdf"));
 });
 
-test("the booking button only renders when a Calendly URL is configured", () => {
-  assert.ok(!buildReceiptHtml(base).includes("Book a call"));
-  const withCal = buildReceiptHtml({ ...base, calendlyUrl: "https://calendly.com/zach/15min" });
-  assert.ok(withCal.includes("Book a call"));
-  assert.ok(withCal.includes("https://calendly.com/zach/15min"));
+// ── the booking button ──────────────────────────────────────────────
+// REGRESSION: this shipped relying on CALENDLY_URL alone. The env var was set
+// in Netlify after the deploy, Netlify only injects env into functions at
+// deploy time, and live receipts went out with no booking button and no error
+// anywhere. The button must now be unconditional.
+test("the booking button renders even with NO calendly URL supplied at all", () => {
+  for (const missing of [{}, { calendlyUrl: "" }, { calendlyUrl: null }, { calendlyUrl: undefined }]) {
+    const html = buildReceiptHtml({ ...base, ...missing });
+    assert.ok(html.includes("Book a call"), JSON.stringify(missing));
+    assert.ok(html.includes(DEFAULT_CALENDLY_URL), JSON.stringify(missing));
+  }
 });
 
-test("the closing line points at the booking link only when there is one", () => {
-  assert.match(buildReceiptHtml(base), /Just reply to this email/);
+test("a configured Calendly URL overrides the default", () => {
+  const html = buildReceiptHtml({ ...base, calendlyUrl: "https://calendly.com/other/15min" });
+  assert.ok(html.includes("https://calendly.com/other/15min"));
+  assert.ok(!html.includes(DEFAULT_CALENDLY_URL));
+});
+
+// A bare "calendly.com/x" with no scheme would render as a relative link and
+// 404 inside the email client. Fall back rather than ship a broken button.
+test("a malformed Calendly URL falls back to the default, never to nothing", () => {
+  for (const bad of ["calendly.com/zach", "http://calendly.com/zach", "not a url", "   ", "javascript:alert(1)"]) {
+    assert.equal(resolveCalendlyUrl(bad), DEFAULT_CALENDLY_URL, bad);
+  }
+});
+
+test("resolveCalendlyUrl trims surrounding whitespace off a good URL", () => {
+  assert.equal(resolveCalendlyUrl("  https://calendly.com/zach/30min  "), "https://calendly.com/zach/30min");
+});
+
+test("the default is a well-formed https Calendly URL", () => {
+  assert.match(DEFAULT_CALENDLY_URL, /^https:\/\/calendly\.com\/[\w-]+\/[\w-]+$/);
+});
+
+test("the closing line always points at the booking link", () => {
+  assert.match(buildReceiptHtml(base), /Grab a time above/);
   assert.match(buildReceiptHtml({ ...base, calendlyUrl: "https://c.test/z" }), /Grab a time above/);
 });
 

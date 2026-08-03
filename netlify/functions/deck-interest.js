@@ -13,7 +13,10 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const RESEND_FROM = process.env.RESEND_FROM || "";
 const NOTIFY_EMAIL = process.env.NOTIFY_EMAIL || process.env.GMAIL_FROM_ADDRESS || "";
 const SITE_URL = (process.env.PUBLIC_SITE_URL || "https://seaside-dispo-app.netlify.app").replace(/\/+$/, "");
+// Passed through raw — lib/interest-receipt.js resolves blank/malformed values
+// to a working default, so the booking button survives a missing env var.
 const CALENDLY_URL = process.env.CALENDLY_URL || "";
+
 const CONTACT_NAME = process.env.MARKETING_CONTACT_NAME || "Seaside Horizon";
 const CONTACT_PHONE = process.env.MARKETING_CONTACT_PHONE || "";
 

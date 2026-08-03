@@ -511,7 +511,13 @@ exports.handler = async (event) => {
         window.addEventListener("pagehide", flushDwell);
         async function post(payload){
           const r = await fetch("/.netlify/functions/deck-interest",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-          return r.ok;
+          if(!r.ok) return null;
+          try { return await r.json(); } catch(_) { return {}; }
+        }
+        // Only promise an email when one actually went out (res.receipt).
+        function doneMsg(res,isOffer){
+          if(isOffer) return res.receipt?"✓ Offer sent — the deal details are in your inbox":"✓ Offer sent — we\\'ll be in touch shortly";
+          return res.receipt?"✓ Got it — the deal details are in your inbox":null;
         }
         function markDone(msg){
           const bar=document.querySelector(".inner");
@@ -536,7 +542,7 @@ exports.handler = async (event) => {
         if(btn){
           btn.addEventListener("click", async ()=>{
             if(HAS_BUYER){ btn.disabled=true; btn.textContent="Sending…";
-              const ok=await post({slug:SLUG,token:TOKEN}); ok?markDone():(btn.disabled=false,btn.textContent="Try again");
+              const res=await post({slug:SLUG,token:TOKEN}); res?markDone(doneMsg(res,false)):(btn.disabled=false,btn.textContent="Try again");
             } else { openDialog(false); }
           });
         }
@@ -553,8 +559,8 @@ exports.handler = async (event) => {
             if(offerMode){ if(!amount) return; payload.offer_amount=amount; }
             if(HAS_BUYER){ payload.token=TOKEN; }
             else { if(!name||!contact) return; payload.name=name; payload.contact=contact; }
-            const ok=await post(payload); dlg.close();
-            if(ok) markDone(offerMode?"✓ Offer sent — we\\'ll be in touch shortly":null);
+            const res=await post(payload); dlg.close();
+            if(res) markDone(doneMsg(res,offerMode));
           };
         }
       </script>`;

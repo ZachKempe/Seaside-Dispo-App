@@ -34,7 +34,13 @@ modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline eit
   idempotency via `blast_recipients` (full blasts skip prior `sent`; retry mode targets `failed`).
 - `deck.js` / `deck-interest.js` — render the deal page, log `deck_views`, capture interest
   AND soft offers into `deal_leads` (`source='deck_page'`; an offer amount sets
-  `stage='offer'`, plain interest never downgrades an existing offer).
+  `stage='offer'`, plain interest never downgrades an existing offer). Every hand-raise
+  sends two emails: the 🔥 alert to `NOTIFY_EMAIL`, and an instant receipt to the investor
+  (deck link + PDF + `CALENDLY_URL` booking button, content in `lib/interest-receipt.js`).
+  The receipt is best-effort — it can never fail the lead capture — and is skipped for
+  hard-bounced buyers and for untokenized contacts that aren't an email address. It's
+  tagged with `buyer_id` but deliberately **not** `card_id`, so a complaint still suppresses
+  the buyer while a receipt open stays out of per-deal blast metrics.
 - `resend-events.js` — Resend webhook (svix-verified) for email opens/clicks/bounces/
   complaints → `email_events`, attributed via the buyer_id/card_id tags send-blast sets;
   complaints auto-set `email_opt_out`. Needs `RESEND_WEBHOOK_SECRET` + a webhook configured
@@ -111,6 +117,7 @@ the "Call today" strip from leads + recent deck views, and the follow-up nudge
 (`followUpInfo`) from non-engaged blast recipients 48h+ after a send. A follow-up send is
 marked `[follow-up]` in `deal_blasts.detail` — that marker is what caps it at one per deal. Other cross-function helpers live in `netlify/functions/lib/` (`capture.js`,
 `deck-token.js`, `deck-photo.js`, `heartbeat.js`, `ghl-sms.js`, `unsub.js`,
+`interest-receipt.js`,
 `onboard-sequence.js`). `unsub.js` owns both minting and verifying the unsubscribe token —
 they must agree or live links in already-sent email break (pinned in `tests/unsub.test.js`).
 
@@ -149,7 +156,8 @@ Push to `main` deploys via Netlify. Key env vars (set in Netlify): `SUPABASE_URL
 `GMAIL_*` (fallback sender + reply capture), `GHL_*` (SMS),
 `ANTHROPIC_API_KEY` (LOI/contract parsing + copy generation), `PUBLIC_SITE_URL`, `UNSUB_SECRET`, `DECK_TOKEN_SECRET`,
 `NOTIFY_EMAIL` (interest + sync-failure alerts), `GOOGLE_MAPS_API_KEY` (deck photo fallback),
-`CAPTURE_WEBHOOK_SECRET` (GHL webhook).
+`CAPTURE_WEBHOOK_SECRET` (GHL webhook), `CALENDLY_URL` (booking button on the deck-page
+interest receipt — the button is omitted when unset).
 
 ## Conventions
 

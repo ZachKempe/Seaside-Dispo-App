@@ -184,6 +184,27 @@ booking button on the deck-page interest receipt — `lib/interest-receipt.js` h
 Relying on the env var alone silently stripped the button from live receipts once, because
 Netlify only injects env vars into functions at deploy time).
 
+### Env vars are per-context — deploy previews cannot send email
+
+Verified 2026-08-03 with `netlify env:list --context <ctx>`: **`RESEND_API_KEY` has a value
+only in the `production` context — it is EMPTY in `deploy-preview`, `branch-deploy` and
+`dev`.** Every Resend caller guards on it (`if (!RESEND_API_KEY || !RESEND_FROM …) return`)
+and those guards return *before* any logging, so on a preview email simply doesn't happen and
+nothing says so: `deck-interest.js` reports `receipt:false`, no 🔥 alert arrives, the function
+log is clean. **Do not read that as a bug, and never try to verify email behavior on a deploy
+preview** — DB writes, dedupe and lead capture all work there (previews share the production
+Supabase), but email can only be observed in production. To check which provider production is
+actually using, run a 🧪 test blast: the result reports `esp: "resend"` or `"gmail"`, and
+`gmail` means Resend is silently falling back and receipts/alerts are dead.
+
+Also currently unset in **every** context, despite being listed above: `NOTIFY_EMAIL` (so the
+🔥 interest and sync-failure alerts fall back to `GMAIL_FROM_ADDRESS`, i.e.
+zach@seasidehorizon.com — check that inbox, not the gmail.com one), `DECK_TOKEN_SECRET` and
+`PUBLIC_SITE_URL`. The last two have code fallbacks so nothing is broken, but ⚠ **never set
+`DECK_TOKEN_SECRET` now** — `deck-token.js` currently falls through to `UNSUB_SECRET`, and
+changing the signing secret invalidates every per-buyer deck token already sitting in a sent
+email.
+
 ## Conventions
 
 - Escape everything rendered into HTML (`escapeHtml` client-side, `esc` in `deck.js`).

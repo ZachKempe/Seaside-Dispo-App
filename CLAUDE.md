@@ -42,6 +42,13 @@ modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline eit
   hard-bounced buyers and for untokenized contacts that aren't an email address. It's
   tagged with `buyer_id` but deliberately **not** `card_id`, so a complaint still suppresses
   the buyer while a receipt open stays out of per-deal blast metrics.
+  An **untokenized** hand-raise (a forwarded link) also becomes a `buyers` row
+  (`list_source='deck_page'`, `sms_opt_in` false — a deck tap is not SMS consent;
+  `onboarded_at` left null so the buy-box sequence picks them up). `lib/contact.js`
+  decides whether the one free-text contact field is an email or a US phone; when it's
+  neither, the lead is still recorded and **no** buyer is created. The whole buyer step is
+  wrapped so any failure degrades to the old buyer-less behavior — never lose the lead to
+  gain a buyer. A soft-deleted match is restored (`restoreRemoved`) and the 🔥 alert says so.
 - `resend-events.js` — Resend webhook (svix-verified) for email opens/clicks/bounces/
   complaints → `email_events`, attributed via the buyer_id/card_id tags send-blast sets;
   complaints auto-set `email_opt_out`. Needs `RESEND_WEBHOOK_SECRET` + a webhook configured
@@ -118,14 +125,28 @@ the "Call today" strip from leads + recent deck views, and the follow-up nudge
 (`followUpInfo`) from non-engaged blast recipients 48h+ after a send. A follow-up send is
 marked `[follow-up]` in `deal_blasts.detail` — that marker is what caps it at one per deal. Other cross-function helpers live in `netlify/functions/lib/` (`capture.js`,
 `deck-token.js`, `deck-photo.js`, `heartbeat.js`, `ghl-sms.js`, `unsub.js`,
-`interest-receipt.js`,
+`interest-receipt.js`, `contact.js`, `buyer-intake.js`,
 `onboard-sequence.js`). `unsub.js` owns both minting and verifying the unsubscribe token —
 they must agree or live links in already-sent email break (pinned in `tests/unsub.test.js`).
 
 Buyer records are deduped on **digits-only phone / lower-cased email** — the CSV importer
 (`classifyImport`) and the Add Buyer form (`findDuplicateBuyer`) must keep using the same
 keys, and the form additionally checks soft-deleted rows so a removed buyer is restored
-rather than duplicated.
+rather than duplicated. Server-side, `findOrCreateBuyer` in `lib/capture.js` is the **only**
+find-or-create implementation — inbound replies (`captureResponder`) and deck-page
+hand-raises (`deck-interest.js`) both go through it. Never add a second one.
+
+The public buy-box questionnaire is parsed by `lib/buyer-intake.js` (`parseStates`,
+`parseStrategy`, `parseMaxPrice`). Two things it must keep doing: the strategy pills are
+**multi-select**, so a buyer who picks several structures is stored as the comma list
+`matchesDeal` already understands (`"subto,cash"`) — collapsing to one silently stops them
+receiving deal types they asked for; and `cash_max_price` must land in `max_price`, or a
+fully-answered cash buyer stays `partial` and `onboard-buyers.js` keeps asking them for a
+box they already gave. `sf_max_down` is a **down-payment** cap and must never become
+`max_price`. ⚠ A near-identical copy of this parsing lives in the separate, drag-and-drop
+deployed buyer-form repo (`~/seaside-buyer-form/netlify/functions/submit-buyer.js`), which
+inserts directly and wins the race against the 5-minute `sync-buyers` poll — change both
+together or live submissions land differently depending on which writer got there first.
 
 Scheduled functions must log every run through `lib/heartbeat.js` → `sync_runs` (powers the
 dashboard "✓ synced" indicator and the consecutive-failure email alert).
@@ -162,6 +183,27 @@ booking button on the deck-page interest receipt — `lib/interest-receipt.js` h
 `DEFAULT_CALENDLY_URL` as the fallback, so the button renders whether or not this is set.
 Relying on the env var alone silently stripped the button from live receipts once, because
 Netlify only injects env vars into functions at deploy time).
+
+### Env vars are per-context — deploy previews cannot send email
+
+Verified 2026-08-03 with `netlify env:list --context <ctx>`: **`RESEND_API_KEY` has a value
+only in the `production` context — it is EMPTY in `deploy-preview`, `branch-deploy` and
+`dev`.** Every Resend caller guards on it (`if (!RESEND_API_KEY || !RESEND_FROM …) return`)
+and those guards return *before* any logging, so on a preview email simply doesn't happen and
+nothing says so: `deck-interest.js` reports `receipt:false`, no 🔥 alert arrives, the function
+log is clean. **Do not read that as a bug, and never try to verify email behavior on a deploy
+preview** — DB writes, dedupe and lead capture all work there (previews share the production
+Supabase), but email can only be observed in production. To check which provider production is
+actually using, run a 🧪 test blast: the result reports `esp: "resend"` or `"gmail"`, and
+`gmail` means Resend is silently falling back and receipts/alerts are dead.
+
+Also currently unset in **every** context, despite being listed above: `NOTIFY_EMAIL` (so the
+🔥 interest and sync-failure alerts fall back to `GMAIL_FROM_ADDRESS`, i.e.
+zach@seasidehorizon.com — check that inbox, not the gmail.com one), `DECK_TOKEN_SECRET` and
+`PUBLIC_SITE_URL`. The last two have code fallbacks so nothing is broken, but ⚠ **never set
+`DECK_TOKEN_SECRET` now** — `deck-token.js` currently falls through to `UNSUB_SECRET`, and
+changing the signing secret invalidates every per-buyer deck token already sitting in a sent
+email.
 
 ## Conventions
 

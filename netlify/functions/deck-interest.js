@@ -1,11 +1,19 @@
 // POST { slug, token?, name?, contact? } — records buyer interest from the deck
 // page. Tokenized => attributed to the buyer; otherwise an external lead.
 //
+// C1: an UNtokenized hand-raise (a forwarded link — someone who was never on
+// the list) also becomes a buyers row. That is the growth channel; before this
+// it wrote a buyer_id-less lead and the person was never heard from again.
+// Buyer resolution is strictly best-effort — the lead and the investor's
+// success screen never depend on it.
+//
 // Two emails go out on every hand-raise: the 🔥 alert to NOTIFY_EMAIL (you),
 // and an instant receipt to the investor (H4) carrying the deck link, the PDF
 // and a booking link. Neither can fail the interest capture — both swallow.
 const { verifyDeckToken, deckToken } = require("./lib/deck-token");
 const { emailish, firstNameOf, receiptSubject, buildReceiptHtml } = require("./lib/interest-receipt");
+const { parseContact } = require("./lib/contact");
+const { findOrCreateBuyer } = require("./lib/capture");
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -36,7 +44,9 @@ async function sb(path, opts = {}) {
 const ADVANCEABLE = new Set(["new", "responded"]);              // plain interest never downgrades offer/UC/closed
 const OFFER_ADVANCEABLE = new Set(["new", "responded", "interested"]); // a real offer beats mere interest
 
-async function notify(address, who, offer) {
+// `listNote` reports what C1 did to the buyer list (added / restored someone
+// you had removed). A restore must never be silent.
+async function notify(address, who, offer, listNote) {
   if (!RESEND_API_KEY || !RESEND_FROM || !NOTIFY_EMAIL) return;
   try {
     const what = offer ? `Offer ~$${offer.toLocaleString()}` : "Interested";
@@ -46,7 +56,8 @@ async function notify(address, who, offer) {
       body: JSON.stringify({
         from: RESEND_FROM, to: [NOTIFY_EMAIL],
         subject: `🔥 ${what}: ${who} — ${address}`,
-        html: `<p><b>${esc(who)}</b> ${offer ? `made an offer of <b>~$${offer.toLocaleString()}</b> on` : "tapped Interested on"} <b>${esc(address)}</b> via the deck page. Call them now.</p>`,
+        html: `<p><b>${esc(who)}</b> ${offer ? `made an offer of <b>~$${offer.toLocaleString()}</b> on` : "tapped Interested on"} <b>${esc(address)}</b> via the deck page. Call them now.</p>`
+          + (listNote ? `<p style="color:#2F855A"><b>${esc(listNote)}</b></p>` : ""),
       }),
     });
   } catch (e) { console.warn("notify failed:", e.message); }
@@ -179,30 +190,87 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ok: true, attributed: true, receipt }) };
     }
 
-    // Anonymous / forwarded link: external lead, deduped on card_id+contact.
+    // ── Anonymous / forwarded link ──────────────────────────────────
     const nm = String(name || "").trim().slice(0, 120);
     const ct = String(contact || "").trim().slice(0, 200);
     if (!nm || !ct) return { statusCode: 400, body: "name and contact required for untokenized interest" };
 
-    const dupe = await sb(`/deal_leads?card_id=eq.${encodeURIComponent(cardId)}&contact=eq.${encodeURIComponent(ct)}&select=id,stage&limit=1`);
-    if (dupe && dupe[0]) {
-      if (canAdvance.has(dupe[0].stage)) {
-        await sb(`/deal_leads?id=eq.${dupe[0].id}`, { method: "PATCH", headers: { Prefer: "return=minimal" },
-          body: JSON.stringify({ stage, notes: noteFor(" (untokenized)") }) });
+    // C1: turn the hand-raise into a buyer. The contact field is free text, so
+    // parseContact decides which column it belongs in; when it's neither a
+    // phone nor an email we record the lead and create NO buyer rather than a
+    // half-broken row. Dedupe is capture.js's — never a second implementation.
+    //
+    // Wrapped end to end: if anything here fails we fall back to exactly the
+    // old buyer-less behavior. Losing the lead to gain a buyer is never a
+    // trade worth making.
+    const { email: ctEmail, phone: ctPhone } = parseContact(ct);
+    let deckBuyer = null, listNote = "";
+    if (ctEmail || ctPhone) {
+      try {
+        const res = await findOrCreateBuyer({
+          name: nm, email: ctEmail, phone: ctPhone,
+          listSource: "deck_page",
+          notes: `Raised hand on ${address} via deck page`,
+          restoreRemoved: true,
+        });
+        deckBuyer = res.buyer;
+        listNote = res.restored ? "Removed buyer restored — they raised their hand again."
+                 : res.isNew   ? "New buyer added to your list from a forwarded deck link."
+                 : "";
+      } catch (e) {
+        console.warn("deck buyer upsert failed (lead still recorded):", e.message);
+      }
+    }
+    const deckBuyerId = deckBuyer ? deckBuyer.id : null;
+
+    // Prefer the buyer-keyed dedupe the tokenized branch uses, so one person
+    // can't become two leads by arriving untokenized and later tokenized.
+    let lead = null;
+    if (deckBuyerId) {
+      const byBuyer = await sb(`/deal_leads?card_id=eq.${encodeURIComponent(cardId)}&buyer_id=eq.${deckBuyerId}&select=id,stage,buyer_id&limit=1`);
+      lead = byBuyer && byBuyer[0];
+    }
+    if (!lead) {
+      const byContact = await sb(`/deal_leads?card_id=eq.${encodeURIComponent(cardId)}&contact=eq.${encodeURIComponent(ct)}&select=id,stage,buyer_id&limit=1`);
+      lead = byContact && byContact[0];
+    }
+
+    if (lead) {
+      const patch = {};
+      if (canAdvance.has(lead.stage)) { patch.stage = stage; patch.notes = noteFor(" (untokenized)"); }
+      // Backfill the link on a lead captured before this deal had a buyer.
+      if (deckBuyerId && !lead.buyer_id) patch.buyer_id = deckBuyerId;
+      if (Object.keys(patch).length) {
+        await sb(`/deal_leads?id=eq.${lead.id}`, { method: "PATCH", headers: { Prefer: "return=minimal" },
+          body: JSON.stringify(patch) });
       }
     } else {
       await sb(`/deal_leads`, { method: "POST", headers: { Prefer: "return=minimal" },
-        body: JSON.stringify({ card_id: cardId, address, buyer_id: null, name: nm, contact: ct,
+        body: JSON.stringify({ card_id: cardId, address, buyer_id: deckBuyerId, name: nm, contact: ct,
           source: "deck_page", channel: "deck", stage, notes: noteFor(" (untokenized)") }) });
     }
-    // No buyer record to attribute to, so the deck link goes out untokenized.
-    // `ct` is often a phone number — sendInterestReceipt no-ops on those.
+
+    // Activity touch, same as the tokenized branch — the buyers-page timeline
+    // and engagementScore both read buyer_activity.
+    if (deckBuyerId) {
+      await sb(`/buyer_activity`, { method: "POST", headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({ buyer_id: deckBuyerId, card_id: cardId, address, channel: "deck",
+          detail: hasOffer ? `Offered ~$${offer.toLocaleString()} via deck page (forwarded link)`
+                           : "Interested via deck page (forwarded link)" }) });
+    }
+
+    // Now that they're a buyer, the receipt's deck + PDF links can be tokenized
+    // — their next view attributes to them instead of landing as anonymous
+    // traffic. `ct` is often a phone; sendInterestReceipt no-ops on those.
     const [receipt] = await Promise.all([
-      sendInterestReceipt({ to: ct, slug: cleanSlug, buyerId: null, name: nm,
-        address, offer: hasOffer ? offer : 0 }),
-      notify(address, `${nm} (${ct})`, hasOffer ? offer : 0),
+      deckBuyer && deckBuyer.email_bounced_at
+        ? Promise.resolve(false)
+        : sendInterestReceipt({ to: ct, slug: cleanSlug, buyerId: deckBuyerId, name: nm,
+            address, offer: hasOffer ? offer : 0 }),
+      notify(address, `${nm} (${ct})`, hasOffer ? offer : 0, listNote),
     ]);
-    return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ok: true, attributed: false, receipt }) };
+    return { statusCode: 200, headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ok: true, attributed: false, buyer_id: deckBuyerId, receipt }) };
   } catch (err) {
     console.error("deck-interest error:", err.message);
     return { statusCode: 500, body: err.message };

@@ -1,11 +1,16 @@
 // Shared capture core for C1 (auto-capture responders).
 // Lives in a subdirectory so Netlify does NOT treat it as its own function —
-// it's a module required by capture-replies.js (email) and ghl-inbound.js (SMS).
+// it's a module required by capture-replies.js (email), ghl-inbound.js (SMS)
+// and deck-interest.js (deck-page hand-raises).
 //
 // captureResponder() turns an inbound reply into CRM value:
 //   1. find or create the buyer (new ones tagged list_source = "responder"),
 //   2. log a buyer_activity touch,
 //   3. if we know which deal it's about, create/advance a deal_leads pipeline row.
+//
+// findOrCreateBuyer() is step 1 on its own, exported because the deck page needs
+// the same dedupe. There must only ever be ONE find-or-create implementation —
+// drift between copies of the buyer dedupe is called out in CLAUDE.md.
 
 const { fetchAllRows } = require("./fetch-all");
 
@@ -64,7 +69,9 @@ async function findBuyer(email, phone) {
     // past row 1,000 (they'd be re-created as fresh "responder" buyers).
     const rows = await fetchAllRows(
       p => sb(p, { method: "GET" }),
-      `/buyers?select=id,name,email,phone,strategy,tier,sms_opt_in&phone=neq.`
+      // `active` and `notes` are here for findOrCreateBuyer's restore path —
+      // it can't reactivate a soft-deleted match it can't see the state of.
+      `/buyers?select=id,name,email,phone,strategy,tier,sms_opt_in,active,notes&phone=neq.`
     );
     const hit = (rows || []).find((b) => digitsOnly(b.phone) === pd);
     if (hit) return hit;
@@ -72,13 +79,25 @@ async function findBuyer(email, phone) {
   return null;
 }
 
-async function captureResponder({ channel, name, email, phone, cardId, address, snippet }) {
+// Match an existing buyer on normalized phone/email, or create one. New rows
+// get a blank buy box on purpose: we know nothing about them yet, and
+// matchesDeal treats blanks as wildcards so they still hear about every deal
+// until the buy-box sequence (onboard-buyers.js) fills it in. `onboarded_at` is
+// deliberately left null so that sequence picks them up.
+//
+// restoreRemoved reactivates a soft-deleted (active=false) match. Off by
+// default — an inbound reply from someone you removed shouldn't silently put
+// them back on the list. The deck page passes true: tapping "I'm interested" is
+// the person themselves asking back in. Safe against migration 029's unique
+// indexes because those are partial on `active`.
+//
+// Returns { buyer, isNew, restored }; buyer is null only if creation failed.
+async function findOrCreateBuyer({ name, email, phone, listSource, notes, restoreRemoved = false }) {
   email = (email || "").trim().toLowerCase();
   phone = (phone || "").trim();
-  const note = (snippet || "").replace(/\s+/g, " ").trim().slice(0, 500);
 
   let buyer = await findBuyer(email, phone);
-  let isNewBuyer = false;
+  let isNew = false, restored = false;
 
   if (!buyer) {
     try {
@@ -90,12 +109,12 @@ async function captureResponder({ channel, name, email, phone, cardId, address, 
           email, phone,
           strategy: "all", states: "",
           max_price: 0, max_piti: 0, min_beds: 0,
-          tier: "B", list_source: "responder", active: true, sms_opt_in: false,
-          notes: `Auto-captured from ${channel} reply${address ? ` re: ${address}` : ""}`,
+          tier: "B", list_source: listSource || "responder", active: true, sms_opt_in: false,
+          notes: notes || "",
         }),
       });
       buyer = created && created[0];
-      isNewBuyer = true;
+      isNew = true;
     } catch (e) {
       // Migration 029's unique indexes: the buyer already exists (inserted
       // between our lookup and this insert, or matched only after
@@ -104,6 +123,35 @@ async function captureResponder({ channel, name, email, phone, cardId, address, 
       buyer = await findBuyer(email, phone);
     }
   }
+
+  if (buyer && restoreRemoved && buyer.active === false) {
+    const restoreNote = `[restored] ${notes || "re-entered through intake"}`;
+    await sb(`/buyers?id=eq.${buyer.id}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({
+        active: true,
+        notes: [buyer.notes, restoreNote].filter(Boolean).join(" | ").slice(0, 2000),
+      }),
+    });
+    buyer.active = true;
+    restored = true;
+  }
+
+  return { buyer: buyer || null, isNew, restored };
+}
+
+async function captureResponder({ channel, name, email, phone, cardId, address, snippet }) {
+  email = (email || "").trim().toLowerCase();
+  phone = (phone || "").trim();
+  const note = (snippet || "").replace(/\s+/g, " ").trim().slice(0, 500);
+
+  // restoreRemoved stays false here: this is the pre-existing reply-capture
+  // behavior, and changing who comes back onto the list is not this path's call.
+  const { buyer, isNew: isNewBuyer } = await findOrCreateBuyer({
+    name, email, phone, listSource: "responder",
+    notes: `Auto-captured from ${channel} reply${address ? ` re: ${address}` : ""}`,
+  });
   if (!buyer) return { ok: false, reason: "could not create buyer" };
 
   // 2. Activity touch (works with or without a known deal).
@@ -150,4 +198,4 @@ async function captureResponder({ channel, name, email, phone, cardId, address, 
   return { ok: true, buyerId: buyer.id, isNewBuyer, leadCreated, leadBumped };
 }
 
-module.exports = { sb, markSeen, captureResponder, findBuyer, digitsOnly };
+module.exports = { sb, markSeen, captureResponder, findOrCreateBuyer, findBuyer, digitsOnly };

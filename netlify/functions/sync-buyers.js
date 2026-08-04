@@ -6,46 +6,9 @@
 
 const { logSyncRun } = require("./lib/heartbeat");
 const { fetchAllRows } = require("./lib/fetch-all");
-
-const NAME_TO_ABBR = {
-  alabama:"AL",alaska:"AK",arizona:"AZ",arkansas:"AR",california:"CA",colorado:"CO",
-  connecticut:"CT",delaware:"DE",florida:"FL",georgia:"GA",hawaii:"HI",idaho:"ID",
-  illinois:"IL",indiana:"IN",iowa:"IA",kansas:"KS",kentucky:"KY",louisiana:"LA",
-  maine:"ME",maryland:"MD",massachusetts:"MA",michigan:"MI",minnesota:"MN",
-  mississippi:"MS",missouri:"MO",montana:"MT",nebraska:"NE",nevada:"NV",
-  "new hampshire":"NH","new jersey":"NJ","new mexico":"NM","new york":"NY",
-  "north carolina":"NC","north dakota":"ND",ohio:"OH",oklahoma:"OK",oregon:"OR",
-  pennsylvania:"PA","rhode island":"RI","south carolina":"SC","south dakota":"SD",
-  tennessee:"TN",texas:"TX",utah:"UT",vermont:"VT",virginia:"VA",washington:"WA",
-  "west virginia":"WV",wisconsin:"WI",wyoming:"WY",
-};
-const VALID_ABBR = new Set(Object.values(NAME_TO_ABBR));
-
-function parseStates(raw) {
-  const out = [];
-  for (let part of (raw || "").replace(/;/g, ",").split(",")) {
-    part = part.trim();
-    if (!part) continue;
-    if (VALID_ABBR.has(part.toUpperCase())) out.push(part.toUpperCase());
-    else if (NAME_TO_ABBR[part.toLowerCase()]) out.push(NAME_TO_ABBR[part.toLowerCase()]);
-  }
-  return [...new Set(out)].join(",");
-}
-
-function parseStrategy(raw) {
-  const r = (raw || "").toLowerCase().trim();
-  if (r.includes("all")) return "all";
-  if (r.includes("morby") || r.includes("stack")) return "morby";
-  if (r.includes("subject")) return "subto";
-  if (r.includes("seller") || r.includes("owner") || r.includes("finance")) return "owner_finance";
-  if (r.includes("cash")) return "cash";
-  return "all";
-}
-
-function parseInt0(raw) {
-  const digits = String(raw || "").replace(/[^\d]/g, "");
-  return digits ? parseInt(digits, 10) : 0;
-}
+// C2 — form parsing lives in lib/buyer-intake.js so it's testable and so the
+// buyer-form repo's submit-buyer.js has one canonical version to mirror.
+const { parseStates, parseStrategy, parseInt0, parseMaxPrice } = require("./lib/buyer-intake");
 
 function cleanPhone(raw) {
   return String(raw || "").replace(/[^\d+]/g, "");
@@ -129,8 +92,10 @@ exports.handler = async () => {
 
       const states   = parseStates(data.states);
       const strategy = parseStrategy(data.strategy);
+      const maxPrice = parseMaxPrice(data);
       const maxPiti  = parseInt0(data.max_piti || data.sf_max_piti);
       const maxEntry = parseInt0(data.max_entry_fee);
+      const maxDown  = parseInt0(data.sf_max_down);
       const minBeds  = parseInt0(data.min_beds || data.sf_min_beds || data.cash_min_beds);
       const smsConsent = ["yes","true","1","on"].includes(String(data.sms_consent || "").toLowerCase());
 
@@ -143,6 +108,9 @@ exports.handler = async () => {
       if (data.stack_deals_done) noteParts.push(`Stack deals done: ${data.stack_deals_done}`);
       if (data.prop_type)        noteParts.push(`Property types: ${data.prop_type}`);
       if (maxEntry)              noteParts.push(`Max entry fee: $${maxEntry.toLocaleString()}`);
+      // A down-payment cap, NOT a purchase-price cap — it must not become
+      // max_price, which matchesDeal compares against the deal's asking price.
+      if (maxDown)               noteParts.push(`Max down payment: $${maxDown.toLocaleString()}`);
 
       try {
         await sb(`/buyers`, {
@@ -150,7 +118,7 @@ exports.handler = async () => {
           headers: { Prefer: "return=minimal" },
           body: JSON.stringify({
             name, email, phone, states,
-            max_price: 0, max_piti: maxPiti, min_beds: minBeds,
+            max_price: maxPrice, max_piti: maxPiti, min_beds: minBeds,
             strategy, tier: "B", list_source: "investor",
             active: true, sms_opt_in: smsConsent,
             notes: noteParts.join(" | "),

@@ -14,7 +14,19 @@ penalty in engagement scoring (M7). **M6 (best-variation default in the blast mo
 deliberately dropped** — don't rebuild it without asking. T7/T8 (deck returns + plain-English
 explainer) were removed from this queue: that work was cut and is not planned.
 
-Everything else from T1 down is still open work.
+**T1 and T2 are now shipped.** T2 (the instant receipt) landed as H4. T1 (deck interest
+creates a buyer) landed on branch `c1-c2-list-growth`, together with the half of C2 the
+audit missed: the buy-box questionnaire collects `cash_max_price` and multi-select deal
+structures, and **both** writers were dropping them — so a cash buyer could answer the form
+in full and still be classified `partial`, which kept `onboard-buyers.js` asking them for a
+box they had already given. Parsing now lives in `netlify/functions/lib/buyer-intake.js`;
+the copy in the buyer-form repo (`submit-buyer.js`) was patched to match and **must be
+redeployed by hand** — it inserts directly and wins the race against the `sync-buyers` poll.
+
+**T5 is now the C2 remainder**: the CSV importer still hardcodes `max_price/max_piti/
+min_beds: 0`, so there is still no way to bulk-load the buy boxes you already know.
+
+Everything else from T3 down is still open work.
 
 ---
 

@@ -27,6 +27,20 @@ const { fmtMoney, matchesDeal, dscrMonthlyPayment } = DealShared;
 
 const ZACH_PHONE = "630-488-5311";
 
+// ── Terms-editor field helpers (migration 034 fields) ──
+// These columns are nullable-with-no-default on purpose: null means "not
+// entered" and every deck-page gate reads it that way. `|| ""` would render a
+// real 0 as blank, so the null check has to be explicit both directions.
+function numOrBlank(v) {
+  return (v === null || v === undefined || v === "") ? "" : String(v);
+}
+function selectOpts(current, pairs) {
+  const cur = String(current == null ? "" : current);
+  return [["", "—"]].concat(pairs)
+    .map(([v, label]) => `<option value="${escapeHtml(v)}"${v === cur ? " selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+}
+
 // ── Deck-page links (the buyer-facing /deck/<slug> page) ──
 // Slugs are minted eagerly at intake now; legacy cards that predate that (and
 // were never blasted) get theirs backfilled on demand via deck-link.js.
@@ -1085,6 +1099,10 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
             ${t.beds ? `<span class="term-chip"><b>${t.beds}</b> bd / <b>${t.baths || "—"}</b> ba</span>` : ""}
             ${t.sqft ? `<span class="term-chip"><b>${t.sqft.toLocaleString()}</b> sqft</span>` : ""}
             ${t.year_built ? `<span class="term-chip">Built <b>${t.year_built}</b></span>` : ""}
+            ${t.hoa_monthly ? `<span class="term-chip">HOA <b>${fmtMoney(t.hoa_monthly)}/mo</b></span>`
+              : (t.hoa_monthly == null && t.hoa_rental_policy === "none" ? `<span class="term-chip"><b>No HOA</b></span>` : "")}
+            ${[["ltr", "LTR"], ["mtr", "MTR"], ["str", "STR"]].map(([m, label]) =>
+              t[`rent_${m}`] ? `<span class="term-chip">${label} <b>${fmtMoney(t[`rent_${m}`])}/mo</b></span>` : "").join("")}
             <span class="term-chip">👥 <b>${matchCount}</b> matching buyer${matchCount === 1 ? "" : "s"}</span>
             <button type="button" class="btn btn-ghost btn-sm terms-edit-btn">✎ Edit Terms</button>
           </div>
@@ -1100,10 +1118,33 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
             <div><label>Baths</label><input type="text" class="te-baths" value="${escapeHtml(t.baths || "")}"></div>
             <div><label>Sqft</label><input type="number" class="te-sqft" value="${t.sqft || ""}"></div>
             <div><label>Year Built</label><input type="number" class="te-year_built" value="${t.year_built || ""}"></div>
+
+            <div class="te-subhead">HOA</div>
+            <div><label>HOA / mo</label><input type="number" class="te-hoa_monthly" value="${numOrBlank(t.hoa_monthly)}"></div>
+            <div><label>Rental policy</label><select class="te-hoa_rental_policy">${selectOpts(t.hoa_rental_policy, [["none", "None"], ["allowed", "Allowed"], ["min_term", "Minimum term"], ["capped", "Capped"], ["prohibited", "Prohibited"]])}</select></div>
+            <div><label>Min lease (days)</label><input type="number" class="te-hoa_min_lease_days" value="${numOrBlank(t.hoa_min_lease_days)}"></div>
+
+            <div class="te-subhead">Rent strategies <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">— a rent with no source never shows on the deck</span></div>
+            <div><label>Long-term rent</label><input type="number" class="te-rent_ltr" value="${numOrBlank(t.rent_ltr)}"></div>
+            <div style="grid-column:span 2"><label>Long-term source</label><input type="text" class="te-rent_ltr_source" placeholder="e.g. Rentometer, 3 comps within 0.4mi" value="${escapeHtml(t.rent_ltr_source || "")}"></div>
+            <div><label>Mid-term rent</label><input type="number" class="te-rent_mtr" value="${numOrBlank(t.rent_mtr)}"></div>
+            <div style="grid-column:span 2"><label>Mid-term source</label><input type="text" class="te-rent_mtr_source" placeholder="e.g. Furnished Finder, 6 active listings" value="${escapeHtml(t.rent_mtr_source || "")}"></div>
+            <div><label>MTR furnishing $</label><input type="number" class="te-mtr_furnishing_cost" value="${numOrBlank(t.mtr_furnishing_cost)}"></div>
+            <div><label>Short-term rent</label><input type="number" class="te-rent_str" value="${numOrBlank(t.rent_str)}"></div>
+            <div style="grid-column:span 2"><label>Short-term source</label><input type="text" class="te-rent_str_source" placeholder="e.g. AirDNA, 12-mo trailing" value="${escapeHtml(t.rent_str_source || "")}"></div>
+            <div><label>STR furnishing $</label><input type="number" class="te-str_furnishing_cost" value="${numOrBlank(t.str_furnishing_cost)}"></div>
+            <div><label>STR permitted</label><select class="te-str_permitted">${selectOpts(t.str_permitted, [["allowed", "Allowed"], ["permit_required", "Permit required"], ["restricted", "Restricted"], ["unknown", "Unknown"]])}</select></div>
+            <div><label>Primary mode</label><select class="te-primary_rent_mode">${selectOpts(t.primary_rent_mode, [["ltr", "Long-term"], ["mtr", "Mid-term"], ["str", "Short-term"]])}</select></div>
+
+            <div class="te-subhead">Other</div>
+            <div><label>Loan P&amp;I / mo</label><input type="number" class="te-loan_pi" value="${numOrBlank(t.loan_pi)}"></div>
+            <div><label>Est. closing costs</label><input type="number" class="te-est_closing_costs" value="${numOrBlank(t.est_closing_costs)}"></div>
+            <div><label>Market value</label><input type="number" class="te-market_value" value="${numOrBlank(t.market_value)}"></div>
           </div>
-          <div class="flex gap-8 mt-8">
+          <div class="flex gap-8 mt-8" style="flex-wrap:wrap;align-items:center">
             <button type="button" class="btn btn-ghost btn-sm terms-cancel-btn">Cancel</button>
             <button type="button" class="btn btn-primary btn-sm terms-save-btn">Save</button>
+            <span class="terms-warn"></span>
             <span class="muted terms-save-status" style="font-size:0.78rem"></span>
           </div>
         </div>
@@ -1631,13 +1672,51 @@ function wireCardEvents() {
       viewEl.classList.remove("hidden");
       statusEl.textContent = "";
     });
+    // Non-blocking warnings: entered data that won't reach the deck page.
+    // Saving is never prevented — a half-filled row is a legitimate save point.
+    const warnEl = block.querySelector(".terms-warn");
+    const val = (sel) => { const el = block.querySelector(sel); return el ? el.value.trim() : ""; };
+    const refreshWarnings = () => {
+      if (!warnEl) return;
+      const warns = [];
+      for (const [mode, label] of [["ltr", "Long-term"], ["mtr", "Mid-term"], ["str", "Short-term"]]) {
+        if (val(`.te-rent_${mode}`) && !val(`.te-rent_${mode}_source`)) {
+          warns.push(`${label} rent without a source won't display on the deck.`);
+        }
+      }
+      if (val(".te-rent_str") && !val(".te-str_permitted")) {
+        warns.push("Short-term column won't display until STR status is confirmed.");
+      }
+      if (val(".te-hoa_monthly") && !val(".te-hoa_rental_policy")) {
+        warns.push("HOA policy unset — rent strategies won't be gated.");
+      }
+      warnEl.innerHTML = warns.length
+        ? `<span class="terms-warn-chip">⚠ ${warns.map(escapeHtml).join(" ")}</span>`
+        : "";
+    };
+    block.querySelectorAll(".terms-edit input, .terms-edit select")
+      .forEach(el => el.addEventListener("input", refreshWarnings));
+    refreshWarnings();
+
     saveBtn.addEventListener("click", async () => {
+      // The original nine fields keep their existing empty→0 behavior so
+      // nothing regresses. Everything migration 034 added must write NULL
+      // instead: 0 is a real HOA fee and "" is a real (empty) policy, and the
+      // deck's render gates read null as "not entered".
       const num = (sel) => {
         const v = block.querySelector(sel).value.trim();
         return v === "" ? 0 : Number(v);
       };
       const txt = (sel) => block.querySelector(sel).value.trim();
-      const row = {
+      const numOrNull = (sel) => {
+        const v = block.querySelector(sel).value.trim();
+        return v === "" ? null : Number(v);
+      };
+      const txtOrNull = (sel) => {
+        const v = block.querySelector(sel).value.trim();
+        return v === "" ? null : v;
+      };
+      const baseRow = {
         card_id: cardId,
         price: num(".te-price"),
         entry_fee: num(".te-entry_fee"),
@@ -1649,10 +1728,36 @@ function wireCardEvents() {
         sqft: num(".te-sqft"),
         year_built: num(".te-year_built"),
       };
+      const rentRow = {
+        hoa_monthly: numOrNull(".te-hoa_monthly"),
+        hoa_rental_policy: txtOrNull(".te-hoa_rental_policy"),
+        hoa_min_lease_days: numOrNull(".te-hoa_min_lease_days"),
+        rent_ltr: numOrNull(".te-rent_ltr"),
+        rent_mtr: numOrNull(".te-rent_mtr"),
+        rent_str: numOrNull(".te-rent_str"),
+        rent_ltr_source: txtOrNull(".te-rent_ltr_source"),
+        rent_mtr_source: txtOrNull(".te-rent_mtr_source"),
+        rent_str_source: txtOrNull(".te-rent_str_source"),
+        primary_rent_mode: txtOrNull(".te-primary_rent_mode"),
+        str_permitted: txtOrNull(".te-str_permitted"),
+        str_furnishing_cost: numOrNull(".te-str_furnishing_cost"),
+        mtr_furnishing_cost: numOrNull(".te-mtr_furnishing_cost"),
+        loan_pi: numOrNull(".te-loan_pi"),
+        est_closing_costs: numOrNull(".te-est_closing_costs"),
+        market_value: numOrNull(".te-market_value"),
+      };
       saveBtn.disabled = true;
       statusEl.textContent = "Saving…";
       try {
-        const { error } = await supa.from("deal_terms").upsert(row, { onConflict: "card_id" });
+        let { error } = await supa.from("deal_terms")
+          .upsert({ ...baseRow, ...rentRow }, { onConflict: "card_id" });
+        // Migration 034 not run yet — save the fields that do exist rather than
+        // losing the whole edit (same fail-soft pattern as loadAll's `archived`).
+        if (error && /column|schema cache/i.test(error.message || "")) {
+          console.warn("deal_terms rent/HOA columns missing (run sql/034) — saving base terms only");
+          statusEl.textContent = "Saved base terms — rent/HOA columns need migration 034.";
+          ({ error } = await supa.from("deal_terms").upsert(baseRow, { onConflict: "card_id" }));
+        }
         if (error) throw error;
         await loadAll();
       } catch (e) {

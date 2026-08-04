@@ -142,6 +142,174 @@
     return principal * (r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
   }
 
+  // ── Sub-To rent optionality ─────────────────────────────────────
+  // The sub-to deck used to state only what a deal COSTS. This is what lets it
+  // state what it RETURNS — without ever publishing a rent we can't source or a
+  // strategy the HOA/municipality forbids.
+  //
+  // Expense load = everything above debt service: vacancy, maintenance, capex,
+  // management, and for furnished stays turnover + utilities. Fixed published
+  // constants, deliberately NOT adjustable sliders.
+  const LOAD_PCT = { ltr: 0.23, mtr: 0.30, str: 0.40 };
+  const RESERVE_MONTHS = 3;
+  const MODE_LABEL = { ltr: "Long-term", mtr: "Mid-term", str: "Short-term" };
+  const RENT_MODES = ["ltr", "mtr", "str"];
+  // What the same loan would cost a buyer today. Per-deploy override via
+  // DECK_MARKET_RATE; the typeof guard is what keeps this file browser-safe —
+  // a bare process.env read here would throw on every page that loads it.
+  const MARKET_RATE_TODAY =
+    (typeof process !== "undefined" && process.env && Number(process.env.DECK_MARKET_RATE)) || 6.9;
+
+  // `rate` is stored as TEXT and arrives as "4.5", "4.5%", " 4.5 % ", "".
+  // Returns null rather than NaN so nothing downstream can print "NaN".
+  function parseRatePct(rate) {
+    const n = parseFloat(String(rate == null ? "" : rate).replace(/[^0-9.]/g, ""));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+
+  // Monthly carry the rent has to clear: debt service + HOA dues.
+  function subtoCarry(terms) {
+    const t = terms || {};
+    const piti = Number(t.piti) || 0;
+    const hoa = Number(t.hoa_monthly) || 0;
+    return { piti, hoa, total: piti + hoa };
+  }
+
+  // One entry per rent strategy that is publishable, in fixed ltr→mtr→str order.
+  //
+  // Two separate ideas, and the difference matters:
+  //   OMITTED — no rent on file, or a rent with no source. An unsourced number
+  //             never renders in any form. This is the credibility guard.
+  //   BLOCKED — we have the number, but the HOA or the municipality doesn't
+  //             allow the strategy. These DO render (greyed, with the reason):
+  //             they're proof the CC&Rs were actually read.
+  //
+  // `loadPct` is the whole percent (23), for display; the math uses LOAD_PCT.
+  function subtoRentOptions(terms) {
+    const t = terms || {};
+    const carry = subtoCarry(t);
+    // Netting against a zero carry is meaningless — no PITI, no section.
+    if (carry.piti <= 0) return [];
+
+    const policy = String(t.hoa_rental_policy || "").trim().toLowerCase();
+    const minLease = Number(t.hoa_min_lease_days) || 0;
+    const strStatus = String(t.str_permitted || "").trim().toLowerCase();
+    const entryFee = Number(t.entry_fee) || 0;
+    const closing = Number(t.est_closing_costs) || 0;
+
+    const out = [];
+    for (const mode of RENT_MODES) {
+      const rent = Number(t["rent_" + mode]) || 0;
+      const source = String(t["rent_" + mode + "_source"] || "").trim();
+      if (!rent || !source) continue; // omitted — never renders at all
+
+      // Gates, first match wins. Order is load-bearing: the HOA outranks the
+      // municipality, and a blanket prohibition outranks a term minimum.
+      let blockedReason = null;
+      const warnings = [];
+      if (policy === "prohibited") {
+        blockedReason = "HOA prohibits rentals";
+      } else if (minLease >= 365 && (mode === "str" || mode === "mtr")) {
+        blockedReason = "HOA requires a 12-month minimum lease";
+      } else if (minLease >= 30 && mode === "str") {
+        blockedReason = "HOA requires a 30-day minimum lease";
+      } else if (mode === "str" && strStatus === "restricted") {
+        blockedReason = "Short-term rentals restricted in this municipality";
+      } else if (mode === "str" && (!strStatus || strStatus === "unknown")) {
+        // Deliberate: unconfirmed STR status blocks the column outright.
+        blockedReason = "Short-term rental status not confirmed";
+      }
+      if (!blockedReason) {
+        if (policy === "capped") warnings.push("HOA rental cap may apply");
+        if (mode === "str" && strStatus === "permit_required") warnings.push("Permit required in this municipality");
+      }
+
+      const load = Math.round(rent * LOAD_PCT[mode]);
+      const furnishing = mode === "str" ? (Number(t.str_furnishing_cost) || 0)
+        : mode === "mtr" ? (Number(t.mtr_furnishing_cost) || 0) : 0;
+      const entry = {
+        mode,
+        label: MODE_LABEL[mode],
+        rent,
+        source,
+        loadPct: Math.round(LOAD_PCT[mode] * 100),
+        load,
+        furnishing,
+        blockedReason,
+        warning: warnings.length ? warnings.join(" · ") : null,
+        net: null,
+        cashIn: null,
+        cocPct: null,
+      };
+      if (!blockedReason) {
+        // Negative nets are printed, never clamped and never hidden.
+        entry.net = Math.round(rent - carry.total - load);
+        entry.cashIn = Math.round(entryFee + closing + (RESERVE_MONTHS * carry.total) + furnishing);
+        entry.cocPct = entry.cashIn > 0
+          ? Number(((entry.net * 12) / entry.cashIn * 100).toFixed(1))
+          : null;
+      }
+      out.push(entry);
+    }
+    return out;
+  }
+
+  // Which option the blast email/SMS teases: primary_rent_mode when that mode
+  // survived the gates (the field exists so a deal can be teased on a chosen
+  // strategy), otherwise the highest-netting unblocked one.
+  //
+  // Highest-net, not first: the teaser is the whole hook, and a property where
+  // long-term nets $2 while mid-term nets $240 should lead with $240. Ties keep
+  // the ltr→mtr→str order, so the pick is deterministic.
+  //
+  // Null when there's nothing honest to tease — the caller omits the line
+  // rather than advertising $0 or a negative.
+  function subtoTeaserOption(terms) {
+    const live = subtoRentOptions(terms).filter(o => !o.blockedReason);
+    if (!live.length) return null;
+    const want = String((terms || {}).primary_rent_mode || "").trim().toLowerCase();
+    const best = live.reduce((a, b) => (b.net > a.net ? b : a));
+    const picked = live.find(o => o.mode === want) || best;
+    return picked.net > 0 ? picked : null;
+  }
+
+  // Standard amortizing monthly payment. Separate from dscrMonthlyPayment,
+  // which folds in an LTV — this one takes the principal directly.
+  function amortizedPayment(principal, ratePct, years = 30) {
+    principal = Number(principal) || 0;
+    ratePct = Number(ratePct) || 0;
+    const r = (ratePct / 100) / 12;
+    const n = years * 12;
+    if (!principal || !r) return 0;
+    return principal * (r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
+  }
+
+  // Equity built each month by the assumed loan's own payment. Null unless we
+  // have the P&I split, the balance and a parseable rate — an estimate here
+  // would be a fabricated number on a buyer-facing page.
+  function subtoPrincipalPaydown(terms) {
+    const t = terms || {};
+    const loanPi = Number(t.loan_pi) || 0;
+    const mortgage = Number(t.mortgage) || 0;
+    const ratePct = parseRatePct(t.rate);
+    if (!loanPi || !mortgage || !ratePct) return null;
+    const paydown = Math.round(loanPi - (mortgage * (ratePct / 100) / 12));
+    return paydown > 0 ? paydown : null;
+  }
+
+  // What the assumed rate saves per month versus new financing on the same
+  // balance today. Null when the assumed rate isn't actually better.
+  function subtoRateArbitrage(terms, marketRatePct) {
+    const t = terms || {};
+    const mortgage = Number(t.mortgage) || 0;
+    const ratePct = parseRatePct(t.rate);
+    if (!mortgage || !ratePct) return null;
+    const market = Number(marketRatePct) || MARKET_RATE_TODAY;
+    if (ratePct >= market) return null;
+    const diff = Math.round(amortizedPayment(mortgage, market) - amortizedPayment(mortgage, ratePct));
+    return diff > 0 ? diff : null;
+  }
+
   // ── Buyer engagement score (0–100) ──────────────────────────────
   // Weighted, capped points per signal, then a recency decay on the buyer's
   // last touch. Interpretation: ≥60 hot (call now), 25–59 warm, 1–24 quiet.
@@ -216,6 +384,45 @@
     return rows.filter(([, v]) => v && v !== "—");
   }
 
+  // Sub-To rows for the deck page — subtoSummaryRows plus what migration 034
+  // added. subtoSummaryRows itself is left alone for back-compat.
+  //
+  // Every addition is data-gated, so a deal with no 034 data produces exactly
+  // the rows it produces today:
+  //   • the rate row only grows a suffix when the assumed rate beats the market
+  //   • HOA renders dues, or the literal "None" when the policy says so
+  //     (omitting it reads as "unknown"; "None" is a selling point)
+  //   • total carry renders only when an HOA makes it differ from PITI —
+  //     repeating the PITI figure under a second label is noise
+  function subtoTermRows(terms) {
+    const t = terms || {};
+    const carry = subtoCarry(t);
+    const arb = subtoRateArbitrage(t);
+    const policy = String(t.hoa_rental_policy || "").trim().toLowerCase();
+    const minLease = Number(t.hoa_min_lease_days) || 0;
+
+    let hoaValue = "—";
+    if (carry.hoa > 0) {
+      hoaValue = `${fmtMoney(carry.hoa)}/mo${minLease ? ` · ${minLease}-day minimum lease` : ""}`;
+    } else if (t.hoa_monthly == null && policy === "none") {
+      hoaValue = "None";
+    }
+
+    const rows = [
+      ["Entry Fee", t.entry_fee ? `${fmtMoney(t.entry_fee)} + TC + CC` : "—"],
+      ["Purchase Price", fmtMoney(t.price)],
+      ["Existing Loan Balance", fmtMoney(t.mortgage)],
+      ["PITI", t.piti ? `${fmtMoney(t.piti)}/mo` : "—"],
+      ["Rate", t.rate ? `${t.rate}%${arb ? ` · $${arb.toLocaleString()}/mo under a new loan at ${MARKET_RATE_TODAY}%` : ""}` : "—"],
+      ["HOA", hoaValue],
+      ["Total Monthly Carry", (carry.piti > 0 && carry.hoa > 0) ? `${fmtMoney(carry.total)}/mo` : "—"],
+      ["Beds / Baths", t.beds ? `${t.beds} bd / ${t.baths || "N/A"} ba` : "—"],
+      ["Sqft", t.sqft ? Number(t.sqft).toLocaleString() : "—"],
+      ["Year Built", t.year_built || "—"],
+    ];
+    return rows.filter(([, v]) => v && v !== "—");
+  }
+
   // Morby rows — shared by the deck page AND the Morby email's snapshot table.
   function morbyTermRows(morby) {
     const rows = [
@@ -233,7 +440,11 @@
 
   return {
     fmtMoney, fmtPct, matchesDeal, buyerCashAtClose, dscrMonthlyPayment,
-    subtoSummaryRows, morbyTermRows, engagementScore, engagementLevel, ENGAGEMENT_WEIGHTS,
+    subtoSummaryRows, subtoTermRows, morbyTermRows,
+    subtoCarry, subtoRentOptions, subtoTeaserOption, subtoPrincipalPaydown,
+    subtoRateArbitrage, amortizedPayment, parseRatePct,
+    LOAD_PCT, RESERVE_MONTHS, MODE_LABEL, MARKET_RATE_TODAY,
+    engagementScore, engagementLevel, ENGAGEMENT_WEIGHTS,
     ENGAGEMENT_PENALTIES, buyBoxCompleteness, buyBoxSplit,
     nearMissDeal, NEAR_MISS_TOLERANCE, NEAR_MISS_BED_SLACK,
   };

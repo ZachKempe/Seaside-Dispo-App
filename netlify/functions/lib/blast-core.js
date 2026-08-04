@@ -20,7 +20,7 @@ const { suppressedPhoneDigits } = require("./sms-optout");
 const { sendSms } = require("./ghl-sms");
 const { unsubUrlFor } = require("./unsub");
 const { digitsOnly } = require("./capture");
-const { matchesDeal, buyerCashAtClose, morbyTermRows } = require("../../../public/js/deal-shared");
+const { matchesDeal, buyerCashAtClose, morbyTermRows, subtoTeaserOption } = require("../../../public/js/deal-shared");
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -172,6 +172,13 @@ function buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer, deckUrlForB
   const subject = subtoSubject(city, entryFee);
   const greeting = `Hi ${firstNameOf(buyer)},`;
   const dealCopy = buildDealCopyText(prop, terms);
+  // One line, deliberately. The email carries the hook; the deck page carries
+  // the math — that gap is what earns the click, and the click is what creates
+  // the deal_leads attribution row.
+  const teaser = subtoTeaserOption(terms);
+  const teaserBlock = teaser ? `<tr><td style="padding:12px 32px 0">
+         <div style="font-size:13.5px;font-weight:700;color:${BRAND_NAVY}">Est. net ${escapeHtml(teaser.label)} cash flow ~$${teaser.net.toLocaleString()}/mo <span style="font-weight:400;color:#4A5568">— see the full numbers</span></div>
+       </td></tr>` : "";
   const coverImageTag = coverImageUrl
     ? `<img src="${escapeHtml(coverImageUrl)}" alt="${escapeHtml(city)}" width="140" style="display:block;float:right;width:140px;height:140px;object-fit:cover;border-radius:8px;margin:0 0 10px 14px">`
     : "";
@@ -205,6 +212,7 @@ function buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer, deckUrlForB
           ${terms.beds ? `${terms.beds} bd / ${terms.baths || "N/A"} ba` : ""} ${terms.sqft ? ` · ${Number(terms.sqft).toLocaleString()} sqft` : ""}
         </td></tr>
         ${dealCopyBlock}
+        ${teaserBlock}
         <tr><td style="padding:8px 32px 24px">
           ${deckUrlForBuyer ? `<div><a href="${escapeHtml(deckUrlForBuyer)}" style="display:inline-block;background:${BRAND_NAVY};color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:14px;border:1px solid ${BRAND_GOLD}">View deal &amp; respond</a></div>` : ""}
           ${prop.drive_link ? `<div style="margin-top:10px"><a href="${escapeHtml(prop.drive_link)}" style="display:inline-block;background:#fff;color:${BRAND_NAVY};text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:14px;border:1px solid ${BRAND_NAVY}">View Photos (Google Drive)</a></div>` : ""}
@@ -379,8 +387,12 @@ function buildMorbySms(prop, morby, deckUrl, alsoEmailed) {
 // Sub-To SMS body: the shared deal copy plus the opt-out line SMS marketing
 // requires. Kept out of buildDealCopyText itself because that text is also
 // the email body, where "Reply STOP" makes no sense.
+// The rent teaser goes BEFORE the opt-out line, so the caller's deck link
+// still lands last. One line only — SMS segments cost money.
 function buildSubtoSms(prop, terms) {
-  return buildDealCopyText(prop, terms) + `\nReply STOP to opt out.`;
+  const teaser = subtoTeaserOption(terms);
+  const teaserLine = teaser ? `\nEst. net ${teaser.label}: $${teaser.net.toLocaleString()}/mo` : "";
+  return buildDealCopyText(prop, terms) + teaserLine + `\nReply STOP to opt out.`;
 }
 
 // ── Gmail fallback ────────────────────────────────────────────────

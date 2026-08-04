@@ -261,7 +261,17 @@ tr:hover td { background: #FAFBFC; }
   background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px;
 }
 .terms-edit-grid label { font-size: 0.7rem; margin-bottom: 3px; }
-.terms-edit-grid input { padding: 6px 8px; font-size: 0.84rem; }
+.terms-edit-grid input, .terms-edit-grid select { padding: 6px 8px; font-size: 0.84rem; width: 100%; }
+/* Labelled groups inside the same terms grid (HOA / rent strategies / other). */
+.te-subhead {
+  grid-column: 1 / -1; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--border);
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-2);
+}
+/* Advisory only — these never block a save. */
+.terms-warn-chip {
+  display: inline-block; background: #FFFAF0; border: 1px solid #F6E05E; color: #975A16;
+  border-radius: 8px; padding: 4px 9px; font-size: 0.74rem; line-height: 1.4;
+}
 .mismatch-banner {
   background: #FFF5F5; border: 1px solid #FEB2B2; color: #C53030;
   border-radius: 10px; padding: 10px 14px; font-size: 0.82rem; line-height: 1.6;

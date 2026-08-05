@@ -44,7 +44,12 @@ const GMAIL_REPLY_TO = process.env.GMAIL_REPLY_TO || GMAIL_FROM_ADDRESS;
 // points at, same URL buyers.html shares). The old nimble-scone-f6b3c4
 // default 404s — never point back at it.
 const FORM_URL = process.env.BUYER_FORM_URL || "https://seaside-buyer-questionnaire.netlify.app/";
-const LOGO_URL = "https://seaside-dispo-app.netlify.app/img/logo.png";
+// Derived from PUBLIC_SITE_URL like deck.js and blast-core.js do, so a custom
+// domain reaches this email too. Hardcoding the netlify.app host left the logo
+// in buy-box request emails pointing at a different domain than every link
+// beside it — mail clients treat that mismatch as a spam signal.
+const SITE_URL = (process.env.PUBLIC_SITE_URL || "https://seaside-dispo-app.netlify.app").replace(/\/+$/, "");
+const LOGO_URL = `${SITE_URL}/img/logo.png`;
 const BRAND_NAVY = "#1B3A6B";
 const BRAND_NAVY_DARK = "#112950";
 const CONTACT_NAME = process.env.MARKETING_CONTACT_NAME || "Zach — Seaside Horizon";

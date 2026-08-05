@@ -13,7 +13,7 @@
 // verify auth (verifyUser) and map thrown errors' `.status` to HTTP codes.
 
 const { deckToken } = require("./deck-token");
-const { deckSlug, ensureDeckSlug } = require("./deck-slug");
+const { ensureDeckSlug } = require("./deck-slug");
 const { subtoSubject, morbySubject } = require("./subjects");
 const { fetchAllRows } = require("./fetch-all");
 const { suppressedPhoneDigits } = require("./sms-optout");
@@ -49,7 +49,11 @@ const CONTACT_PHONE = process.env.MARKETING_CONTACT_PHONE || "";
 // CAN-SPAM requires a valid physical postal address in marketing email.
 // Set MARKETING_POSTAL_ADDRESS in Netlify env (e.g. "123 Main St, Ste 4, Naperville, IL 60540").
 const CONTACT_ADDRESS = process.env.MARKETING_POSTAL_ADDRESS || "";
-const LOGO_URL = "https://seaside-dispo-app.netlify.app/img/logo.png";
+// M11: derived from SITE_URL, never hardcoded. The logo must load from the same
+// host every link in the email points at — once PUBLIC_SITE_URL is set to a
+// custom domain, a logo still coming from the generic netlify.app subdomain is
+// both a spam signal and something an alert investor reads as phishing.
+const LOGO_URL = `${SITE_URL}/img/logo.png`;
 const BRAND_NAVY = "#1B3A6B";
 const BRAND_NAVY_DARK = "#112950";
 const BRAND_GOLD = "#D4A03E";
@@ -270,7 +274,10 @@ function firstNameOf(buyer) {
 // ── Morby / Stack Method Deal Deck email ─────────────────────────
 // (buyerCashAtClose + the snapshot term rows come from lib/deal-shared, the
 // same source the deck page renders from, so email and page can't drift.)
-function buildMorbyEmail(prop, morby, unsubUrl, buyer, deckUrlForBuyer) {
+// M12: `deckPdfUrl` is a tokenized /deck/<slug>.pdf link to the hosted deck.
+// It is null ONLY when the hosted upload failed and the caller fell back to
+// attaching the PDF — which is why the "attached" copy still exists below.
+function buildMorbyEmail(prop, morby, unsubUrl, buyer, deckUrlForBuyer, deckPdfUrl) {
   const address = prop.address_override || prop.name || "";
   const subject = morbySubject(address);
   const greeting = `Hi ${firstNameOf(buyer)},`;
@@ -298,6 +305,25 @@ function buildMorbyEmail(prop, morby, unsubUrl, buyer, deckUrlForBuyer) {
     ? `<tr><td colspan="2" style="padding:6px 32px 16px;font-size:11px;color:#A0AEC0;background:#fff">You're receiving this because you're on Seaside Horizon's buyer list. <a href="${escapeHtml(unsubUrl)}" style="color:#A0AEC0;text-decoration:underline">Unsubscribe</a>.${addressLine}</td></tr>`
     : "";
 
+  // Primary CTA (deck page) + the deck PDF as a second button. Both are
+  // per-buyer tokenized, so a click on either lands in deck_views attributed
+  // to this buyer — an attachment open never could be.
+  const ctaButtons = [
+    deckUrlForBuyer
+      ? `<a href="${escapeHtml(deckUrlForBuyer)}" style="display:inline-block;background:${BRAND_NAVY};color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:14px;border:1px solid ${BRAND_GOLD}">View deal &amp; respond</a>`
+      : "",
+    deckPdfUrl
+      ? `<a href="${escapeHtml(deckPdfUrl)}" style="display:inline-block;background:#fff;color:${BRAND_NAVY};text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:14px;border:1px solid ${BRAND_NAVY}">Deal Deck (PDF)</a>`
+      : "",
+  ].filter(Boolean).join(`<span style="display:inline-block;width:10px">&nbsp;</span>`);
+
+  const deckIntro = deckPdfUrl
+    ? "The full Deal Deck with all the financials is linked below."
+    : "The full Deal Deck is attached as a PDF with all the financials.";
+  const deckOutro = deckPdfUrl
+    ? `<strong>Full Deal Deck above.</strong> Complete financial analysis, DSCR breakdown, and property details.`
+    : `<strong>Full Deal Deck attached.</strong> Review the complete financial analysis, DSCR breakdown, and property details.`;
+
   const html = `
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#F0F4F8;padding:24px 0;font-family:Arial,Helvetica,sans-serif">
     <tr><td align="center">
@@ -313,7 +339,7 @@ function buildMorbyEmail(prop, morby, unsubUrl, buyer, deckUrlForBuyer) {
         </td></tr>
         <tr><td style="height:4px;background:${BRAND_GOLD};font-size:0;line-height:0">&nbsp;</td></tr>
         <tr><td style="padding:20px 32px 0;color:${BRAND_NAVY};font-size:14px">
-          <p style="margin:0">${escapeHtml(greeting)} I have a new Stack Method deal I wanted to share with you. The full Deal Deck is attached as a PDF with all the financials.</p>
+          <p style="margin:0">${escapeHtml(greeting)} I have a new Stack Method deal I wanted to share with you. ${deckIntro}</p>
         </td></tr>
         ${cashAtCloseBand}
         <tr><td style="padding:16px 32px 8px;color:${BRAND_NAVY};font-size:14px">
@@ -323,8 +349,8 @@ function buildMorbyEmail(prop, morby, unsubUrl, buyer, deckUrlForBuyer) {
           </table>
         </td></tr>
         <tr><td style="padding:16px 32px 20px">
-          ${deckUrlForBuyer ? `<div style="margin:0 0 14px"><a href="${escapeHtml(deckUrlForBuyer)}" style="display:inline-block;background:${BRAND_NAVY};color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:14px;border:1px solid ${BRAND_GOLD}">View deal &amp; respond</a></div>` : ""}
-          <p style="margin:0;font-size:13px;color:#4A5568"><strong>Full Deal Deck attached.</strong> Review the complete financial analysis, DSCR breakdown, and property details.</p>
+          ${ctaButtons ? `<div style="margin:0 0 14px">${ctaButtons}</div>` : ""}
+          <p style="margin:0;font-size:13px;color:#4A5568">${deckOutro}</p>
           ${CONTACT_PHONE ? `<p style="margin:8px 0 0;font-size:13px;color:#4A5568">Interested? Reply to this email or call/text <strong>${escapeHtml(CONTACT_NAME)}</strong> at <strong>${escapeHtml(CONTACT_PHONE)}</strong>.</p>` : ""}
         </td></tr>
         <tr><td style="background:${BRAND_NAVY_DARK};padding:16px 32px;color:#fff">
@@ -340,10 +366,11 @@ function buildMorbyEmail(prop, morby, unsubUrl, buyer, deckUrlForBuyer) {
 }
 
 // Upload the generated Deal Deck PDF to the public property-photos bucket
-// (deal-decks/ prefix) so it can be linked in an SMS. One stable file per
-// deal (x-upsert), so re-sends overwrite rather than pile up. Returns a SHORT
-// branded link (/deck/<slug>) that redirects to the PDF — not the long
-// Storage URL.
+// (deal-decks/ prefix) so email, SMS and the deck page can all LINK it rather
+// than carry a copy (M12). One stable file per deal (x-upsert), so re-sends
+// overwrite rather than pile up. Returns a SHORT branded link (/deck/<slug>)
+// that redirects to the PDF — not the long Storage URL. `slug` must be the
+// slug stored on the property, since that's what deck.js resolves by.
 async function uploadDealDeckPdf(slug, cleanBase64) {
   const path = `deal-decks/${slug}.pdf`;
   const bytes = Buffer.from(cleanBase64, "base64");
@@ -481,6 +508,10 @@ async function runBlast(payload, user) {
     // finally lets the two be told apart.
     const deckPageUrl = (buyerId, source) =>
       `${SITE_URL}/deck/${deckSlugVal}?b=${deckToken(buyerId)}${source ? `&s=${source}` : ""}`;
+    // Same link shape for the hosted Deal Deck PDF — deck.js reads `b` and `s`
+    // on the .pdf route too, so a download is attributed exactly like a view.
+    const deckPdfUrl = (buyerId, source) =>
+      `${SITE_URL}/deck/${deckSlugVal}.pdf?b=${deckToken(buyerId)}${source ? `&s=${source}` : ""}`;
     const terms = (termsRows || [])[0] || {};
     const morbyTerms = (morbyRows || [])[0] || {};
     const coverImageUrl = ((acqRows || [])[0] || {}).cover_image_url || "";
@@ -547,24 +578,40 @@ async function runBlast(payload, user) {
       }
     }
     const isMorbyDeck = !!(pdfBase64 && dealStrategy === "morby");
-    const pdfAttachments = isMorbyDeck ? [{
+
+    // M12: host the Deal Deck ONCE and link it, instead of hanging a copy off
+    // every recipient's email. Attachments inflate message size, trigger
+    // antivirus scanning and cost deliverability on bulk sends — and an
+    // attachment open is invisible, where a /deck/<slug>.pdf hit logs a
+    // deck_views row (kind='pdf') that feeds engagement scoring.
+    //
+    // This upload used to be gated on `wantSms`, which left email-only Morby
+    // blasts with no hosted copy at the canonical path at all — that's also
+    // why their interest receipts shipped without a PDF button
+    // (deck-interest.js HEADs that exact path to decide whether to show one).
+    //
+    // Upload with `deckSlugVal` (the slug actually stored on the property),
+    // NOT deckSlug(prop): deck.js resolves /deck/<slug>.pdf by looking the
+    // stored slug up, so a collision-suffixed or legacy slug used to put the
+    // file somewhere nothing served it.
+    let deckUrl = null;
+    if (isMorbyDeck) {
+      try { deckUrl = await uploadDealDeckPdf(deckSlugVal, pdfBase64); }
+      catch (e) { console.warn("deck PDF upload failed (falling back to attachment):", e.message); }
+    }
+    // Fallback only: if hosting failed, attach as before rather than send a
+    // deal email with no deck in it at all.
+    const pdfAttachments = (isMorbyDeck && !deckUrl) ? [{
       filename: `Deal Deck - ${(prop.address_override || prop.name || card_id).replace(/[\\/:*?"<>|]/g, "")}.pdf`,
       content: pdfBase64,
     }] : null;
+    const pdfHosted = isMorbyDeck && !!deckUrl;
 
     // Helper: build email content, swapping to the Morby template when needed.
     // Passes the buyer so the Morby email can greet them by first name.
-    const buildEmail = (unsubUrl, buyer, deckUrlForBuyer) => isMorbyDeck
-      ? buildMorbyEmail(prop, morbyTerms, unsubUrl, buyer, deckUrlForBuyer)
+    const buildEmail = (unsubUrl, buyer, deckUrlForBuyer, deckPdfUrlForBuyer) => isMorbyDeck
+      ? buildMorbyEmail(prop, morbyTerms, unsubUrl, buyer, deckUrlForBuyer, deckPdfUrlForBuyer)
       : buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer, deckUrlForBuyer);
-
-    // If we're texting a Stack Method deck, host the PDF once so the SMS can
-    // link it. Non-fatal: if the upload fails the text just omits the link.
-    let deckUrl = null;
-    if (isMorbyDeck && wantSms) {
-      try { deckUrl = await uploadDealDeckPdf(deckSlug(prop), pdfBase64); }
-      catch (e) { console.warn("deck PDF upload failed (SMS will omit link):", e.message); }
-    }
 
     // SMS audience gate: opted in, has a phone, and the number isn't in
     // sms_suppressions (migration 032 — STOP replies that matched no buyer
@@ -578,7 +625,11 @@ async function runBlast(payload, user) {
     if (isTest) {
       if (wantEmail) {
         const to = test_email || user.email;
-        const { subject, html } = buildEmail(unsubUrlFor("preview"), null, `${SITE_URL}/deck/${deckSlugVal}?b=preview`);
+        const { subject, html } = buildEmail(
+          unsubUrlFor("preview"), null,
+          `${SITE_URL}/deck/${deckSlugVal}?b=preview`,
+          pdfHosted ? `${SITE_URL}/deck/${deckSlugVal}.pdf?b=preview` : null,
+        );
         const testSubject = `[TEST] ${subject}`;
         const banner = `<div style="background:#FEEBC8;color:#7B341E;padding:10px 16px;font:600 13px Arial;border-radius:8px 8px 0 0">⚠️ TEST SEND — preview only, sent to ${escapeHtml(to)}, would normally go to ${matched.filter(emailable).length} matching buyer(s)</div>`;
         if (!to) {
@@ -644,7 +695,10 @@ async function runBlast(payload, user) {
             const chunk = emailBuyers.slice(i, i + EMAIL_CONCURRENCY);
             await Promise.all(chunk.map(async (b) => {
               const unsubUrl = unsubUrlFor(b.id);
-              const { subject, html } = buildEmail(unsubUrl, b, deckPageUrl(b.id, "email"));
+              const { subject, html } = buildEmail(
+                unsubUrl, b, deckPageUrl(b.id, "email"),
+                pdfHosted ? deckPdfUrl(b.id, "email") : null,
+              );
               try {
                 if (useResend) await sendViaResend(b.email, subject, html, unsubUrl, pdfAttachments, { buyer_id: b.id, card_id });
                 else await sendViaGmail(token, b.email, subject, html, unsubUrl);

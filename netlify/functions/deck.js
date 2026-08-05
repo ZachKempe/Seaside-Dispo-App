@@ -19,7 +19,8 @@ const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const SITE_URL = process.env.PUBLIC_SITE_URL || "https://seaside-dispo-app.netlify.app";
 const REQUIRE_TOKEN = String(process.env.DECK_REQUIRE_TOKEN || "false") === "true";
-const LOGO_URL = "https://seaside-dispo-app.netlify.app/img/logo.png";
+// M11: same host as every link on the page — see the note in lib/blast-core.js.
+const LOGO_URL = `${SITE_URL}/img/logo.png`;
 
 // Brand palette
 const NAVY = "#1B3A6B", NAVY_DARK = "#112950", GOLD = "#D4A03E", GOLD_LT = "#E8C878";

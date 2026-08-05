@@ -14,6 +14,7 @@ const {
 } = require("../../public/js/deal-shared");
 const { resolveDealPhotos } = require("./lib/deck-photo");
 const { listGalleryPhotos } = require("./lib/gallery");
+const { isBot } = require("./lib/bot-ua");
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -58,14 +59,56 @@ function viewSource(s) {
 function esc(s) {
   return String(s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+// Only an absolute http(s) URL can be an og:image — a scraper has no page
+// context to resolve a relative path against, and a broken image renders worse
+// than no card at all.
+function absUrl(u) {
+  return /^https?:\/\//i.test(String(u || "")) ? String(u) : "";
+}
+// The Open Graph / Twitter card a forwarded deck link unfurls into. Returns ""
+// when `meta` is null, so the 404, error and token-gated pages stay card-less
+// rather than advertising a deal that isn't there.
+function shareTags(meta) {
+  if (!meta) return "";
+  const title = meta.title || "";
+  const desc = String(meta.description || "");
+  const img = absUrl(meta.image);
+  const tags = [
+    `<meta property="og:type" content="website">`,
+    `<meta property="og:site_name" content="Seaside Horizon">`,
+    `<meta property="og:title" content="${esc(title)}">`,
+    `<meta name="twitter:title" content="${esc(title)}">`,
+    // summary_large_image only earns the big card when there IS an image;
+    // claiming it without one renders as an empty box in several clients.
+    `<meta name="twitter:card" content="${img ? "summary_large_image" : "summary"}">`,
+  ];
+  if (desc) tags.push(
+    `<meta name="description" content="${esc(desc)}">`,
+    `<meta property="og:description" content="${esc(desc)}">`,
+    `<meta name="twitter:description" content="${esc(desc)}">`,
+  );
+  if (meta.url) tags.push(`<meta property="og:url" content="${esc(meta.url)}">`);
+  if (img) tags.push(
+    `<meta property="og:image" content="${esc(img)}">`,
+    `<meta property="og:image:alt" content="${esc(title)}">`,
+    `<meta name="twitter:image" content="${esc(img)}">`,
+  );
+  return tags.join("\n") + "\n";
+}
 // `extraCss` is appended inside the same <style>. It exists so a rule only one
 // deal type needs (the sub-to rent section) isn't emitted on pages that have no
 // such element — which is what keeps Morby/Stack pages byte-identical.
-function page(title, body, extraCss = "") {
+//
+// `meta` drives the link-preview card. Forwarding is a real distribution channel
+// here — an untokenized hand-raise on a forwarded link becomes a buyer row in
+// deck-interest.js — so a deck link that unfurls as a naked URL costs list
+// growth. Only the rendered deal page passes it.
+function page(title, body, extraCss = "", meta = null) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>${esc(title)}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="icon" href="${esc(LOGO_URL)}">
+${shareTags(meta)}<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&display=swap" rel="stylesheet">
 <style>
@@ -129,17 +172,21 @@ exports.handler = async (event) => {
 
   if (wantsPdf) {
     if (!cleanSlug || !SB_URL) return { statusCode: 404, body: "Not found" };
-    // Log the download (fail-soft) so the deal page can show a real PDF-download count.
-    try {
-      const p = await sb(`/properties?deck_slug=eq.${encodeURIComponent(cleanSlug)}&select=card_id&limit=1`);
-      if (p && p[0]) {
-        const row = { card_id: p[0].card_id, buyer_id: verifyDeckToken(q.b) || null, kind: "pdf", user_agent: (event.headers["user-agent"] || "").slice(0, 300) };
-        const logPdf = (r) => sb(`/deck_views`, { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(r) });
-        // Retry without `source` if migration 030 hasn't run yet.
-        try { await logPdf({ ...row, source: viewSource(q.s) }); }
-        catch (e) { await logPdf(row); }
-      }
-    } catch (e) { console.warn("pdf download log failed:", e.message); }
+    // Log the download (fail-soft) so the deal page can show a real PDF-download
+    // count. Scrapers still get the redirect, they just don't count as downloads.
+    const pdfUa = (event.headers["user-agent"] || "").slice(0, 300);
+    if (!isBot(pdfUa)) {
+      try {
+        const p = await sb(`/properties?deck_slug=eq.${encodeURIComponent(cleanSlug)}&select=card_id&limit=1`);
+        if (p && p[0]) {
+          const row = { card_id: p[0].card_id, buyer_id: verifyDeckToken(q.b) || null, kind: "pdf", user_agent: pdfUa };
+          const logPdf = (r) => sb(`/deck_views`, { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(r) });
+          // Retry without `source` if migration 030 hasn't run yet.
+          try { await logPdf({ ...row, source: viewSource(q.s) }); }
+          catch (e) { await logPdf(row); }
+        }
+      } catch (e) { console.warn("pdf download log failed:", e.message); }
+    }
     const url = `${SB_URL}/storage/v1/object/public/property-photos/deal-decks/${cleanSlug}.pdf`;
     return { statusCode: 302, headers: { Location: url }, body: "" };
   }
@@ -187,8 +234,14 @@ exports.handler = async (event) => {
     // View log. We wait for the row id so the page can report dwell time to
     // deck-dwell.js on exit; if the insert fails the page still renders, just
     // without dwell tracking.
+    //
+    // Bots are skipped: every forwarded link gets fetched by a preview scraper
+    // before a human ever opens it, and those fetches would land in the same
+    // counts the page shows buyers as social proof. A skipped log leaves viewId
+    // null, which the dwell script already treats as "no tracking" — and bots
+    // don't run it anyway.
     let viewId = null;
-    {
+    if (!isBot(event.headers["user-agent"])) {
       const base = { card_id: cardId, buyer_id: buyerId || null, user_agent: (event.headers["user-agent"] || "").slice(0, 300) };
       const logView = async (row) => {
         const vRows = await sb(`/deck_views`, { method: "POST", headers: { Prefer: "return=representation" },
@@ -717,7 +770,27 @@ exports.handler = async (event) => {
     const rentCss = rentSec
       ? `\n @media(min-width:1100px){.rent-sec{margin:26px auto 0!important;width:calc(100% - 96px);max-width:700px}}`
       : "";
-    return { statusCode: 200, headers: { "Content-Type": "text/html", "Cache-Control": "no-store" }, body: page(address, body, rentCss) };
+
+    // Link-preview card. Every value is one the page itself already renders, so
+    // the card can't drift from the deal — the hero money line is the same
+    // heroLabel/heroValue pair shown above, and the image is the same resolved
+    // hero photo (gallery → cover → listing → auto Street View). og:url is the
+    // clean canonical deck URL, never this request's ?b= link, so a per-buyer
+    // token is never copied into Facebook's or Apple's preview caches.
+    const bedBath = terms.beds
+      ? (terms.baths ? `${terms.beds} bd / ${terms.baths} ba` : `${terms.beds} bd`)
+      : "";
+    const shareMeta = {
+      title: street || address,
+      description: [
+        heroValue && heroValue !== "—" ? `${heroLabel}: ${heroValue}` : "",
+        bedBath,
+        cityLine,
+      ].filter(Boolean).join(" · "),
+      image: heroPhoto,
+      url: `${SITE_URL}/deck/${cleanSlug}`,
+    };
+    return { statusCode: 200, headers: { "Content-Type": "text/html", "Cache-Control": "no-store" }, body: page(address, body, rentCss, shareMeta) };
   } catch (err) {
     console.error("deck render error:", err.message);
     return { statusCode: 500, headers: { "Content-Type": "text/html" }, body: page("Error", `<div class="wrap"><div style="padding:60px 24px;text-align:center;color:${MUTED}">Something went wrong loading this deal. Text us and we'll send it over.</div></div>`) };

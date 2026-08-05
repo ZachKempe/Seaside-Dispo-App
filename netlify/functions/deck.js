@@ -8,7 +8,10 @@
 // All data queries, token handling, view logging and interest posting are UNCHANGED.
 // New dependency: ./lib/deck-photo.js  +  env GOOGLE_MAPS_API_KEY (optional).
 const { verifyDeckToken, viewToken } = require("./lib/deck-token");
-const { fmtMoney, buyerCashAtClose, subtoSummaryRows, morbyTermRows } = require("../../public/js/deal-shared");
+const {
+  fmtMoney, buyerCashAtClose, subtoTermRows, morbyTermRows,
+  subtoCarry, subtoRentOptions, subtoPrincipalPaydown, RESERVE_MONTHS,
+} = require("../../public/js/deal-shared");
 const { resolveDealPhotos } = require("./lib/deck-photo");
 const { listGalleryPhotos } = require("./lib/gallery");
 
@@ -54,7 +57,10 @@ function viewSource(s) {
 function esc(s) {
   return String(s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
-function page(title, body) {
+// `extraCss` is appended inside the same <style>. It exists so a rule only one
+// deal type needs (the sub-to rent section) isn't emitted on pages that have no
+// such element — which is what keeps Morby/Stack pages byte-identical.
+function page(title, body, extraCss = "") {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>${esc(title)}</title>
@@ -106,7 +112,7 @@ function page(title, body) {
   dialog{margin:auto}
   .sheet{border-radius:22px}
  }
-</style></head><body>${body}</body></html>`;
+${extraCss}</style></head><body>${body}</body></html>`;
 }
 
 exports.handler = async (event) => {
@@ -284,7 +290,7 @@ exports.handler = async (event) => {
       </div>` : "";
 
     // Deal terms grid
-    const rows = isMorby ? morbyTermRows(morby) : subtoSummaryRows(terms);
+    const rows = isMorby ? morbyTermRows(morby) : subtoTermRows(terms);
     const termsSec = rows.length ? `
       <div class="terms-sec" style="margin:24px 20px 0">
         <div style="display:flex;align-items:center;gap:10px;margin:0 4px 12px"><span style="font-size:11.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:${NAVY}">Deal Terms</span><span style="flex:1;height:1px;background:linear-gradient(90deg,#E0D9C9,transparent)"></span></div>
@@ -292,6 +298,122 @@ exports.handler = async (event) => {
           ${rows.map(([k, v]) => `<div class="term-cell" style="padding:15px 18px;border-bottom:1px solid #F0EBDF;border-right:1px solid #F0EBDF"><div style="font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#94A0B2;margin-bottom:5px">${esc(k)}</div><div class="term-v" style="font-size:17px;font-weight:700;color:${INK};letter-spacing:-.01em;font-variant-numeric:tabular-nums">${esc(v)}</div></div>`).join("")}
         </div>
       </div>` : "";
+
+    // ── "How you can rent it" — sub-to only ──────────────────────────
+    // The strategies that actually work at this property, each netted against
+    // the same carry. Blocked strategies render too (greyed, with the reason):
+    // they are content, not omissions — proof the CC&Rs were read. Rents with
+    // no source never appear in any form.
+    //
+    // Wrapped whole: nothing in here may take down a deal page. On any throw we
+    // log and drop the section, and the page renders exactly as it did before.
+    let rentSec = "";
+    if (!isMorby) {
+      try {
+        const rentOpts = subtoRentOptions(terms);
+        if (rentOpts.length) {
+          const carry = subtoCarry(terms);
+          const live = rentOpts.filter(o => !o.blockedReason);
+          const blocked = rentOpts.filter(o => o.blockedReason);
+          const carryTxt = `${fmtMoney(carry.total)}/mo`;
+          // A real minus sign, and never a hidden negative.
+          const money = (n) => (n < 0 ? `−$${Math.abs(n).toLocaleString()}` : `$${Number(n).toLocaleString()}`);
+          const GREEN = "#1F7A54", RED = "#B4541F", AMBER = "#8A6D1F";
+
+          const subhead = !live.length
+            ? "Rental use is restricted here — this is exactly what the HOA and the municipality allow."
+            : live.length === 1
+              ? `1 strategy works at this property. Nets against the ${carryTxt} carry.`
+              : `${live.length} strategies work at this property. Each nets against the same ${carryTxt} carry.`;
+
+          const warnLine = (o) => o.warning
+            ? `<div style="margin-top:7px;font-size:11px;font-weight:600;color:${AMBER}">⚠ ${esc(o.warning)}</div>` : "";
+          const cashLine = (o) =>
+            `<div style="margin-top:4px;font-size:11.5px;color:#5A6B85">Cash in ~$${o.cashIn.toLocaleString()}${o.furnishing > 0 ? " incl. furnishing" : ""}</div>`;
+          // Two-line clamp on the source: long citations shrink on screen, the
+          // stored text is never truncated.
+          const sourceLine = (o) =>
+            `<div style="margin-top:4px;font-size:11px;line-height:1.4;color:${MUTED};display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(o.source)}</div>`;
+
+          const liveCard = (o) => `
+            <div style="background:#fff;border:1px solid ${LINE};border-radius:14px;padding:14px 15px;box-shadow:0 10px 24px -20px rgba(17,41,80,.45)">
+              <div style="font-size:10.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:${NAVY}">${esc(o.label)}</div>
+              <div style="margin-top:7px;font-weight:800;font-size:25px;line-height:1;color:${INK};letter-spacing:-.02em;font-variant-numeric:tabular-nums">$${o.rent.toLocaleString()}<span style="font-size:12.5px;font-weight:600;color:${MUTED}">/mo</span></div>
+              ${sourceLine(o)}
+              <div style="margin-top:4px;font-size:11px;color:${MUTED}">Less carry and ${o.loadPct}% load</div>
+              <div style="height:1px;background:#F0EBDF;margin:11px 0 9px"></div>
+              <div style="font-size:15px;font-weight:800;color:${o.net >= 0 ? GREEN : RED};font-variant-numeric:tabular-nums">Net ${money(o.net)}<span style="font-size:11.5px;font-weight:600;color:${MUTED}">/mo</span></div>
+              ${cashLine(o)}
+              ${warnLine(o)}
+            </div>`;
+
+          const blockedCard = (o) => `
+            <div style="background:#FCFAF5;border:1px dashed #DFD6C2;border-radius:14px;padding:14px 15px;opacity:.75">
+              <div style="font-size:10.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:${MUTED}">${esc(o.label)}</div>
+              <div style="margin-top:7px;font-weight:700;font-size:16px;line-height:1.2;color:${MUTED}">Not available</div>
+              <div style="margin-top:8px;font-size:11.5px;font-weight:600;line-height:1.45;color:${AMBER}">🔒 ${esc(o.blockedReason)}</div>
+            </div>`;
+
+          // One live option and nothing blocked reads as a lone card marooned
+          // in a grid — render it as a full-width row instead.
+          const soleRow = (o) => `
+            <div style="background:#fff;border:1px solid ${LINE};border-radius:14px;padding:15px 17px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;box-shadow:0 10px 24px -20px rgba(17,41,80,.45)">
+              <div style="flex:1;min-width:150px">
+                <div style="font-size:10.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:${NAVY}">${esc(o.label)}</div>
+                <div style="margin-top:6px;font-weight:800;font-size:25px;line-height:1;color:${INK};letter-spacing:-.02em;font-variant-numeric:tabular-nums">$${o.rent.toLocaleString()}<span style="font-size:12.5px;font-weight:600;color:${MUTED}">/mo</span></div>
+                ${sourceLine(o)}
+                <div style="margin-top:4px;font-size:11px;color:${MUTED}">Less carry and ${o.loadPct}% load</div>
+              </div>
+              <div style="text-align:right;min-width:130px">
+                <div style="font-size:19px;font-weight:800;color:${o.net >= 0 ? GREEN : RED};font-variant-numeric:tabular-nums">Net ${money(o.net)}<span style="font-size:12px;font-weight:600;color:${MUTED}">/mo</span></div>
+                ${cashLine(o)}
+              </div>
+              ${o.warning ? `<div style="flex-basis:100%;font-size:11px;font-weight:600;color:${AMBER}">⚠ ${esc(o.warning)}</div>` : ""}
+            </div>`;
+
+          const grid = (live.length === 1 && !blocked.length)
+            ? soleRow(live[0])
+            : `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:12px">
+                 ${live.map(liveCard).join("")}${blocked.map(blockedCard).join("")}
+               </div>`;
+
+          // Bands. Every-net-negative replaces the paydown band outright: a
+          // deal that doesn't cash-flow should say so in its own words rather
+          // than lead with equity.
+          const allNegative = live.length > 0 && live.every(o => o.net < 0);
+          const paydown = subtoPrincipalPaydown(terms);
+          let band = "";
+          if (allNegative) {
+            band = `<div style="margin-top:12px;background:#FaF3DC;border:1px solid #EAD9A0;border-radius:12px;padding:12px 14px;font-size:12.5px;line-height:1.5;color:${AMBER};font-weight:600">This is a negative-carry deal — the case here is equity capture and the assumed rate, not monthly cash flow.</div>`;
+          } else if (paydown && live.length) {
+            const subj = live.length === 1 ? "This strategy" : live.length === 2 ? "Either strategy" : "Every strategy";
+            band = `<div style="margin-top:12px;background:#E4F4EC;border:1px solid #B7E3CC;border-radius:12px;padding:12px 14px;font-size:12.5px;line-height:1.5;color:${GREEN};font-weight:600">${subj} also builds ~$${paydown.toLocaleString()}/mo in principal paydown on the assumed loan.</div>`;
+          }
+
+          const loadNote = rentOpts.map(o => `${o.label.toLowerCase()} ${o.loadPct}%`).join(", ");
+          // The furnishing clauses only make sense when a furnished strategy is
+          // actually on the page — on an LTR-only deal they're noise.
+          const hasFurnished = rentOpts.some(o => o.mode !== "ltr");
+          const foot = `<div style="margin-top:10px;font-size:11px;line-height:1.55;color:#A6AEBC">
+              Load covers vacancy, maintenance, capex and management (${esc(loadNote)} of rent)${hasFurnished ? "; furnished stays also carry turnover and utilities" : ""}.
+              Cash in assumes the entry fee, closing costs, ${RESERVE_MONTHS} months of carry${rentOpts.some(o => o.furnishing > 0) ? " and furnishing" : ""}.
+              All figures are estimates for evaluation and should be independently verified.
+            </div>`;
+
+          rentSec = `
+            <div class="rent-sec" style="margin:24px 20px 0">
+              <div style="display:flex;align-items:center;gap:10px;margin:0 4px 6px"><span style="font-size:11.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:${NAVY}">How you can rent it</span><span style="flex:1;height:1px;background:linear-gradient(90deg,#E0D9C9,transparent)"></span></div>
+              <div style="margin:0 4px 12px;font-size:12.5px;line-height:1.5;color:#718096">${esc(subhead)}</div>
+              ${grid}
+              ${band}
+              ${foot}
+            </div>`;
+        }
+      } catch (e) {
+        console.warn("rent section skipped:", e.message);
+        rentSec = "";
+      }
+    }
 
     // Contact
     const cName = process.env.MARKETING_CONTACT_NAME || "Seaside Horizon";
@@ -578,7 +700,7 @@ exports.handler = async (event) => {
         ${heroCard}
         ${activity}
         ${photosSec}
-        ${termsSec}
+        ${termsSec}${rentSec}
         ${contactSec}
         <div class="foot" style="text-align:center;padding:26px 24px 10px;color:#A6AEBC;font-size:11.5px;line-height:1.6">
           Seaside Horizon${cPhone ? " · " + esc(cPhone) : ""}<br>Figures are estimates for evaluation and not a guarantee of returns.
@@ -589,7 +711,12 @@ exports.handler = async (event) => {
       ${galleryDialog}
       ${script}`;
 
-    return { statusCode: 200, headers: { "Content-Type": "text/html", "Cache-Control": "no-store" }, body: page(address, body) };
+    // Desktop rule for the rent section only — emitted only when that section
+    // exists, so a Morby page is byte-for-byte what it was before this feature.
+    const rentCss = rentSec
+      ? `\n @media(min-width:1100px){.rent-sec{margin:26px auto 0!important;width:calc(100% - 96px);max-width:700px}}`
+      : "";
+    return { statusCode: 200, headers: { "Content-Type": "text/html", "Cache-Control": "no-store" }, body: page(address, body, rentCss) };
   } catch (err) {
     console.error("deck render error:", err.message);
     return { statusCode: 500, headers: { "Content-Type": "text/html" }, body: page("Error", `<div class="wrap"><div style="padding:60px 24px;text-align:center;color:${MUTED}">Something went wrong loading this deal. Text us and we'll send it over.</div></div>`) };

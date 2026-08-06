@@ -15,6 +15,7 @@ const {
 const { resolveDealPhotos } = require("./lib/deck-photo");
 const { listGalleryPhotos } = require("./lib/gallery");
 const { isBot } = require("./lib/bot-ua");
+const { deckPdfExists, deckPdfStorageUrl } = require("./lib/deck-pdf");
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -172,6 +173,25 @@ exports.handler = async (event) => {
 
   if (wantsPdf) {
     if (!cleanSlug || !SB_URL) return { statusCode: 404, body: "Not found" };
+    // H3 — resolve the object BEFORE doing anything else. This route is linked
+    // from already-sent email, so a missing PDF must not dead-end: fall through
+    // to the deal page instead, carrying ?b= and ?s= so the visit still
+    // attributes to the buyer and the channel it came from.
+    //
+    // Nothing is logged on that path. A kind='pdf' row is supposed to mean
+    // "an investor downloaded the deck" — it feeds engagementScore (+5, and
+    // the "call today" strip) and the page's own "N PDF downloads" chip. Both
+    // used to be inflated by clicks that downloaded nothing at all.
+    //
+    // Relative on purpose: PUBLIC_SITE_URL is unset in every Netlify context
+    // today, so SITE_URL falls back to the netlify.app host — sending a visitor
+    // who arrived on a custom domain off to a different one. A relative
+    // Location keeps them wherever they already are (same instinct as M11).
+    if (!(await deckPdfExists(cleanSlug))) {
+      const carry = [q.b ? `b=${encodeURIComponent(q.b)}` : "", q.s ? `s=${encodeURIComponent(q.s)}` : ""]
+        .filter(Boolean).join("&");
+      return { statusCode: 302, headers: { Location: `/deck/${cleanSlug}${carry ? `?${carry}` : ""}` }, body: "" };
+    }
     // Log the download (fail-soft) so the deal page can show a real PDF-download
     // count. Scrapers still get the redirect, they just don't count as downloads.
     const pdfUa = (event.headers["user-agent"] || "").slice(0, 300);
@@ -187,8 +207,7 @@ exports.handler = async (event) => {
         }
       } catch (e) { console.warn("pdf download log failed:", e.message); }
     }
-    const url = `${SB_URL}/storage/v1/object/public/property-photos/deal-decks/${cleanSlug}.pdf`;
-    return { statusCode: 302, headers: { Location: url }, body: "" };
+    return { statusCode: 302, headers: { Location: deckPdfStorageUrl(cleanSlug) }, body: "" };
   }
   if (!cleanSlug) return { statusCode: 404, headers: { "Content-Type": "text/html" }, body: page("Not found", `<div class="wrap"><div style="padding:60px 24px;text-align:center;color:${MUTED}">Deal not found.</div></div>`) };
 
@@ -201,7 +220,7 @@ exports.handler = async (event) => {
     const encCard = encodeURIComponent(cardId);
     const iso = (ms) => encodeURIComponent(new Date(Date.now() - ms).toISOString());
     // Counts run BEFORE this visitor's own view is logged, so they only reflect others.
-    const [termsRows, morbyRows, acqRows, statusRows, views24, views7d, pdfCount, gallery] = await Promise.all([
+    const [termsRows, morbyRows, acqRows, statusRows, views24, views7d, pdfCount, gallery, hasPdf] = await Promise.all([
       sb(`/deal_terms?card_id=eq.${encCard}&select=*&limit=1`),
       sb(`/morby_deals?card_id=eq.${encCard}&select=*&limit=1`),
       sb(`/deal_acquisition?card_id=eq.${encCard}&select=cover_image_url&limit=1`),
@@ -210,6 +229,9 @@ exports.handler = async (event) => {
       sbCount(`/deck_views?card_id=eq.${encCard}&kind=eq.view&viewed_at=gte.${iso(7 * 24 * 3600e3)}`),
       sbCount(`/deck_views?card_id=eq.${encCard}&kind=eq.pdf`),
       listGalleryPhotos(cardId), // fails soft to []
+      // H3 — is there actually a PDF to offer? Rides along in this batch so the
+      // gate costs no extra round-trip on the render path.
+      deckPdfExists(cleanSlug),
     ]);
     const terms = (termsRows || [])[0] || {};
     const morby = (morbyRows || [])[0] || {};
@@ -324,7 +346,12 @@ exports.handler = async (event) => {
     const chips = [];
     if (views24 >= 2) chips.push(`<span style="${chipStyle}">${pulseDot}<b style="color:${INK};font-weight:800">${views24}</b>&nbsp;views in the last 24 hours</span>`);
     else if (views7d >= 3) chips.push(`<span style="${chipStyle}">${pulseDot}<b style="color:${INK};font-weight:800">${views7d}</b>&nbsp;views this week</span>`);
-    if (pdfCount >= 2) chips.push(`<span style="${chipStyle}">📄&nbsp;<b style="color:${INK};font-weight:800">${pdfCount}</b>&nbsp;PDF downloads</span>`);
+    // Gated on the file existing, not just on the count: before H3 every click
+    // of the always-on PDF button logged a download even when there was no PDF
+    // to download, so on a Sub-To deck this chip counted nothing but dead-link
+    // taps. Honest social proof is the point of this strip — a count we can no
+    // longer stand behind doesn't get shown.
+    if (hasPdf && pdfCount >= 2) chips.push(`<span style="${chipStyle}">📄&nbsp;<b style="color:${INK};font-weight:800">${pdfCount}</b>&nbsp;PDF downloads</span>`);
     const activity = chips.length ? `
       <div class="activity" style="margin:14px 20px 0;display:flex;justify-content:center;align-items:center;gap:9px;flex-wrap:wrap">${chips.join("")}</div>` : "";
 
@@ -484,7 +511,14 @@ exports.handler = async (event) => {
       ? `<p class="greeting" style="margin:0;padding:18px 24px 0;font-size:15px;color:#4A5568">Hi ${esc(String(buyer.name).split(/\s+/)[0])}, here's the full deal.</p>`
       : "";
 
-    const pdfBtn = `<a href="${SITE_URL}/deck/${esc(cleanSlug)}.pdf" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:${NAVY};background:#fff;border:1px solid #D8CFB8;border-radius:13px;padding:0 18px;white-space:nowrap">PDF</a>`;
+    // H3 — only offered when the file is really there. Sub-To decks have no
+    // generated PDF (only a Morby/Stack blast uploads one), so this button used
+    // to send those investors to a raw Storage 404. Linked through our own
+    // /deck/<slug>.pdf route, not straight to Storage, so the download still
+    // logs a deck_views row and stays attributed.
+    const pdfBtn = hasPdf
+      ? `<a href="${SITE_URL}/deck/${esc(cleanSlug)}.pdf" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:${NAVY};background:#fff;border:1px solid #D8CFB8;border-radius:13px;padding:0 18px;white-space:nowrap">PDF</a>`
+      : "";
     const callBtn = cPhone ? `<a href="${esc(telHref)}" style="display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:#fff;background:${NAVY};border-radius:13px;padding:0 20px;white-space:nowrap">Call</a>` : "";
 
     const actionBar = canInterest

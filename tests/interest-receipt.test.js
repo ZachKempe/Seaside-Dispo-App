@@ -128,3 +128,33 @@ test("names and addresses are escaped into the HTML", () => {
   assert.ok(html.includes("&amp;"));
   assert.ok(html.includes("&quot;"));
 });
+
+// ── C2: the buy-box ask ─────────────────────────────────────────────
+// Rendered only when deck-interest.js hands over a URL, which it does only for
+// a buyer we can identify whose box isn't already complete.
+test("the buy-box block renders only when a URL is supplied", () => {
+  assert.ok(!buildReceiptHtml(base).includes("Tell us what you buy"));
+  const html = buildReceiptHtml({ ...base, buyBoxUrl: "https://x.test/buy-box?t=42.abc" });
+  assert.match(html, /Tell us what you buy/);
+  assert.ok(html.includes("https://x.test/buy-box?t=42.abc"));
+});
+
+test("the buy-box ask sits below the deal buttons, never among them", () => {
+  const html = buildReceiptHtml({
+    ...base, pdfUrl: "https://x.test/deck/a.pdf", buyBoxUrl: "https://x.test/buy-box?t=1.a",
+  });
+  // "View the deal" is what they came for — the ask must not outrank it.
+  assert.ok(html.indexOf("View the deal") < html.indexOf("Tell us what you buy"));
+  assert.ok(html.indexOf("Book a call") < html.indexOf("Tell us what you buy"));
+});
+
+test("the buy-box URL is escaped into the href", () => {
+  const html = buildReceiptHtml({ ...base, buyBoxUrl: 'https://x.test/buy-box?t=1"><script>' });
+  assert.ok(!html.includes('"><script>'));
+  assert.ok(html.includes("&quot;"));
+});
+
+test("an offer receipt still carries the ask — an offer is not a buy box", () => {
+  const html = buildReceiptHtml({ ...base, offer: 250000, buyBoxUrl: "https://x.test/buy-box?t=1.a" });
+  assert.match(html, /Tell us what you buy/);
+});

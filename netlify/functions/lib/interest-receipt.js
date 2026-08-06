@@ -53,11 +53,37 @@ function button(href, label, bg, color, border) {
   return `<a href="${esc(href)}" style="display:inline-block;margin:0 8px 10px 0;background:${bg};color:${color};text-decoration:none;padding:13px 22px;border-radius:10px;font:700 14px Inter,Helvetica,Arial,sans-serif;border:1px solid ${border}">${esc(label)}</a>`;
 }
 
+// C2 — the buy-box ask, as a distinct block UNDER the deal buttons rather than
+// a fourth button beside them.
+//
+// Placement is the whole design. The audit put this ask on the deck page,
+// between the tap and the submit; that is the best-converting moment on the
+// page and the last place to add a form. Here the conversion is already banked
+// — they tapped, we have the lead, this email is the receipt — so the ask
+// costs nothing if ignored. Visually separated for the same reason: it must
+// never compete with "View the deal", which is what they actually came for.
+//
+// Rendered only when deck-interest.js passes a URL, which it does only for a
+// buyer whose box isn't already complete. Asking someone who has already told
+// us reads as not listening.
+function buyBoxBlock(buyBoxUrl) {
+  if (!buyBoxUrl) return "";
+  return `<tr><td style="padding:6px 30px 26px">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:${PAPER};border:1px solid ${LINE};border-radius:12px">
+        <tr><td style="padding:16px 18px">
+          <p style="margin:0 0 4px;font-size:14px;font-weight:700;color:${INK}">Want fewer, better deals?</p>
+          <p style="margin:0 0 12px;font-size:13.5px;line-height:1.55;color:${INK}">Right now I send you everything we put under contract. Tell me the states, structures and budget you actually buy in and I'll only send the ones that fit. Takes about a minute.</p>
+          <a href="${esc(buyBoxUrl)}" style="display:inline-block;font:700 13.5px Inter,Helvetica,Arial,sans-serif;color:${NAVY};text-decoration:underline">Tell us what you buy &rarr;</a>
+        </td></tr>
+      </table>
+    </td></tr>`;
+}
+
 // The deck link and the booking button ALWAYS render — the booking URL resolves
 // to a working default, so it cannot go missing. Only the PDF is conditional:
 // it exists solely once a blast has uploaded one, and a dead download link in a
 // buyer's inbox is worse than no link.
-function buildReceiptHtml({ firstName, address, deckUrl, pdfUrl, offer, calendlyUrl, contactName, contactPhone }) {
+function buildReceiptHtml({ firstName, address, deckUrl, pdfUrl, offer, calendlyUrl, contactName, contactPhone, buyBoxUrl }) {
   const booking = resolveCalendlyUrl(calendlyUrl);
   const intro = offer
     ? `Thanks — I have your offer of about <b>$${Number(offer).toLocaleString()}</b> on <b>${esc(address)}</b>. I will look it over and come back to you personally. In the meantime, here is everything on the deal:`
@@ -79,11 +105,12 @@ function buildReceiptHtml({ firstName, address, deckUrl, pdfUrl, offer, calendly
       <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:${INK}">${intro}</p>
     </td></tr>
     <tr><td style="padding:0 30px">${buttons}</td></tr>
-    <tr><td style="padding:12px 30px 26px">
+    <tr><td style="padding:12px 30px 22px">
       <p style="margin:0;font-size:14px;line-height:1.6;color:${INK}">${closing}</p>
       <p style="margin:18px 0 0;font-size:14px;color:${INK}">— <b>${esc(contactName || "Seaside Horizon")}</b></p>
       ${contactPhone ? `<p style="margin:2px 0 0;font-size:14px;font-weight:600;color:${GOLD}">${esc(contactPhone)}</p>` : ""}
     </td></tr>
+    ${buyBoxBlock(buyBoxUrl)}
     <tr><td style="padding:0 30px 22px">
       <p style="margin:0;font-size:11px;line-height:1.5;color:${MUTED}">You are receiving this because you asked for details on ${esc(address)} from the Seaside Horizon deal page.</p>
     </td></tr>
@@ -92,4 +119,4 @@ function buildReceiptHtml({ firstName, address, deckUrl, pdfUrl, offer, calendly
 }
 
 module.exports = { emailish, firstNameOf, receiptSubject, buildReceiptHtml,
-                   resolveCalendlyUrl, DEFAULT_CALENDLY_URL };
+                   resolveCalendlyUrl, DEFAULT_CALENDLY_URL, buyBoxBlock };

@@ -49,6 +49,27 @@ modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline eit
   neither, the lead is still recorded and **no** buyer is created. The whole buyer step is
   wrapped so any failure degrades to the old buyer-less behavior — never lose the lead to
   gain a buyer. A soft-deleted match is restored (`restoreRemoved`) and the 🔥 alert says so.
+  The receipt also carries the **buy-box ask** (below) when the buyer's box isn't already
+  `full` — placed under the deal buttons, never among them.
+  Whether a deal has a hosted PDF is `lib/deck-pdf.js` (`deckPdfExists`) and **only** that:
+  the deck page's PDF button, the receipt's download button and the `/deck/<slug>.pdf`
+  route all gate on it. Before H3 the button rendered unconditionally, so every Sub-To deck
+  (no blast ever uploads one) sent investors to a raw Storage 404 — and the route logged
+  `deck_views(kind='pdf')` *before* resolving anything, so dead-link taps scored +5
+  engagement and inflated the deck's own "N PDF downloads" chip. A `.pdf` hit with no file
+  now 302s to the deal page carrying `?b=`/`?s=`, and logs nothing.
+- `buy-box.js` — the tokenized buy-box form (`/buy-box?t=<deckToken>`) linked from the
+  interest receipt. **The ask deliberately lives in the receipt, not on the deck page:** the
+  one-tap hand-raise is the best-converting thing on that page, so the conversion is banked
+  first and the ask costs nothing if ignored. A plain `<form method="POST">` — no client JS
+  — because it is opened from email on a phone. Parsing reuses `lib/buyer-intake.js`
+  (same parsers as the public questionnaire) via `lib/buy-box-form.js`, which owns the write
+  rules and mints the link, the way `unsub.js` owns its token. Two rules that matter: a
+  blank answer **never** overwrites a known one (so a buyer can finish the form across two
+  visits), and every number is sanity-banded — a junk cap like `max_piti=5` is a *filter*
+  that would silently exclude them from every deal, so it's dropped and re-asked rather than
+  saved. Nothing wires into `onboard-buyers.js`: `dueTouch` already stops on
+  `buyBoxCompleteness === 'full'`, so an answered form ends the email sequence by itself.
 - `resend-events.js` — Resend webhook (svix-verified) for email opens/clicks/bounces/
   complaints → `email_events`, attributed via the buyer_id/card_id tags send-blast sets;
   complaints auto-set `email_opt_out`. Needs `RESEND_WEBHOOK_SECRET` + a webhook configured
@@ -120,13 +141,16 @@ which channel the link came from — `sms`/`email`/`dm`/`''`=direct, migration 0
 blast-core tags every deck link with `&s=<channel>`), `email_events`
 (opens/clicks from Resend), `buyer_activity` (inbound replies + manual touches),
 `deal_leads` (pipeline stages), `deal_tasks` (next actions with due dates, pipeline page).
+A `deck_views` row with `kind='pdf'` must mean a real download — `deck.js` resolves the
+Storage object before logging one (see `lib/deck-pdf.js`), because that row feeds both
+`engagementScore` and the buyer-facing download count.
 buyers.html aggregates these into the per-buyer score and timeline; dashboard.html builds
 the "Call today" strip from leads + recent deck views, and the follow-up nudge
 (`followUpInfo`) from non-engaged blast recipients 48h+ after a send. A follow-up send is
 marked `[follow-up]` in `deal_blasts.detail` — that marker is what caps it at one per deal. Other cross-function helpers live in `netlify/functions/lib/` (`capture.js`,
 `deck-token.js`, `deck-photo.js`, `heartbeat.js`, `ghl-sms.js`, `unsub.js`,
 `interest-receipt.js`, `contact.js`, `buyer-intake.js`,
-`onboard-sequence.js`). `unsub.js` owns both minting and verifying the unsubscribe token —
+`onboard-sequence.js`, `buy-box-form.js`, `deck-pdf.js`). `unsub.js` owns both minting and verifying the unsubscribe token —
 they must agree or live links in already-sent email break (pinned in `tests/unsub.test.js`).
 
 Buyer records are deduped on **digits-only phone / lower-cased email** — the CSV importer

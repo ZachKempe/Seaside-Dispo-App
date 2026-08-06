@@ -14,6 +14,8 @@ const { verifyDeckToken, deckToken } = require("./lib/deck-token");
 const { emailish, firstNameOf, receiptSubject, buildReceiptHtml } = require("./lib/interest-receipt");
 const { parseContact } = require("./lib/contact");
 const { findOrCreateBuyer } = require("./lib/capture");
+const { deckPdfExists } = require("./lib/deck-pdf");
+const { buyBoxUrlFor, shouldAskBuyBox } = require("./lib/buy-box-form");
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -68,15 +70,37 @@ async function notify(address, who, offer, listNote) {
 // is the network work — probing for the PDF and handing Resend the payload.
 
 // The deck PDF only exists once a blast has uploaded one (blast-core's
-// uploadDealDeckPdf). deck.js 302s to Storage without checking, so probe first
-// — a dead download button in a buyer's inbox is worse than no button. Returns
-// the branded /deck/<slug>.pdf URL so the download still logs a deck_views row.
+// uploadDealDeckPdf) — a dead download button in a buyer's inbox is worse than
+// no button. The probe now lives in lib/deck-pdf.js because H3 gave deck.js the
+// same gate on its own PDF button; the email and the page must never disagree
+// about whether a PDF exists. Returns the branded /deck/<slug>.pdf URL so the
+// download still logs a deck_views row.
 async function deckPdfUrl(slug, buyerId) {
-  try {
-    const r = await fetch(`${SB_URL}/storage/v1/object/public/property-photos/deal-decks/${slug}.pdf`, { method: "HEAD" });
-    if (!r.ok) return "";
-  } catch (_) { return ""; }
+  if (!(await deckPdfExists(slug))) return "";
   return `${SITE_URL}/deck/${slug}.pdf${buyerId ? `?b=${deckToken(buyerId)}` : ""}`;
+}
+
+// C2 — the buy-box link the receipt carries, or "" when we shouldn't ask.
+//
+// We ask only someone we can identify (no buyer id, no token, no link) and
+// only someone whose box isn't already complete. The buy-box columns aren't on
+// every code path that gets us here — the untokenized branch's buyer can come
+// back from a phone-keyed lookup that selects a narrower column set — so this
+// re-reads them rather than trusting whatever shape it was handed.
+//
+// Fails soft to ASKING. Getting it wrong in that direction shows a form to
+// someone who already answered; getting it wrong the other way silently drops
+// the one ask that fixes a wildcard, which is the whole point of the feature.
+async function buyBoxAskUrl(buyerId) {
+  if (!buyerId) return "";
+  try {
+    const rows = await sb(`/buyers?id=eq.${buyerId}&select=states,strategy,max_price,max_piti,min_beds&limit=1`);
+    const b = rows && rows[0];
+    if (b && !shouldAskBuyBox(b)) return "";
+  } catch (e) {
+    console.warn("buy-box completeness lookup failed (asking anyway):", e.message);
+  }
+  return buyBoxUrlFor(SITE_URL, buyerId);
 }
 
 // Returns true only if a receipt actually went out (drives the confirmation
@@ -85,6 +109,12 @@ async function sendInterestReceipt({ to, slug, buyerId, name, address, offer }) 
   if (!RESEND_API_KEY || !RESEND_FROM || !emailish(to)) return false;
   try {
     const tok = buyerId ? `?b=${deckToken(buyerId)}&s=email` : "";
+    // Two independent reads (Storage HEAD, buyer lookup) — in parallel, so the
+    // receipt an investor is waiting on doesn't queue them.
+    const [pdfUrl, buyBoxUrl] = await Promise.all([
+      deckPdfUrl(slug, buyerId),
+      buyBoxAskUrl(buyerId),
+    ]);
     const body = {
       from: RESEND_FROM,
       to: [String(to).trim()],
@@ -93,7 +123,8 @@ async function sendInterestReceipt({ to, slug, buyerId, name, address, offer }) 
         firstName: firstNameOf(name),
         address,
         deckUrl: `${SITE_URL}/deck/${slug}${tok}`,
-        pdfUrl: await deckPdfUrl(slug, buyerId),
+        pdfUrl,
+        buyBoxUrl,
         offer,
         calendlyUrl: CALENDLY_URL,
         contactName: CONTACT_NAME,

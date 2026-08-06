@@ -8,6 +8,14 @@
   to = "/.netlify/functions/deck?slug=:splat"
   status = 200
 
+# C2 — the tokenized buy-box form linked from the interest receipt. A short,
+# branded path because it goes out in email and gets read by humans; the
+# query string (?t=<token>) passes through a 200 rewrite untouched.
+[[redirects]]
+  from = "/buy-box"
+  to = "/.netlify/functions/buy-box"
+  status = 200
+
 [functions."sync-buyers"]
   schedule = "*/5 * * * *"
 

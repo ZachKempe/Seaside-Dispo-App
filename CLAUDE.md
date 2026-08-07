@@ -223,11 +223,29 @@ actually using, run a 🧪 test blast: the result reports `esp: "resend"` or `"g
 
 Also currently unset in **every** context, despite being listed above: `NOTIFY_EMAIL` (so the
 🔥 interest and sync-failure alerts fall back to `GMAIL_FROM_ADDRESS`, i.e.
-zach@seasidehorizon.com — check that inbox, not the gmail.com one), `DECK_TOKEN_SECRET` and
-`PUBLIC_SITE_URL`. The last two have code fallbacks so nothing is broken, but ⚠ **never set
-`DECK_TOKEN_SECRET` now** — `deck-token.js` currently falls through to `UNSUB_SECRET`, and
-changing the signing secret invalidates every per-buyer deck token already sitting in a sent
-email.
+zach@seasidehorizon.com — check that inbox, not the gmail.com one) and `DECK_TOKEN_SECRET`.
+That one has a code fallback so nothing is broken, but ⚠ **never set `DECK_TOKEN_SECRET`
+now** — `deck-token.js` currently falls through to `UNSUB_SECRET`, and changing the signing
+secret invalidates every per-buyer deck token already sitting in a sent email.
+
+### The public host is `deals.seasidehorizon.com` (since 2026-08-07)
+
+`PUBLIC_SITE_URL=https://deals.seasidehorizon.com`, set in the **production context only** —
+previews and branch deploys deliberately keep falling through to the
+`https://seaside-dispo-app.netlify.app` fallback, so a preview can't mint links that look
+live. Every investor-facing URL derives from that one value (`SITE_URL` in `deck.js`,
+`blast-core.js`, `deck-link.js`, `deck-interest.js`, `buy-box.js`, `onboard-buyers.js`, and
+`siteUrl()` in `lib/unsub.js`) — never hardcode a host beside them, including for the email
+logo, or the logo loads from a different domain than the links next to it and mail clients
+read the mismatch as a spam signal.
+
+DNS is a CNAME at **GoDaddy** (`deals` → `seaside-dispo-app.netlify.app`); the apex and `www`
+belong to a *different* Netlify site and must stay untouched. `deals.` is the primary domain
+on the Netlify project, but the `netlify.app` host still serves 200 rather than redirecting —
+so deck links in already-sent email keep working, and the Resend / GHL webhooks registered at
+the old host are still fine. Supabase Auth allows both hosts (`/**`) with Site URL on `deals.`;
+before that the allowlist was empty and Site URL was the stock `http://localhost:3000`, which
+is where every forgot-password link had been going.
 
 ## Conventions
 

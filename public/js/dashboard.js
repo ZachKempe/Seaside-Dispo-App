@@ -2973,11 +2973,31 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
       rowIndex = 0;
     };
 
+    // Row values are right-aligned against the column edge, which only works
+    // while they stay short. A free-text value out of the LOI (the closing-costs
+    // note, a broker-commission sentence) is wider than the space beside its
+    // label, so it used to start left of where the label ended and print
+    // straight over it. Wrap those into the room that's actually left; callers
+    // grow the row by the extra lines so nothing collides downward either.
+    const VALUE_LINE_H = 11.5;
+    const wrapValue = (label, value, width, bold) => {
+      doc.setFont("helvetica", bold ? "bold" : "normal");
+      doc.setFontSize(9.5);
+      const text = String(value);
+      // 12pt of air between label and value; never wrap narrower than 90pt, or
+      // an unusually long label would shred the value into one word per line.
+      const avail = Math.max(width - doc.getTextWidth(String(label)) - 12, 90);
+      return doc.getTextWidth(text) <= avail ? [text] : doc.splitTextToSize(text, avail);
+    };
+    const rowHeight = (lines) => 15 + (lines.length - 1) * VALUE_LINE_H;
+
     const row = (label, value, bold) => {
-      ensureSpace(17);
+      const lines = wrapValue(label, value, colW, bold);
+      const h = rowHeight(lines);
+      ensureSpace(h + 2);
       if (rowIndex % 2 === 0) {
         doc.setFillColor(250, 250, 252);
-        doc.rect(marginX - 6, y - 11, colW + 12, 15, "F");
+        doc.rect(marginX - 6, y - 11, colW + 12, h, "F");
       }
       rowIndex++;
       doc.setFont("helvetica", bold ? "bold" : "normal");
@@ -2989,10 +3009,10 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
         doc.line(marginX, y - 9, pageW - marginX, y - 9);
       }
       doc.text(String(label), marginX, y);
-      const valText = String(value);
-      const valW = doc.getTextWidth(valText);
-      doc.text(valText, marginX + colW - valW, y);
-      y += 15;
+      lines.forEach((line, i) => {
+        doc.text(line, marginX + colW - doc.getTextWidth(line), y + i * VALUE_LINE_H);
+      });
+      y += h;
     };
 
     const paragraph = (text) => {
@@ -3029,10 +3049,13 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
 
     // A single label/value row drawn within an arbitrary column (x, width) —
     // used by twoColumnSection() to lay out two side-by-side mini-sections.
-    const rowAt = (x, w, label, value, bold, idx) => {
+    // `h` is the shared height of the row across BOTH columns, so the two
+    // backgrounds still line up when only one side wrapped.
+    const rowAt = (x, w, label, value, bold, idx, h) => {
+      const lines = wrapValue(label, value, w, bold);
       if (idx % 2 === 0) {
         doc.setFillColor(250, 250, 252);
-        doc.rect(x - 6, y - 11, w + 12, 15, "F");
+        doc.rect(x - 6, y - 11, w + 12, h, "F");
       }
       doc.setFont("helvetica", bold ? "bold" : "normal");
       doc.setFontSize(9.5);
@@ -3043,9 +3066,9 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
         doc.line(x, y - 9, x + w, y - 9);
       }
       doc.text(String(label), x, y);
-      const valText = String(value);
-      const valW = doc.getTextWidth(valText);
-      doc.text(valText, x + w - valW, y);
+      lines.forEach((line, i) => {
+        doc.text(line, x + w - doc.getTextWidth(line), y + i * VALUE_LINE_H);
+      });
     };
 
     // Two side-by-side mini-sections sharing a single row of headers —
@@ -3054,7 +3077,17 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
       const gap = 20;
       const halfW = (colW - gap) / 2;
       const maxRows = Math.max(leftRows.length, rightRows.length);
-      ensureSpace(20 + maxRows * 15 + 5);
+      // Both columns share a baseline, so the taller side sets each row's
+      // height — measured up front so the section can't be split mid-row.
+      const rowHeights = [];
+      for (let i = 0; i < maxRows; i++) {
+        const l = leftRows[i], r = rightRows[i];
+        rowHeights.push(Math.max(
+          l ? rowHeight(wrapValue(l[0], l[1], halfW, l[2])) : 15,
+          r ? rowHeight(wrapValue(r[0], r[1], halfW, r[2])) : 15,
+        ));
+      }
+      ensureSpace(20 + rowHeights.reduce((a, b) => a + b, 0) + 5);
       doc.setFillColor(245, 247, 250);
       doc.rect(marginX - 6, y - 13, halfW + 12, 21, "F");
       doc.rect(marginX + halfW + gap - 6, y - 13, halfW + 12, 21, "F");
@@ -3070,9 +3103,10 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
       doc.line(marginX + halfW + gap, y, marginX + halfW + gap + halfW, y);
       y += 15;
       for (let i = 0; i < maxRows; i++) {
-        if (leftRows[i]) rowAt(marginX, halfW, leftRows[i][0], leftRows[i][1], leftRows[i][2], i);
-        if (rightRows[i]) rowAt(marginX + halfW + gap, halfW, rightRows[i][0], rightRows[i][1], rightRows[i][2], i);
-        y += 15;
+        const h = rowHeights[i];
+        if (leftRows[i]) rowAt(marginX, halfW, leftRows[i][0], leftRows[i][1], leftRows[i][2], i, h);
+        if (rightRows[i]) rowAt(marginX + halfW + gap, halfW, rightRows[i][0], rightRows[i][1], rightRows[i][2], i, h);
+        y += h;
       }
     };
 

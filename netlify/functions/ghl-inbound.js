@@ -2,7 +2,7 @@
 // GHL has no reliable polling API for inbound conversations, so it pushes them
 // here. To activate: in GHL, add a workflow trigger "Customer Replied / Inbound
 // Message" with a Webhook action POSTing to:
-//     https://seaside-dispo-app.netlify.app/.netlify/functions/ghl-inbound?token=YOUR_SECRET
+//     https://deals.seasidehorizon.com/.netlify/functions/ghl-inbound?token=YOUR_SECRET
 // where YOUR_SECRET matches the CAPTURE_WEBHOOK_SECRET env var. Until that's set
 // up no SMS is captured, but email replies still flow via capture-replies.js.
 //

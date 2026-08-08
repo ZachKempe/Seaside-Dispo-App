@@ -15,7 +15,10 @@ const { logSyncRun } = require("./lib/heartbeat");
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const RESEND_FROM = process.env.RESEND_FROM || "";
 const NOTIFY_EMAIL = process.env.NOTIFY_EMAIL || process.env.GMAIL_FROM_ADDRESS || "";
-const SITE_URL = (process.env.PUBLIC_SITE_URL || "").replace(/\/+$/, "");
+// Same fallback as every other function: an empty one used to silently drop
+// the "Open full Reports" link out of the digest entirely, because
+// PUBLIC_SITE_URL was unset in production for the whole life of this function.
+const SITE_URL = (process.env.PUBLIC_SITE_URL || "https://deals.seasidehorizon.com").replace(/\/+$/, "");
 
 const get = (path, order) => fetchAllRows((p) => sb(p, { method: "GET" }), path, order ? { order } : undefined);
 const esc = (s) => String(s).replace(/</g, "&lt;");

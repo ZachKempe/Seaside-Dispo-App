@@ -230,14 +230,23 @@ secret invalidates every per-buyer deck token already sitting in a sent email.
 
 ### The public host is `deals.seasidehorizon.com` (since 2026-08-07)
 
-`PUBLIC_SITE_URL=https://deals.seasidehorizon.com`, set in the **production context only** —
-previews and branch deploys deliberately keep falling through to the
-`https://seaside-dispo-app.netlify.app` fallback, so a preview can't mint links that look
-live. Every investor-facing URL derives from that one value (`SITE_URL` in `deck.js`,
-`blast-core.js`, `deck-link.js`, `deck-interest.js`, `buy-box.js`, `onboard-buyers.js`, and
-`siteUrl()` in `lib/unsub.js`) — never hardcode a host beside them, including for the email
-logo, or the logo loads from a different domain than the links next to it and mail clients
-read the mismatch as a spam signal.
+`PUBLIC_SITE_URL=https://deals.seasidehorizon.com`, set in the **production context only**.
+Every investor-facing URL derives from that one value (`SITE_URL` in `deck.js`,
+`blast-core.js`, `deck-link.js`, `deck-interest.js`, `buy-box.js`, `onboard-buyers.js`,
+`weekly-digest.js`, and `siteUrl()` in `lib/unsub.js`) — never hardcode a host beside them,
+including for the email logo, or the logo loads from a different domain than the links next
+to it and mail clients read the mismatch as a spam signal. Nothing stores an absolute deck
+URL; links are composed at send time, so the constant is the whole truth and old rows can't
+re-emit an old host.
+
+**Every fallback is the custom domain too**, deliberately: the env var is one Netlify UI
+edit away from being unset or typo'd, and the `||` arm ships silently on the next deploy
+with nothing in the logs. `tests/site-url.test.js` fails if any fallback drifts, if the
+netlify.app host reappears anywhere under `netlify/functions/`, or if one of the link
+builders stops reading `SITE_URL`. Moving the domain again means changing the Netlify env
+var **and** that test's `PUBLIC_HOST`. (That guard immediately caught `weekly-digest.js`
+falling back to `""`, which had silently dropped the "Open full Reports" link out of every
+digest email ever sent, since `PUBLIC_SITE_URL` was unset for that function's whole life.)
 
 DNS is a CNAME at **GoDaddy** (`deals` → `seaside-dispo-app.netlify.app`); the apex and `www`
 belong to a *different* Netlify site and must stay untouched. `deals.` is the primary domain

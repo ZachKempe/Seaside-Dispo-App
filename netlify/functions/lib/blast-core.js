@@ -42,7 +42,7 @@ const GMAIL_REPLY_TO = process.env.GMAIL_REPLY_TO || GMAIL_FROM_ADDRESS;
 const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_FROM_NUMBER = process.env.GHL_FROM_NUMBER;
 
-const SITE_URL = process.env.PUBLIC_SITE_URL || "https://seaside-dispo-app.netlify.app";
+const SITE_URL = process.env.PUBLIC_SITE_URL || "https://deals.seasidehorizon.com";
 
 const CONTACT_NAME = process.env.MARKETING_CONTACT_NAME || "Seaside Horizon";
 const CONTACT_PHONE = process.env.MARKETING_CONTACT_PHONE || "";
@@ -50,9 +50,10 @@ const CONTACT_PHONE = process.env.MARKETING_CONTACT_PHONE || "";
 // Set MARKETING_POSTAL_ADDRESS in Netlify env (e.g. "123 Main St, Ste 4, Naperville, IL 60540").
 const CONTACT_ADDRESS = process.env.MARKETING_POSTAL_ADDRESS || "";
 // M11: derived from SITE_URL, never hardcoded. The logo must load from the same
-// host every link in the email points at — once PUBLIC_SITE_URL is set to a
-// custom domain, a logo still coming from the generic netlify.app subdomain is
-// both a spam signal and something an alert investor reads as phishing.
+// host every link in the email points at — now that the public host is
+// deals.seasidehorizon.com, a logo still coming from the generic netlify.app
+// subdomain is both a spam signal and something an alert investor reads as
+// phishing.
 const LOGO_URL = `${SITE_URL}/img/logo.png`;
 const BRAND_NAVY = "#1B3A6B";
 const BRAND_NAVY_DARK = "#112950";

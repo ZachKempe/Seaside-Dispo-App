@@ -19,7 +19,7 @@ const { deckPdfExists, deckPdfStorageUrl } = require("./lib/deck-pdf");
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const SITE_URL = process.env.PUBLIC_SITE_URL || "https://seaside-dispo-app.netlify.app";
+const SITE_URL = process.env.PUBLIC_SITE_URL || "https://deals.seasidehorizon.com";
 const REQUIRE_TOKEN = String(process.env.DECK_REQUIRE_TOKEN || "false") === "true";
 // M11: same host as every link on the page — see the note in lib/blast-core.js.
 const LOGO_URL = `${SITE_URL}/img/logo.png`;
@@ -183,10 +183,11 @@ exports.handler = async (event) => {
     // the "call today" strip) and the page's own "N PDF downloads" chip. Both
     // used to be inflated by clicks that downloaded nothing at all.
     //
-    // Relative on purpose: PUBLIC_SITE_URL is unset in every Netlify context
-    // today, so SITE_URL falls back to the netlify.app host — sending a visitor
-    // who arrived on a custom domain off to a different one. A relative
-    // Location keeps them wherever they already are (same instinct as M11).
+    // Relative on purpose: SITE_URL is one fixed host, but a visitor can arrive
+    // on any of them (deals.seasidehorizon.com, the netlify.app subdomain that
+    // still serves old links, a preview). A relative Location keeps them
+    // wherever they already are instead of bouncing them across domains
+    // mid-click (same instinct as M11).
     if (!(await deckPdfExists(cleanSlug))) {
       const carry = [q.b ? `b=${encodeURIComponent(q.b)}` : "", q.s ? `s=${encodeURIComponent(q.s)}` : ""]
         .filter(Boolean).join("&");

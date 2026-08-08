@@ -13,7 +13,7 @@
 const SB_URL = process.env.SUPABASE_URL;
 const SB_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const SB_ANON_KEY = process.env.SUPABASE_ANON_KEY;
-const SITE_URL = process.env.PUBLIC_SITE_URL || "https://seaside-dispo-app.netlify.app";
+const SITE_URL = process.env.PUBLIC_SITE_URL || "https://deals.seasidehorizon.com";
 
 const { deckToken } = require("./lib/deck-token");
 const { ensureDeckSlug } = require("./lib/deck-slug");

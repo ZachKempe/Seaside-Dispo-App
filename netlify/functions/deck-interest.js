@@ -22,7 +22,7 @@ const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const RESEND_FROM = process.env.RESEND_FROM || "";
 const NOTIFY_EMAIL = process.env.NOTIFY_EMAIL || process.env.GMAIL_FROM_ADDRESS || "";
-const SITE_URL = (process.env.PUBLIC_SITE_URL || "https://seaside-dispo-app.netlify.app").replace(/\/+$/, "");
+const SITE_URL = (process.env.PUBLIC_SITE_URL || "https://deals.seasidehorizon.com").replace(/\/+$/, "");
 // Passed through raw — lib/interest-receipt.js resolves blank/malformed values
 // to a working default, so the booking button survives a missing env var.
 const CALENDLY_URL = process.env.CALENDLY_URL || "";

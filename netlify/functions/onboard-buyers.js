@@ -48,7 +48,7 @@ const FORM_URL = process.env.BUYER_FORM_URL || "https://seaside-buyer-questionna
 // domain reaches this email too. Hardcoding the netlify.app host left the logo
 // in buy-box request emails pointing at a different domain than every link
 // beside it — mail clients treat that mismatch as a spam signal.
-const SITE_URL = (process.env.PUBLIC_SITE_URL || "https://seaside-dispo-app.netlify.app").replace(/\/+$/, "");
+const SITE_URL = (process.env.PUBLIC_SITE_URL || "https://deals.seasidehorizon.com").replace(/\/+$/, "");
 const LOGO_URL = `${SITE_URL}/img/logo.png`;
 const BRAND_NAVY = "#1B3A6B";
 const BRAND_NAVY_DARK = "#112950";

@@ -9,7 +9,7 @@ const crypto = require("crypto");
 
 const secret = () =>
   process.env.UNSUB_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || "seaside-unsub";
-const siteUrl = () => process.env.PUBLIC_SITE_URL || "https://seaside-dispo-app.netlify.app";
+const siteUrl = () => process.env.PUBLIC_SITE_URL || "https://deals.seasidehorizon.com";
 
 function unsubToken(buyerId) {
   const h = crypto.createHmac("sha256", secret()).update(String(buyerId)).digest("hex").slice(0, 16);

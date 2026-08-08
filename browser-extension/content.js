@@ -10,7 +10,7 @@
 // Deliberately zero-permission: no host_permissions, no storage, no
 // background worker. It reads the current page and opens a tab.
 
-const APP_ORIGIN = "https://seaside-dispo-app.netlify.app"; // change if the site moves
+const APP_ORIGIN = "https://deals.seasidehorizon.com"; // change if the site moves
 
 // A listing page embeds photos for MUCH more than the listing itself —
 // "similar homes", "nearby homes", "recently viewed", ads. A blind sweep of

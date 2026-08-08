@@ -26,7 +26,7 @@ const {
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const SITE_URL = (process.env.PUBLIC_SITE_URL || "https://seaside-dispo-app.netlify.app").replace(/\/+$/, "");
+const SITE_URL = (process.env.PUBLIC_SITE_URL || "https://deals.seasidehorizon.com").replace(/\/+$/, "");
 const LOGO_URL = `${SITE_URL}/img/logo.png`;
 // The public questionnaire, for anyone who lands here without a usable token
 // (a forwarded receipt, a mangled link). Same default as onboard-buyers.js.

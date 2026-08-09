@@ -2,6 +2,14 @@
 // before the page's own script. Pure presentation utilities only — deal
 // logic belongs in deal-shared.js.
 
+// The public host, client-side twin of PUBLIC_SITE_URL in the functions.
+// Any link a buyer will ever see must be built from this and NEVER from
+// location.origin: the dashboard is reachable on the netlify.app subdomain
+// too, so an origin-derived link hands investors whichever host Zach happened
+// to have open. tests/site-url.test.js pins this to the same value the
+// functions use — change both together, or the page and the emails disagree.
+const PUBLIC_SITE_ORIGIN = "https://deals.seasidehorizon.com";
+
 function escapeHtml(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }

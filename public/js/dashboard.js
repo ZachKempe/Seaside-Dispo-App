@@ -44,8 +44,13 @@ function selectOpts(current, pairs) {
 // ── Deck-page links (the buyer-facing /deck/<slug> page) ──
 // Slugs are minted eagerly at intake now; legacy cards that predate that (and
 // were never blasted) get theirs backfilled on demand via deck-link.js.
+// PUBLIC_SITE_ORIGIN, not location.origin (ui-shared.js): the dashboard is
+// still reachable at seaside-dispo-app.netlify.app, and building from the
+// origin meant 🔗 Copy link handed investors whichever host the tab happened
+// to be on — the one place a buyer-facing link wasn't derived from the
+// canonical host.
 function deckUrlFor(p) {
-  return p && p.deck_slug ? `${location.origin}/deck/${p.deck_slug}` : "";
+  return p && p.deck_slug ? `${PUBLIC_SITE_ORIGIN}/deck/${p.deck_slug}` : "";
 }
 // Server resolve: backfills a missing slug, and (with buyerId) returns the
 // per-buyer tokenized link so a manually DM'd buyer still attributes views.
@@ -61,6 +66,23 @@ async function fetchDeckLink(cardId, buyerId = null) {
   const cached = dealCache[cardId];
   if (cached && cached.prop && !cached.prop.deck_slug) cached.prop.deck_slug = result.slug;
   return result.url;
+}
+// The hosted-PDF twin of fetchDeckLink. Without pdfDataUri it reports whether
+// a PDF is already hosted ({ needs_pdf: true } if not); with one it hosts that
+// PDF and returns the link. Returns the whole payload, not just the url, since
+// the caller has to branch on needs_pdf.
+async function fetchDeckPdfLink(cardId, pdfDataUri = null) {
+  const { data: { session: s } } = await supa.auth.getSession();
+  const res = await fetch("/.netlify/functions/deck-link", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
+    body: JSON.stringify({ card_id: cardId, kind: "pdf", ...(pdfDataUri ? { pdf_base64: pdfDataUri } : {}) }),
+  });
+  const result = await res.json();
+  if (!res.ok) throw new Error(result.error || "Couldn't resolve the PDF link");
+  const cached = dealCache[cardId];
+  if (cached && cached.prop && !cached.prop.deck_slug && result.slug) cached.prop.deck_slug = result.slug;
+  return result;
 }
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); return true; }
@@ -968,6 +990,7 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
             ${dispoStageChip(p)}
             ${p.deck_slug ? `<a href="${escapeHtml(deckUrlFor(p))}" target="_blank" rel="noopener">Deck page ↗</a>` : ""}
             <button type="button" class="btn btn-ghost btn-sm deck-copy-btn" data-card-id="${escapeHtml(p.card_id)}" style="font-size:0.72rem;padding:1px 8px" title="Copy the public deck-page link for DMs / FB groups">🔗 Copy link</button>
+            <button type="button" class="btn btn-ghost btn-sm deck-pdf-copy-btn" data-card-id="${escapeHtml(p.card_id)}" style="font-size:0.72rem;padding:1px 8px" title="Copy a direct link to the Deal Deck PDF — generates and hosts it first if this deal hasn't been blasted yet">📄 Copy PDF link</button>
           </div>
         </div>
         <div class="flex gap-8">
@@ -1843,6 +1866,40 @@ function wireCardEvents() {
         btn.textContent = "✓ Copied";
       } catch (err) {
         toast(`Couldn't get the deck link: ${err.message}`, { type: "error" });
+        btn.textContent = label; btn.disabled = false;
+        return;
+      }
+      btn.disabled = false;
+      setTimeout(() => { btn.textContent = label; }, 2000);
+    });
+  });
+  // ── Deal Deck PDF link: copy a direct /deck/<slug>.pdf link.
+  //
+  // Two steps, because the file only exists once something has uploaded it and
+  // until now only a blast ever did — copying the link on an unblasted deal
+  // would have handed out one that 302s back to the deck page (H3). So: ask
+  // deck-link.js; if it says needs_pdf, generate the deck right here (the same
+  // jsPDF path as Download Deal Deck) and post it back to be hosted. ──
+  document.querySelectorAll(".deck-pdf-copy-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const cardId = btn.dataset.cardId;
+      const label = btn.textContent;
+      btn.disabled = true;
+      try {
+        let res = await fetchDeckPdfLink(cardId);
+        if (res.needs_pdf) {
+          btn.textContent = "Generating…";
+          // returnBase64 throws instead of alerting, so a failed generate
+          // surfaces as a toast here rather than a stray dialog.
+          const dataUri = await generateDealDeck(cardId, null, { returnBase64: true });
+          btn.textContent = "Uploading…";
+          res = await fetchDeckPdfLink(cardId, dataUri);
+        }
+        if (!res.url) throw new Error("no PDF link came back");
+        await copyText(res.url);
+        btn.textContent = "✓ Copied";
+      } catch (err) {
+        toast(`Couldn't get the PDF link: ${err.message}`, { type: "error" });
         btn.textContent = label; btn.disabled = false;
         return;
       }

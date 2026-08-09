@@ -59,6 +59,28 @@ test("every PUBLIC_SITE_URL fallback is the public host", () => {
   assert.deepEqual(bad, [], `wrong fallback host:\n  ${bad.join("\n  ")}`);
 });
 
+// The browser side has the same hazard with a different shape: the dashboard
+// is reachable on the netlify.app subdomain, so a link built from
+// location.origin ships whichever host the tab happened to be on. 🔗 Copy link
+// did exactly that until the domain move.
+test("the page scripts build deck links from PUBLIC_SITE_ORIGIN, not the tab's origin", () => {
+  const uiShared = fs.readFileSync(path.join(__dirname, "..", "public", "js", "ui-shared.js"), "utf8");
+  assert.ok(
+    uiShared.includes(`const PUBLIC_SITE_ORIGIN = "${PUBLIC_HOST}"`),
+    `ui-shared.js must define PUBLIC_SITE_ORIGIN as ${PUBLIC_HOST} — it is the client-side twin of PUBLIC_SITE_URL`,
+  );
+
+  const pagesDir = path.join(__dirname, "..", "public", "js");
+  const offenders = [];
+  for (const f of fs.readdirSync(pagesDir).filter((n) => n.endsWith(".js"))) {
+    for (const line of fs.readFileSync(path.join(pagesDir, f), "utf8").split("\n")) {
+      // A deck path interpolated straight onto the current origin.
+      if (/\$\{location\.origin\}\/deck\//.test(line)) offenders.push(`${f}: ${line.trim()}`);
+    }
+  }
+  assert.deepEqual(offenders, [], `build these from PUBLIC_SITE_ORIGIN:\n  ${offenders.join("\n  ")}`);
+});
+
 test("the buyer-facing link builders all read SITE_URL", () => {
   // Each entry: file, and a snippet of the link it must build from SITE_URL.
   // A hardcoded host in any of these is what an investor would actually see.

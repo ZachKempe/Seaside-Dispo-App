@@ -20,6 +20,7 @@
 "use strict";
 
 const SB_URL = process.env.SUPABASE_URL;
+const SB_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 // Deck slugs are minted [a-z0-9-] by lib/deck-slug.js, so sanitizing to the
 // same alphabet both matches blast-core's upload path byte for byte and makes
@@ -42,4 +43,32 @@ async function deckPdfExists(slug) {
   }
 }
 
-module.exports = { deckPdfExists, deckPdfStorageUrl, cleanSlug };
+// Write the generated Deal Deck PDF to the public property-photos bucket so
+// email, SMS and the deck page can all LINK it rather than carry a copy (M12).
+// One stable file per deal (x-upsert), so a re-send or a re-copied link
+// overwrites rather than piling up.
+//
+// `slug` must be the slug stored on the property — deck.js resolves
+// /deck/<slug>.pdf by looking the stored slug up, so a collision-suffixed or
+// legacy slug would otherwise put the file somewhere nothing serves.
+//
+// Lives here rather than in blast-core because two callers now write this
+// path: the blast (at send time) and deck-link.js (when Copy PDF link is
+// clicked on a deal that was never blasted). Two copies of the path
+// convention is exactly how deckPdfExists and the uploader would drift.
+async function uploadDeckPdf(slug, cleanBase64) {
+  const path = `deal-decks/${cleanSlug(slug)}.pdf`;
+  const r = await fetch(`${SB_URL}/storage/v1/object/property-photos/${path}`, {
+    method: "POST",
+    headers: {
+      apikey: SB_SERVICE_KEY,
+      Authorization: `Bearer ${SB_SERVICE_KEY}`,
+      "Content-Type": "application/pdf",
+      "x-upsert": "true",
+    },
+    body: Buffer.from(cleanBase64, "base64"),
+  });
+  if (!r.ok) throw new Error(`deck upload -> ${r.status}: ${await r.text()}`);
+}
+
+module.exports = { deckPdfExists, deckPdfStorageUrl, cleanSlug, uploadDeckPdf };

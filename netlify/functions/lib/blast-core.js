@@ -20,6 +20,7 @@ const { suppressedPhoneDigits } = require("./sms-optout");
 const { sendSms } = require("./ghl-sms");
 const { unsubUrlFor } = require("./unsub");
 const { digitsOnly } = require("./capture");
+const { uploadDeckPdf } = require("./deck-pdf");
 const { matchesDeal, buyerCashAtClose, morbyTermRows, subtoTeaserOption } = require("../../../public/js/deal-shared");
 
 const SB_URL = process.env.SUPABASE_URL;
@@ -366,26 +367,11 @@ function buildMorbyEmail(prop, morby, unsubUrl, buyer, deckUrlForBuyer, deckPdfU
   return { subject, html };
 }
 
-// Upload the generated Deal Deck PDF to the public property-photos bucket
-// (deal-decks/ prefix) so email, SMS and the deck page can all LINK it rather
-// than carry a copy (M12). One stable file per deal (x-upsert), so re-sends
-// overwrite rather than pile up. Returns a SHORT branded link (/deck/<slug>)
-// that redirects to the PDF — not the long Storage URL. `slug` must be the
-// slug stored on the property, since that's what deck.js resolves by.
+// Upload the generated Deal Deck PDF (lib/deck-pdf.js owns the storage path,
+// shared with deck-link.js's Copy PDF link) and return the SHORT branded link
+// — /deck/<slug>, which redirects to the PDF — not the long Storage URL.
 async function uploadDealDeckPdf(slug, cleanBase64) {
-  const path = `deal-decks/${slug}.pdf`;
-  const bytes = Buffer.from(cleanBase64, "base64");
-  const r = await fetch(`${SB_URL}/storage/v1/object/property-photos/${path}`, {
-    method: "POST",
-    headers: {
-      apikey: SB_SERVICE_KEY,
-      Authorization: `Bearer ${SB_SERVICE_KEY}`,
-      "Content-Type": "application/pdf",
-      "x-upsert": "true",
-    },
-    body: bytes,
-  });
-  if (!r.ok) throw new Error(`deck upload -> ${r.status}: ${await r.text()}`);
+  await uploadDeckPdf(slug, cleanBase64);
   return `${SITE_URL}/deck/${slug}`;
 }
 

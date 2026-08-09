@@ -63,7 +63,15 @@ exports.handler = async (event) => {
     const { card_id, buyer_id, kind, pdf_base64 } = JSON.parse(event.body || "{}");
     if (!card_id) return { statusCode: 400, body: JSON.stringify({ error: "card_id required" }) };
 
-    const rows = await sb(`/properties?card_id=eq.${encodeURIComponent(card_id)}&select=card_id,name,address_override,deck_slug&limit=1`);
+    // select=* like blast-core, deliberately. The hand-listed column set this
+    // replaces named `address_override`, which lives on morby_deals and has
+    // never existed on properties (migration 012) — so every call 400'd with
+    // "column properties.address_override does not exist". It went unnoticed
+    // because the dashboard only reached this resolver for cards with no slug
+    // yet; Copy PDF link, which always calls it, is what surfaced it. `*` also
+    // means ensureDeckSlug sees exactly the object blast-core hands it, so a
+    // slug minted here can't diverge from a blasted one.
+    const rows = await sb(`/properties?card_id=eq.${encodeURIComponent(card_id)}&select=*&limit=1`);
     const prop = rows && rows[0];
     if (!prop) return { statusCode: 404, body: JSON.stringify({ error: "Deal not found" }) };
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Seaside Photo Grabber",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "On a Zillow listing, send every hi-res photo straight into a Seaside Horizon deal gallery — one click, no downloading.",
   "content_scripts": [
     {

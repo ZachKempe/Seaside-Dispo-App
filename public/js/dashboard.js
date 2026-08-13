@@ -1990,23 +1990,27 @@ function wireCardEvents() {
 // in import-photos.js (same URL pattern, largest-variant-per-photo).
 const ZILLOW_GRABBER = [
   "javascript:(async()=>{",
-  // 1) Exact: this listing's own photo array from the embedded page data
-  //    (a listing page also carries "similar homes" photos — a blind scan of
-  //    the page returns hundreds of other people's houses).
+  // 1) Exact: EVERY photo array on/under the property whose zpid matches the
+  //    URL, unioned. Off-market pages (i.e. every wholesaling deal) stub the
+  //    property's own responsivePhotos to ONE photo and park the real set
+  //    under lastSoldListing.photos — a first-match-wins walk sees "1 photo"
+  //    while the carousel says 41, so no early exit and no single-array pick.
+  //    (Still scoped by zpid: a blind page scan returns "similar homes" too.)
   "const zp=(location.pathname.match(/\\/(\\d+)_zpid/)||[])[1]||'';",
   "const big=p=>{const s=(p&&p.mixedSources)||{},l=[].concat(s.jpeg||[],s.webp||[]);let b=null;",
   "for(const x of l)if(x&&x.url&&(!b||(x.width||0)>(b.width||0)))b=x;return b?b.url:((p&&(p.url||p.hiResImageLink))||'')};",
-  "let urls=[],ex=null,fb=null;",
+  "let urls=[];",
   "const el=document.getElementById('__NEXT_DATA__');",
-  "if(el){try{const seen=new WeakSet();const walk=(n,d)=>{if(ex||d>14||!n)return;",
-  "if(typeof n==='string'){if(n.length>200&&(n[0]==='{'||n[0]==='[')){try{walk(JSON.parse(n),d+1)}catch(e){}}return}",
+  "if(el){try{const seen=new WeakSet(),arrs=[];const walk=(n,d,sj)=>{if(d>16||!n)return;",
+  "if(typeof n==='string'){if(n.length>200&&(n[0]==='{'||n[0]==='[')){try{walk(JSON.parse(n),d+1,sj)}catch(e){}}return}",
   "if(typeof n!=='object')return;if(seen.has(n))return;seen.add(n);",
-  "if(Array.isArray(n)){for(const v of n)walk(v,d+1);return}",
-  "const ph=n.responsivePhotos||n.photos;",
-  "if(Array.isArray(ph)&&ph.length&&ph.some(p=>p&&p.mixedSources)){const u=ph.map(big).filter(Boolean);",
-  "if(u.length){if(zp&&String(n.zpid||'')===zp){ex=u;return}if(!fb)fb=u}}",
-  "for(const k in n)walk(n[k],d+1)};walk(JSON.parse(el.textContent),0)}catch(e){}}",
-  "urls=ex||fb||[];let precise=urls.length>0;",
+  "if(Array.isArray(n)){if(n.length&&n.some(p=>p&&typeof p==='object'&&p.mixedSources)){const u=n.map(big).filter(Boolean);if(u.length)arrs.push({u:u,s:sj})}",
+  "for(const v of n)walk(v,d+1,sj);return}",
+  "if(zp&&String(n.zpid||'')===zp)sj=true;",
+  "for(const k in n)walk(n[k],d+1,sj)};walk(JSON.parse(el.textContent),0,false);",
+  "let pool=arrs.filter(a=>a.s);if(!pool.length&&arrs.length)pool=[arrs.reduce((a,b)=>b.u.length>a.u.length?b:a)];",
+  "pool.sort((a,b)=>b.u.length-a.u.length);for(const a of pool)urls.push(...a.u)}catch(e){}}",
+  "let precise=urls.length>0;",
   // 2) Fallback: scoped to the gallery container only
   "if(!urls.length){for(const s of ['[data-testid=\"hollywood-vertical-media-wall\"] img','ul.photo-tile-list img','[class*=\"media-wall\"] img']){",
   "const u=[...document.querySelectorAll(s)].map(i=>{const ss=i.getAttribute('srcset')||'';let b={w:0,u:i.currentSrc||i.src||''};",
@@ -2018,7 +2022,7 @@ const ZILLOW_GRABBER = [
   "while((m=re.exec(h))){const id=m[1],w=+m[2];if(!best[id]){best[id]={w:0,u:''};order.push(id)}if(w>best[id].w)best[id]={w:w,u:m[0]}}",
   "urls=order.filter(id=>best[id].w>=300).map(id=>best[id].u);precise=false}",
   // dedupe by photo hash + cap
-  "const seenH=new Set();urls=urls.filter(u=>{const k=(u.match(/\\/fp\\/([a-f0-9]{12,})/)||[,u])[1];if(seenH.has(k))return false;seenH.add(k);return true}).slice(0,60);",
+  "const seenH=new Set();urls=urls.filter(u=>{const k=(u.match(/\\/fp\\/([a-f0-9]{12,})/)||[,u])[1];if(seenH.has(k))return false;seenH.add(k);return true}).slice(0,80);",
   "if(!urls.length){alert('No Zillow photos found. Open the listing page (not search results) and try again.');return}",
   "const note=precise?'':'\\n\\nHeads-up: these could not be matched to this listing exactly, so some may be from \\u201csimilar homes\\u201d on the page — review the gallery after importing.';",
   "try{await navigator.clipboard.writeText(urls.join('\\n'));alert('\\u2713 Copied '+urls.length+' photo links. Paste them into the deal\\u2019s \\u201cImport from link\\u201d box.'+note)}",
@@ -2139,10 +2143,12 @@ async function handlePhotoHandoff() {
   history.replaceState(null, "", location.pathname); // don't re-fire on refresh
   if (!allUrls.length) return;
 
-  // A real listing is a few dozen photos. A much larger set means the page
-  // held other listings' photos too ("similar homes" etc.) — import a sane
-  // first slice rather than flooding the gallery with neighbours' houses.
-  const SANE_MAX = 40;
+  // A precise send is isolated to this listing by the grabber, and big MLS
+  // galleries legitimately run 40–80 photos — import it in full. Only an
+  // approx send (the grabber's page-wide fallback) can hold other listings'
+  // photos, so only that gets sliced rather than flooding the gallery with
+  // neighbours' houses.
+  const SANE_MAX = approx ? 40 : 80;
   const urls = allUrls.slice(0, SANE_MAX);
   const trimmed = allUrls.length - urls.length;
 

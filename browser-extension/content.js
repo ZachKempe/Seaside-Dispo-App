@@ -12,23 +12,85 @@
 
 const APP_ORIGIN = "https://deals.seasidehorizon.com"; // change if the site moves
 
-// A listing page embeds photos for MUCH more than the listing itself —
-// "similar homes", "nearby homes", "recently viewed", ads. A blind sweep of
-// the page HTML returns hundreds of other people's houses, so we identify THIS
-// listing's own photo set, in order of precision:
-//   1. __NEXT_DATA__ → the property object matching the URL's zpid → its
-//      responsivePhotos array (exact: the carousel, nothing else).
-//   2. The gallery/media DOM container's <img> tags (scoped, still this deal).
-//   3. Whole-page CDN scan — last resort, capped, and the caller warns that it
-//      may include neighboring listings.
-const MAX_PHOTOS = 60; // no residential listing legitimately exceeds this
+const MAX_PHOTOS = 80; // MLS galleries top out around here
+
+// ── The photo registry ─────────────────────────────────────────────────────
+// One accumulating map of every photo of THIS listing we have seen, from any
+// source, keyed by the CDN hash (`/fp/<hash>-<variant>.<ext>` — the hash is
+// the photo, the variant is the size). Sources only ever ADD to it; nothing
+// replaces it. This is the load-bearing design decision: on OFF-MARKET pages
+// (i.e. every wholesaling deal) Zillow embeds just ONE photo on the property
+// node (`responsivePhotos`), parks the full set under
+// `property.lastSoldListing.photos`, and lazy-renders the gallery as you
+// scroll — so any single-source, first-match-wins grab sees "1 photo" while
+// the carousel says "41". The old version did exactly that, and then filtered
+// your viewed photos against the broken 1-photo set, which is how it showed
+// "0 of 1" after you paged through the whole gallery.
+//
+// Sources, all unioned:
+//   1. Embedded page data (__NEXT_DATA__): FULL walk, no early exit,
+//      harvesting every photo array on or under the property whose zpid
+//      matches the URL — responsivePhotos, photos, originalPhotos,
+//      lastSoldListing.photos, all of them. Gives hi-res 1536px URLs.
+//   2. The DOM, polled: every gallery-sized listing photo that ever renders
+//      (media wall, fullscreen carousel, hero) is captured as you scroll.
+//      Other listings' photos can't leak in — see isSubjectPhoto().
+//   3. Raw-HTML scan — last resort at send time only, flagged approximate.
+
+const registry = new Map(); // hash -> { url, w, seq }
+let regSeq = 0;             // first-seen order for photos page data didn't list
+let canonicalOrder = [];    // hashes in the listing's own order, from page data
+let currentZpid = zpidFromUrl();
+const viewedHashes = new Set();
+let onViewedChange = () => {};
 
 function zpidFromUrl() {
   const m = location.pathname.match(/\/(\d+)_zpid/);
   return m ? m[1] : "";
 }
 
-// A responsivePhotos entry carries every size; take the widest jpeg.
+const CDN_RE = /https:\/\/photos\.zillowstatic\.com\/fp\/([a-f0-9]{12,})-([A-Za-z0-9_]+?)\.(?:jpe?g|webp|png)/;
+
+function parsePhoto(u) {
+  const m = CDN_RE.exec(String(u || ""));
+  if (!m) return null;
+  // cc_ft_960 → 960, uncropped_scaled_within_1536_1152 → 1536, p_e/h_l → 0
+  const wm = m[2].match(/(\d{2,4})/);
+  return { url: m[0], hash: m[1], variant: m[2], variantW: wm ? Number(wm[1]) : 0 };
+}
+
+// Gallery-size gate: the subject listing's photos always render from sized
+// variants (cc_ft_768, cc_ft_960, …1536). Nearby-home cards, map collages and
+// filmstrip thumbs use unsized variants (p_e, p_c, h_l) — those are how the
+// old whole-page scan pulled in other people's houses, so they never enter
+// the registry from the DOM. (Page data is exempt: its URLs are sized anyway
+// and it's already scoped to the subject property.)
+function isSubjectPhoto(parsed, el) {
+  if (!parsed || parsed.variantW < 300) return false;
+  // Belt and braces: anything inside a link to a DIFFERENT listing isn't ours.
+  if (el && el.closest) {
+    const a = el.closest('a[href*="_zpid"]');
+    if (a && currentZpid && !a.href.includes(`/${currentZpid}_zpid`)) return false;
+  }
+  return true;
+}
+
+function register(parsed, w) {
+  if (!parsed) return false;
+  const prev = registry.get(parsed.hash);
+  const width = Math.max(w || 0, parsed.variantW);
+  if (!prev) {
+    registry.set(parsed.hash, { url: parsed.url, w: width, seq: regSeq++ });
+    return true;
+  }
+  if (width > prev.w) { prev.url = parsed.url; prev.w = width; }
+  return false;
+}
+
+// ── Source 1: embedded page data ───────────────────────────────────────────
+
+// A photo entry carries every size; take the widest (jpeg preferred — the
+// import pipeline and deck gallery both want jpeg when available).
 function largestFromPhotoEntry(p) {
   const sets = (p && p.mixedSources) || {};
   const list = [].concat(sets.jpeg || [], sets.webp || []);
@@ -40,24 +102,27 @@ function largestFromPhotoEntry(p) {
   return (p && (p.url || p.hiResImageLink || p.imageSrc)) || "";
 }
 
-// 1. Exact: the listing's own photo array out of the embedded page data.
-function fromNextData() {
+// Full walk of __NEXT_DATA__ (including Zillow's JSON-nested-in-strings
+// caches). NO early exit: the property node's own responsivePhotos can be a
+// 1-photo stub while the real set sits beside it under lastSoldListing —
+// stopping at the first zpid hit is precisely the bug this rewrite fixes.
+// Collects every photo array, tagged with whether it sits on/under the node
+// whose zpid matches the URL.
+function harvestNextData() {
   const el = document.getElementById("__NEXT_DATA__");
-  if (!el) return [];
+  if (!el) return;
   let root;
-  try { root = JSON.parse(el.textContent); } catch (_) { return []; }
+  try { root = JSON.parse(el.textContent); } catch (_) { return; }
 
-  const zpid = zpidFromUrl();
+  const zpid = currentZpid;
   const seen = new WeakSet();
-  let exact = null;   // photo array on the object whose zpid matches the URL
-  let fallback = null; // first plausible carousel array, if no zpid match
+  const arrays = []; // { urls, subject }
 
-  const walk = (node, depth) => {
-    if (exact || depth > 14 || !node) return;
+  const walk = (node, depth, subject) => {
+    if (depth > 16 || !node) return;
     if (typeof node === "string") {
-      // Zillow nests JSON-as-string (gdpClientCache, apollo caches).
       if (node.length > 200 && (node[0] === "{" || node[0] === "[")) {
-        try { walk(JSON.parse(node), depth + 1); } catch (_) { /* not JSON */ }
+        try { walk(JSON.parse(node), depth + 1, subject); } catch (_) { /* not JSON */ }
       }
       return;
     }
@@ -66,22 +131,43 @@ function fromNextData() {
     seen.add(node);
 
     if (Array.isArray(node)) {
-      for (const v of node) walk(v, depth + 1);
+      const looksLikePhotos = node.length && node.some(p => p && typeof p === "object" && p.mixedSources);
+      if (looksLikePhotos) {
+        const urls = node.map(largestFromPhotoEntry).filter(Boolean);
+        if (urls.length) arrays.push({ urls, subject });
+      }
+      for (const v of node) walk(v, depth + 1, subject);
       return;
     }
-    const photos = node.responsivePhotos || node.photos;
-    if (Array.isArray(photos) && photos.length && photos.some(p => p && p.mixedSources)) {
-      const urls = photos.map(largestFromPhotoEntry).filter(Boolean);
-      if (urls.length) {
-        if (zpid && String(node.zpid || "") === zpid) { exact = urls; return; }
-        if (!fallback) fallback = urls;
-      }
-    }
-    for (const k in node) walk(node[k], depth + 1);
+    if (zpid && String(node.zpid || "") === zpid) subject = true;
+    for (const k in node) walk(node[k], depth + 1, subject);
   };
-  walk(root, 0);
-  return exact || fallback || [];
+  walk(root, 0, false);
+
+  const subjectArrays = arrays.filter(a => a.subject);
+  // No zpid match (bare /homes/ URLs) → longest array is the best guess.
+  const pool = subjectArrays.length
+    ? subjectArrays
+    : (arrays.length ? [arrays.reduce((a, b) => (b.urls.length > a.urls.length ? b : a))] : []);
+  if (!pool.length) return;
+
+  // Listing order: the longest array is the gallery; the others (the 1-photo
+  // hero stub, originalPhotos, …) union in behind it.
+  pool.sort((a, b) => b.urls.length - a.urls.length);
+  const order = [];
+  const inOrder = new Set();
+  for (const arr of pool) {
+    for (const u of arr.urls) {
+      const parsed = parsePhoto(u);
+      if (!parsed) continue;
+      register(parsed, parsed.variantW);
+      if (!inOrder.has(parsed.hash)) { inOrder.add(parsed.hash); order.push(parsed.hash); }
+    }
+  }
+  if (order.length >= canonicalOrder.length) canonicalOrder = order;
 }
+
+// ── Source 2: the DOM, as it renders ───────────────────────────────────────
 
 // Widest candidate in an <img>'s srcset, else its src.
 function bestFromImg(img) {
@@ -95,88 +181,8 @@ function bestFromImg(img) {
   return best.url;
 }
 
-// 2. Scoped DOM: only images inside the listing's media/gallery container.
-function fromGalleryDom() {
-  const selectors = [
-    '[data-testid="hollywood-vertical-media-wall"] img',
-    '[data-testid="media-stream"] img',
-    'ul.photo-tile-list img',
-    '[class*="media-wall"] img',
-    '[class*="photo-tile"] img',
-  ];
-  for (const sel of selectors) {
-    const urls = [...document.querySelectorAll(sel)]
-      .map(bestFromImg)
-      .filter(u => u && u.includes("photos.zillowstatic.com"));
-    if (urls.length >= 3) return urls;
-  }
-  return [];
-}
-
-// 3. Last resort: every CDN photo on the page (largest variant per photo,
-// UI thumbnails dropped). Imprecise — may include neighboring listings.
-function fromWholePageScan() {
-  const re = /https:\/\/photos\.zillowstatic\.com\/fp\/([a-f0-9]{12,})-[a-zA-Z_]*?(\d{2,4})[0-9_]*\.(?:jpe?g|webp)/g;
-  const html = document.documentElement.innerHTML;
-  const best = {};
-  const order = [];
-  let m;
-  while ((m = re.exec(html))) {
-    const id = m[1], w = Number(m[2]);
-    if (!best[id]) { best[id] = { w: 0, url: "" }; order.push(id); }
-    if (w > best[id].w) best[id] = { w, url: m[0] };
-  }
-  return order.filter(id => best[id].w >= 300).map(id => best[id].url);
-}
-
-function dedupe(urls) {
-  const out = [], seen = new Set();
-  for (const u of urls) {
-    // Same photo at different sizes shares the /fp/<hash> segment.
-    const key = (u.match(/\/fp\/([a-f0-9]{12,})/) || [, u])[1];
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(u);
-  }
-  return out;
-}
-
-// Returns { urls, precise } — precise=false means the caller should warn that
-// photos from other listings on the page may be mixed in.
-function grabPhotoUrls() {
-  let urls = fromNextData();
-  let precise = urls.length > 0;
-  if (!urls.length) { urls = fromGalleryDom(); precise = urls.length > 0; }
-  if (!urls.length) { urls = fromWholePageScan(); precise = false; }
-  return { urls: dedupe(urls).slice(0, MAX_PHOTOS), precise };
-}
-
-// ── "Only send what I actually looked at" ──────────────────────────────────
-// A photo counts as viewed once it has been at least half on-screen at a
-// usable size — scrolling the media wall, arrowing through the full-screen
-// carousel, and the lightbox all qualify. Polling (rather than
-// IntersectionObserver) is deliberate: Zillow reuses the same <img> element
-// and swaps its src as you page through the carousel, which an observer
-// wouldn't re-fire for.
-//
-// Detection must be rendering-agnostic. Zillow's full-screen photo viewer
-// mounts inside a SHADOW DOM and some photos are painted as CSS
-// background-images, not <img> tags — so a plain `document.images` scan (the
-// old approach) only ever caught the first hero image and missed everything
-// you paged through. We now: (1) collect <img> across the light DOM AND every
-// open shadow root, and (2) sample what's actually under the centre of the
-// screen with elementsFromPoint (piercing shadow roots), reading both <img>
-// src and computed background-image. Whatever is filling your viewport counts.
-const viewedHashes = new Set();
-const seenBest = {}; // hash -> {w, url}: largest variant actually rendered
-let onViewedChange = () => {};
-
-function photoHash(u) {
-  const m = String(u || "").match(/\/fp\/([a-f0-9]{12,})/);
-  return m ? m[1] : "";
-}
-
-// Every document/shadow-root in the tree (light DOM + all open shadow roots).
+// Every document/shadow-root in the tree (light DOM + all open shadow roots —
+// Zillow's fullscreen viewer has mounted inside a shadow root before).
 function allRoots() {
   const roots = [];
   const stack = [document];
@@ -195,7 +201,7 @@ function allRoots() {
 function photoUrlOf(el) {
   if (!el || el.nodeType !== 1) return "";
   if (el.tagName === "IMG") {
-    const s = el.currentSrc || el.src || "";
+    const s = bestFromImg(el);
     if (s.includes("photos.zillowstatic.com")) return s;
   }
   let bg;
@@ -223,73 +229,96 @@ function deepElementsFromPoint(x, y) {
   return out;
 }
 
-function markViewed(url, w) {
-  const h = photoHash(url);
-  if (!h) return false;
-  const prev = seenBest[h];
-  if (!prev || w > prev.w) seenBest[h] = { w: w || (prev ? prev.w : 0), url };
-  if (viewedHashes.has(h)) return false;
-  viewedHashes.add(h);
+function markViewed(parsed) {
+  if (viewedHashes.has(parsed.hash)) return false;
+  viewedHashes.add(parsed.hash);
   return true;
 }
 
-function sampleVisiblePhotos() {
+// One poll tick: sweep every rendered listing photo into the registry, and
+// mark the on-screen ones viewed. Polling (rather than IntersectionObserver)
+// is deliberate: Zillow reuses the same <img> element and swaps its src as
+// you page through the carousel, which an observer wouldn't re-fire for.
+function samplePage() {
   const vw = window.innerWidth, vh = window.innerHeight;
   let changed = false;
 
-  // 1) <img> across light + shadow DOM, at least half on-screen and usable size.
+  // 1) <img> across light + shadow DOM. Everything gallery-sized registers
+  //    (that's how lazy-rendered photos accumulate as you scroll); the ones
+  //    at least half on-screen at a usable size also count as viewed.
   for (const root of allRoots()) {
     let imgs;
     try { imgs = root.querySelectorAll("img"); } catch (e) { continue; }
     for (const img of imgs) {
-      const src = img.currentSrc || img.src || "";
-      if (!src.includes("photos.zillowstatic.com")) continue;
+      const parsed = parsePhoto(bestFromImg(img));
+      if (!isSubjectPhoto(parsed, img)) continue;
       const r = img.getBoundingClientRect();
-      if (r.width < 120 || r.height < 90) continue; // thumbnails/icons aren't "viewed"
+      if (register(parsed, Math.round(r.width))) changed = true;
+      if (r.width < 120 || r.height < 90) continue; // rendered too small to be "viewed"
       const visW = Math.min(r.right, vw) - Math.max(r.left, 0);
       const visH = Math.min(r.bottom, vh) - Math.max(r.top, 0);
       if (visW <= 0 || visH <= 0) continue;
       if (visW * visH < 0.5 * r.width * r.height) continue;
-      if (markViewed(src, r.width)) changed = true;
+      if (markViewed(parsed)) changed = true;
     }
   }
 
-  // 2) Whatever is under the centre of the screen — catches the full-screen
-  // viewer's photo whether it's an <img>, a background-image, or nested in a
-  // shadow root the walk above didn't reach.
+  // 2) Whatever is under the centre of the screen — catches the fullscreen
+  //    viewer's photo whether it's an <img>, a background-image, or nested in
+  //    a shadow root the walk above didn't reach.
   const pts = [[0.5, 0.45], [0.4, 0.45], [0.6, 0.45], [0.5, 0.3], [0.5, 0.62]];
   for (const [fx, fy] of pts) {
     for (const el of deepElementsFromPoint(Math.round(vw * fx), Math.round(vh * fy))) {
-      const url = photoUrlOf(el);
-      if (!url) continue;
+      const parsed = parsePhoto(photoUrlOf(el));
+      if (!isSubjectPhoto(parsed, el)) continue;
       const r = el.getBoundingClientRect();
       if (r.width < 200 || r.height < 150) continue; // the centred element is the main photo
-      if (markViewed(url, r.width)) changed = true;
+      if (register(parsed, Math.round(r.width))) changed = true;
+      if (markViewed(parsed)) changed = true;
     }
   }
   return changed;
 }
 
-// The listing's full photo set, cached (the walk isn't free) and refreshed
-// until the page has hydrated.
-let canonicalCache = null;
-function canonicalPhotos({ refresh = false } = {}) {
-  if (refresh || !canonicalCache || !canonicalCache.urls.length) canonicalCache = grabPhotoUrls();
-  return canonicalCache;
+// ── Source 3: raw-HTML scan (send-time last resort, approximate) ───────────
+function rawHtmlScan() {
+  const re = new RegExp(CDN_RE.source, "g");
+  const html = document.documentElement.innerHTML;
+  let m;
+  while ((m = re.exec(html))) {
+    const parsed = parsePhoto(m[0]);
+    if (parsed && parsed.variantW >= 300) register(parsed, parsed.variantW);
+  }
 }
 
-// What to send: the listing's photos filtered to the ones you viewed, in
-// listing order. If we couldn't isolate the listing's own set, fall back to
-// the viewed photos as rendered and flag the result imprecise.
-function selection(viewedOnly) {
-  const { urls, precise } = canonicalPhotos();
-  if (!viewedOnly) return { urls, precise };
-  if (precise && urls.length) {
-    const picked = urls.filter(u => viewedHashes.has(photoHash(u)));
-    return { urls: picked, precise: true };
+// ── Selection ──────────────────────────────────────────────────────────────
+
+// Registry hashes in presentation order: the listing's own order first, then
+// everything else by first-seen.
+function orderedHashes() {
+  const out = [];
+  const used = new Set();
+  for (const h of canonicalOrder) {
+    if (registry.has(h) && !used.has(h)) { used.add(h); out.push(h); }
   }
-  const picked = [...viewedHashes].map(h => seenBest[h] && seenBest[h].url).filter(Boolean);
-  return { urls: picked.slice(0, MAX_PHOTOS), precise: false };
+  const rest = [...registry.keys()].filter(h => !used.has(h))
+    .sort((a, b) => registry.get(a).seq - registry.get(b).seq);
+  return out.concat(rest);
+}
+
+function selection(viewedOnly) {
+  let hashes = orderedHashes();
+  let precise = true;
+  if (!hashes.length) { rawHtmlScan(); hashes = orderedHashes(); precise = false; }
+  if (viewedOnly) hashes = hashes.filter(h => viewedHashes.has(h));
+  return { urls: hashes.slice(0, MAX_PHOTOS).map(h => registry.get(h).url), precise };
+}
+
+// How many photos Zillow says the listing has — so the panel can tell you
+// when there's more to capture than we've seen ("See all 41 photos").
+function claimedPhotoCount() {
+  const m = document.body.innerText.match(/See all (\d+) photos|(\d+)\s+photos\b/i);
+  return m ? Number(m[1] || m[2]) : 0;
 }
 
 // The listing address — lets the dashboard preselect the matching deal.
@@ -298,6 +327,19 @@ function listingAddress() {
   if (meta && meta.content) return meta.content.split("|")[0].trim();
   const h1 = document.querySelector("h1");
   return h1 ? h1.textContent.trim() : "";
+}
+
+// Zillow is a SPA: clicking a nearby home swaps the listing without a page
+// load. Everything keyed to the old listing must reset or its photos bleed
+// into the new one's send.
+function resetIfListingChanged() {
+  const zpid = zpidFromUrl();
+  if (zpid === currentZpid) return;
+  currentZpid = zpid;
+  registry.clear();
+  canonicalOrder = [];
+  viewedHashes.clear();
+  regSeq = 0;
 }
 
 function send(viewedOnly, statusEl) {
@@ -352,16 +394,19 @@ function mountPanel() {
   status.style.cssText = "font-size:11.5px;color:#8A94A6;line-height:1.4";
 
   function update() {
-    const total = canonicalPhotos().urls.length;
+    const total = orderedHashes().length;
     const viewed = selection(true).urls.length;
+    const claimed = claimedPhotoCount();
     count.innerHTML = `👁 <b>${viewed}</b> of ${total || "?"} photo${total === 1 ? "" : "s"} viewed`;
     sendViewed.textContent = viewed ? `📸 Send ${viewed} viewed` : "📸 Send viewed photos";
     sendViewed.style.opacity = viewed ? "1" : ".55";
     sendAll.textContent = total ? `Send all ${total} instead` : "";
     sendAll.style.display = total && total !== viewed ? "block" : "none";
-    if (!viewed && !status.textContent) {
+    if (claimed > total) {
+      status.textContent = `Zillow lists ${claimed} photos — open the gallery and scroll to capture the other ${claimed - total}.`;
+    } else if (!viewed) {
       status.textContent = "Scroll the photos you want — only those get sent.";
-    } else if (viewed && status.textContent.startsWith("Scroll")) {
+    } else if (/^(Zillow lists|Scroll)/.test(status.textContent)) {
       status.textContent = "";
     }
   }
@@ -376,10 +421,14 @@ function mountPanel() {
 }
 
 mountPanel();
-// Poll for what's on screen (catches carousel src swaps the observer misses)
-// and refresh the panel when the viewed set grows.
-setInterval(() => { if (sampleVisiblePhotos()) onViewedChange(); }, 600);
-// Keep the listing's photo set fresh while the page hydrates.
-setInterval(() => { canonicalPhotos({ refresh: true }); onViewedChange(); }, 4000);
-// Zillow is a SPA — re-mount if it swaps the page body out.
+harvestNextData();
+// Sweep the DOM for rendered photos + what's on screen; refresh the panel
+// when anything new lands.
+setInterval(() => {
+  resetIfListingChanged();
+  if (samplePage()) onViewedChange();
+}, 600);
+// Re-harvest page data until hydration settles (and after SPA navigations).
+setInterval(() => { harvestNextData(); onViewedChange(); }, 4000);
+// Re-mount if Zillow swaps the page body out.
 new MutationObserver(() => mountPanel()).observe(document.documentElement, { childList: true, subtree: true });

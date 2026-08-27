@@ -10,6 +10,7 @@
 const { sb, markSeen, captureResponder } = require("./lib/capture");
 const { logSyncRun, purgeOldSyncRuns } = require("./lib/heartbeat");
 const { replyGmailQuery, propertyNameFromSubject } = require("./lib/subjects");
+const { OVERRIDE_TABLE } = require("./lib/deal-address");
 
 const GMAIL_CLIENT_ID = process.env.GMAIL_CLIENT_ID;
 const GMAIL_CLIENT_SECRET = process.env.GMAIL_CLIENT_SECRET;
@@ -69,7 +70,35 @@ async function findProperty(namePart) {
     `/properties?name=ilike.${pat}&select=card_id,name&order=synced_at.desc&limit=1`,
     { method: "GET" }
   );
-  return (rows && rows[0]) || null;
+  if (rows && rows[0]) return rows[0];
+
+  // Blast subjects carry the Deal Deck Address OVERRIDE when one is set
+  // (lib/deal-address.js), and the whole reason that field exists is that it
+  // differs from the card name. Matching only on properties.name would mean
+  // correcting a deal's address silently stops capturing its replies — the
+  // same class of sender↔capturer drift lib/subjects.js exists to prevent,
+  // just via the address instead of the subject prefix.
+  //
+  // Per-table try/catch: cash_deals doesn't exist until migration 035 runs,
+  // and a missing table must not abort the whole capture run.
+  for (const table of Object.values(OVERRIDE_TABLE)) {
+    try {
+      const hit = await sb(
+        `/${table}?address_override=ilike.${pat}&select=card_id&limit=1`,
+        { method: "GET" }
+      );
+      const cardId = hit && hit[0] && hit[0].card_id;
+      if (!cardId) continue;
+      const p = await sb(
+        `/properties?card_id=eq.${encodeURIComponent(cardId)}&select=card_id,name&limit=1`,
+        { method: "GET" }
+      );
+      if (p && p[0]) return p[0];
+    } catch (e) {
+      console.warn(`reply capture: ${table} address lookup failed:`, e.message);
+    }
+  }
+  return null;
 }
 
 exports.handler = async () => {

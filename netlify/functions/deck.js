@@ -13,6 +13,7 @@ const {
   cashTermRows, cashPriceStack,
   subtoCarry, subtoRentOptions, subtoPrincipalPaydown, RESERVE_MONTHS,
 } = require("../../public/js/deal-shared");
+const { dealAddress } = require("./lib/deal-address");
 const { resolveDealPhotos } = require("./lib/deck-photo");
 const { listGalleryPhotos } = require("./lib/gallery");
 const { isBot } = require("./lib/bot-ua");
@@ -246,11 +247,11 @@ exports.handler = async (event) => {
     const status = (((statusRows || [])[0] || {}).status || "active").toLowerCase();
     const isMorby = prop.deal_type === "morby";
     const isCash = prop.deal_type === "cash";
-    // NOTE: `prop.address_override` is always undefined — the column lives on
-    // morby_deals, never on properties (migration 012). Left as-is rather than
-    // changed here, but cash_deals.address_override IS honored, so the cash
-    // deck page and the cash PDF can't show different addresses.
-    const address = (isCash && cash.address_override) || prop.address_override || prop.name || "Deal";
+    // The override lives on the structure row, never on properties — see
+    // lib/deal-address.js. Reading it off `prop` (as this did) meant the Morby
+    // deck page showed the raw card name while the Morby PDF showed the
+    // corrected address.
+    const address = dealAddress(prop, isCash ? cash : isMorby ? morby : null) || "Deal";
     const street = address.split(",")[0].trim();
     const cityLine = address.split(",").slice(1).join(",").trim();
 

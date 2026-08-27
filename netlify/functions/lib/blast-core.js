@@ -21,6 +21,7 @@ const { sendSms } = require("./ghl-sms");
 const { unsubUrlFor } = require("./unsub");
 const { digitsOnly } = require("./capture");
 const { uploadDeckPdf } = require("./deck-pdf");
+const { dealAddress } = require("./deal-address");
 const {
   matchesDeal, buyerCashAtClose, morbyTermRows, subtoTeaserOption,
   cashTermRows, cashPriceStack,
@@ -283,7 +284,7 @@ function firstNameOf(buyer) {
 // It is null ONLY when the hosted upload failed and the caller fell back to
 // attaching the PDF — which is why the "attached" copy still exists below.
 function buildMorbyEmail(prop, morby, unsubUrl, buyer, deckUrlForBuyer, deckPdfUrl) {
-  const address = prop.address_override || prop.name || "";
+  const address = dealAddress(prop, morby);
   const subject = morbySubject(address);
   const greeting = `Hi ${firstNameOf(buyer)},`;
 
@@ -381,7 +382,7 @@ async function uploadDealDeckPdf(slug, cleanBase64) {
 // Plain-text SMS for a Stack Method deal — leads with the headline numbers
 // (Cash at Close first), links the hosted Deal Deck PDF when available.
 function buildMorbySms(prop, morby, deckUrl, alsoEmailed) {
-  const address = prop.address_override || prop.name || "";
+  const address = dealAddress(prop, morby);
   const fmt = (n) => `$${Math.round(Number(n) || 0).toLocaleString()}`;
   const cash = buyerCashAtClose(morby);
   const lines = [`Stack Method Deal: ${address}`];
@@ -410,7 +411,7 @@ function buildMorbySms(prop, morby, deckUrl, alsoEmailed) {
 // Term rows come from lib/deal-shared (cashTermRows), the same source the deck
 // page renders from, so email and page can't drift.
 function buildCashEmail(prop, cash, unsubUrl, buyer, deckUrlForBuyer, deckPdfUrl) {
-  const address = cash.address_override || prop.name || "";
+  const address = dealAddress(prop, cash);
   const { forgiven, original, discountPct } = cashPriceStack(cash);
   const subject = cashSubject(address, forgiven);
   const greeting = `Hi ${firstNameOf(buyer)},`;
@@ -492,7 +493,7 @@ function buildCashEmail(prop, cash, unsubUrl, buyer, deckUrlForBuyer, deckPdfUrl
 // Plain-text SMS for a cash deal — leads with the forgiven amount, the way
 // the Morby text leads with cash at close.
 function buildCashSms(prop, cash, deckUrl, alsoEmailed) {
-  const address = cash.address_override || prop.name || "";
+  const address = dealAddress(prop, cash);
   const fmt = (n) => `$${Math.round(Number(n) || 0).toLocaleString()}`;
   const { forgiven, original, purchase, discountPct } = cashPriceStack(cash);
   const lines = [`Cash Deal: ${address}`];
@@ -614,10 +615,14 @@ async function runBlast(payload, user) {
     const morbyTerms = (morbyRows || [])[0] || {};
     const cashTerms = (cashRows || [])[0] || {};
     const coverImageUrl = ((acqRows || [])[0] || {}).cover_image_url || "";
-    const address = prop.name || prop.card_id;
     const dealStrategy = prop.deal_type === "morby" ? "morby"
       : prop.deal_type === "cash" ? "cash"
       : "subto";
+    // Honors the Deal Deck Address override, so the blast log and the emailed
+    // PDF's filename say the same thing the email body and the deck page say.
+    // Nothing MATCHES on this string — replies are matched from the subject by
+    // capture-replies.js, which searches the override tables too.
+    const address = dealAddress(prop, dealStrategy === "cash" ? cashTerms : dealStrategy === "morby" ? morbyTerms : null);
     // A cash deal has no deal_terms row, so terms.price is 0 — which makes
     // matchesDeal skip every buyer's max_price cap and send a $570k deal to a
     // buyer who told us $200k. Read the price from the structure that actually
@@ -714,7 +719,7 @@ async function runBlast(payload, user) {
     // Fallback only: if hosting failed, attach as before rather than send a
     // deal email with no deck in it at all.
     const pdfAttachments = (hasDeckPdf && !deckUrl) ? [{
-      filename: `Deal Deck - ${(prop.address_override || prop.name || card_id).replace(/[\\/:*?"<>|]/g, "")}.pdf`,
+      filename: `Deal Deck - ${(address || card_id).replace(/[\\/:*?"<>|]/g, "")}.pdf`,
       content: pdfBase64,
     }] : null;
     const pdfHosted = hasDeckPdf && !!deckUrl;

@@ -15,6 +15,7 @@ const { emailish, firstNameOf, receiptSubject, buildReceiptHtml } = require("./l
 const { parseContact } = require("./lib/contact");
 const { findOrCreateBuyer } = require("./lib/capture");
 const { deckPdfExists } = require("./lib/deck-pdf");
+const { fetchDealAddress } = require("./lib/deal-address");
 const { buyBoxUrlFor, shouldAskBuyBox } = require("./lib/buy-box-form");
 
 const SB_URL = process.env.SUPABASE_URL;
@@ -168,13 +169,16 @@ exports.handler = async (event) => {
       : `Tapped Interested on deck page${suffix}`;
     const canAdvance = hasOffer ? OFFER_ADVANCEABLE : ADVANCEABLE;
 
-    // NOTE: properties has no address_override column (it lives on morby_deals);
-    // select only real columns so PostgREST doesn't 400. address falls back to name.
-    const props = await sb(`/properties?deck_slug=eq.${encodeURIComponent(cleanSlug)}&select=card_id,name&limit=1`);
+    // `address_override` is NOT a properties column (it lives on the structure
+    // table — see lib/deal-address.js), so naming it in this select would 400.
+    // deal_type is what tells fetchDealAddress which table to look in; that
+    // lookup is best-effort and falls back to the card name, so the 🔥 alert
+    // and the investor receipt now say what the deck page says.
+    const props = await sb(`/properties?deck_slug=eq.${encodeURIComponent(cleanSlug)}&select=card_id,name,deal_type&limit=1`);
     const prop = props && props[0];
     if (!prop) return { statusCode: 404, body: "deal not found" };
     const cardId = prop.card_id;
-    const address = prop.address_override || prop.name || cardId;
+    const address = await fetchDealAddress(sb, prop);
 
     const buyerId = verifyDeckToken(token);
 

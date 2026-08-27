@@ -234,7 +234,10 @@ function timeAgoShort(iso) {
 }
 function buildCallList(props, leads, deckViews, buyers, activities) {
   const buyerById = Object.fromEntries((buyers || []).map(b => [b.id, b]));
-  const dealOf = Object.fromEntries((props || []).map(p => [p.card_id, (p.address_override || p.name || "").split(",")[0]]));
+  // p.address_override was always undefined here — properties has no such
+  // column (lib/deal-address.js). The structure rows aren't threaded into the
+  // call list, so this reads the card name, which is what it already showed.
+  const dealOf = Object.fromEntries((props || []).map(p => [p.card_id, (p.name || "").split(",")[0]]));
   const now = Date.now();
   // Latest manual touch per buyer (✓ Done / tapped Call on the dashboard, or a
   // touch logged on the Buyers page). A touch newer than the entry's trigger
@@ -1051,6 +1054,7 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
         </div>
         <div class="flex gap-8">
           <button class="btn btn-primary btn-sm morby-send-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Generate Deal Deck PDF and email it to all Stack Method buyers">📣 Send Deal Deck</button>
+          <button class="btn btn-ghost btn-sm to-cash-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="The seller isn't carrying after all — move this to Cash deals, keeping the price, timeline, DSCR assumptions, rents and photos. Reversible.">→ Move to Cash</button>
           <button class="btn btn-ghost btn-sm morby-delete-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Remove this Morby deal">🗑 Remove</button>
           <button class="btn btn-ghost btn-sm collapse-deal-btn" data-card-id="${escapeHtml(p.card_id)}" title="Collapse to one line">▴</button>
         </div>
@@ -1063,6 +1067,13 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
   // a contract upload, worked entirely in one panel, blasted as a Deal Deck.
   // No marketing-copy variations or FB posting tools. ──
   if (dealType === "cash") {
+    // A morby_deals row still sitting behind a cash card means this deal was
+    // MOVED here. That's what makes the old carry balance available as a
+    // suggestion, and what makes the move reversible after the toast is gone.
+    const carriedFrom = morby && morby.card_id ? morby : null;
+    // The forgiven amount is this deck's headline; without it the hero renders
+    // "—". Say so on the card rather than letting it go out blank.
+    const needsForgiven = !DealShared.cashPriceStack(cash).forgiven;
     return `
     <div class="card prop-card cash-card" data-card-id="${escapeHtml(p.card_id)}">
       <div class="flex-between">
@@ -1077,13 +1088,15 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
           </div>
         </div>
         <div class="flex gap-8">
+          ${needsForgiven ? `<span class="pill" style="align-self:center;background:#FFF5E6;color:#8A6D1F;border:1px solid #EAD9A0;font-size:0.72rem" title="The deck page hero and the email headline are both the amount forgiven — set it in the panel below before blasting.">⚠ No amount forgiven</span>` : ""}
           <span class="muted" style="font-size:0.78rem;align-self:center">👥 ${matchCount} matching</span>
           <button class="btn btn-primary btn-sm morby-send-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Generate the Deal Deck PDF and blast it to matching cash buyers">📣 Send Deal Deck</button>
+          ${carriedFrom ? `<button class="btn btn-ghost btn-sm to-morby-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="This deal was moved here from Morby and its Morby terms are still on file — move it back.">↩ Back to Morby</button>` : ""}
           <button class="btn btn-ghost btn-sm morby-delete-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Remove this cash deal">🗑 Remove</button>
           <button class="btn btn-ghost btn-sm collapse-deal-btn" data-card-id="${escapeHtml(p.card_id)}" title="Collapse to one line">▴</button>
         </div>
       </div>
-      ${renderStructurePanel(p, cash, t, acq, "cash")}
+      ${renderStructurePanel(p, cash, t, acq, "cash", carriedFrom)}
     </div>`;
   }
 
@@ -1557,7 +1570,10 @@ const MORBY_DSCR_DEFAULTS = {
 // The panel carries data-table so wireStructurePanels() knows which table to
 // upsert into, and data-structure so the deck generator knows which content
 // model to build. `row` is the morby_deals or cash_deals record.
-function renderStructurePanel(p, row, terms, acq, kind) {
+// `carriedFrom` is the morby_deals row a converted cash deal came from, or
+// null. Used only to offer the old seller carry as a suggested Amount
+// Forgiven — never to fill it in automatically.
+function renderStructurePanel(p, row, terms, acq, kind, carriedFrom) {
   const m = row || {};
   const ac = acq || {};
   const cardId = escapeHtml(p.card_id);
@@ -1571,6 +1587,15 @@ function renderStructurePanel(p, row, terms, acq, kind) {
   const dscrLtv = m.dscr_ltv != null ? m.dscr_ltv : defaults.ltv;
   const dscrCredit = m.dscr_credit_score != null ? m.dscr_credit_score : defaults.credit;
   const stack = isCash ? DealShared.cashPriceStack(m) : null;
+
+  // What the seller was going to carry, on a deal moved over from Morby.
+  // Offered, not applied: "carried $285k" and "forgave $285k" are different
+  // deals, and this number becomes the headline investors read.
+  const carriedCarry = Number((carriedFrom || {}).seller_carry_balance) || 0;
+  const carryHint = (isCash && carriedCarry && !Number(m.amount_forgiven)) ? `
+          <p class="muted" style="font-size:0.74rem;margin-top:4px">Moved from Morby, where the seller was carrying ${fmtMoney(carriedCarry)}.
+            <button type="button" class="btn btn-ghost btn-sm use-carry-btn" data-amount="${carriedCarry}" style="font-size:0.7rem;padding:1px 6px;margin-left:4px">Use as amount forgiven</button>
+          </p>` : "";
 
   // Upload block — the same shape, different documents and different function.
   const uploadSection = isCash ? `
@@ -1602,7 +1627,7 @@ function renderStructurePanel(p, row, terms, acq, kind) {
       <p class="muted" style="font-size:0.78rem;margin-top:-4px">Original price − amount forgiven = purchase price. Enter any two and the third is derived — leave one blank rather than guessing at it.</p>
       <div class="acq-grid">
         <div class="acq-field"><label>Original price</label><input type="number" class="acq-input" data-field="original_price" value="${num(m.original_price)}" placeholder="${stack.original || ""}"></div>
-        <div class="acq-field"><label>Amount forgiven</label><input type="number" class="acq-input" data-field="amount_forgiven" value="${num(m.amount_forgiven)}" placeholder="${stack.forgiven || ""}"><p class="muted" style="font-size:0.74rem;margin-top:4px">${stack.discountPct ? `${stack.discountPct}% off the original price.` : "The seller's concession — the deck's headline number."}</p></div>
+        <div class="acq-field"><label>Amount forgiven</label><input type="number" class="acq-input" data-field="amount_forgiven" value="${num(m.amount_forgiven)}" placeholder="${stack.forgiven || ""}"><p class="muted" style="font-size:0.74rem;margin-top:4px">${stack.discountPct ? `${stack.discountPct}% off the original price.` : "The seller's concession — the deck's headline number."}</p>${carryHint}</div>
         <div class="acq-field"><label>Purchase price</label><input type="number" class="acq-input" data-field="purchase_price" value="${num(m.purchase_price)}" placeholder="${stack.purchase || ""}"><p class="muted" style="font-size:0.74rem;margin-top:4px">What the buyer funds at closing.</p></div>
       </div>
     </div>
@@ -2702,6 +2727,32 @@ function wireMorbyPanel() {
     btn.addEventListener("click", () => extractCashContract(btn));
   });
 
+  // ── Move a deal between structures (Morby ⇄ Cash) ──
+  document.querySelectorAll(".to-cash-btn").forEach(btn => {
+    btn.addEventListener("click", () => convertMorbyToCash(btn.dataset.cardId, btn.dataset.address));
+  });
+  document.querySelectorAll(".to-morby-btn").forEach(btn => {
+    btn.addEventListener("click", () => moveCashBackToMorby(btn.dataset.cardId, btn.dataset.address));
+  });
+
+  // ── "Use as amount forgiven" — writes directly rather than dispatching a
+  // synthetic blur. The panel's blur handler is async and dispatchEvent does
+  // not await it, so re-rendering after one raced the save and painted the
+  // old (blank) value back over the new one. ──
+  document.querySelectorAll(".use-carry-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const cardId = btn.closest(".structure-panel")?.dataset.cardId;
+      if (!cardId) return;
+      btn.disabled = true;
+      const { error } = await supa.from("cash_deals").upsert(
+        { card_id: cardId, amount_forgiven: Number(btn.dataset.amount), updated_at: new Date().toISOString() },
+        { onConflict: "card_id" },
+      );
+      if (error) { toast(`Couldn't save: ${error.message}`, { type: "error" }); btn.disabled = false; return; }
+      await loadAll(); // re-render so the derived original price + "% off" catch up
+    });
+  });
+
   // ── Remove a deal card. With the Trello sync retired (July 2026) this is
   // the only lifecycle control — every card (uploaded or legacy Trello-era)
   // is archived from here when it's done. ──
@@ -3058,6 +3109,132 @@ function wireAddCashPanel() {
       submitBtn.textContent = original;
     }
   });
+}
+
+// ── Moving a deal between structures ────────────────────────────────────
+// Morby deals routinely land as cash deals once the seller stops wanting to
+// carry. These are the columns that mean the SAME thing on both tables, so
+// they move across untouched.
+const MORBY_TO_CASH_FIELDS = [
+  "property_type", "address_override", "purchase_price", "down_payment",
+  "earnest_money_amount", "closing_costs_note", "broker_commission",
+  "additional_broker_pct", "inspection_period_days", "close_of_escrow_days",
+  "financing_contingency", "tenancy_description", "property_description",
+  "ltr_monthly_rent", "str_monthly_rent", "annual_noi", "monthly_noi",
+  "monthly_taxes", "monthly_insurance", "dscr_rate", "dscr_ltv",
+  "dscr_credit_score",
+];
+
+// Seller-financing-only. These have no cash_deals column at all — including
+// one in the copied row would 400 the upsert, and more to the point they
+// describe a note the seller is no longer carrying.
+const MORBY_ONLY_FIELDS = [
+  "seller_carry_balance", "interest_type", "deferred_interest_rate",
+  "monthly_payment", "balloon_months", "seller_flexibility_notes",
+];
+
+// Morby → Cash. Deliberately NON-DESTRUCTIVE: the morby_deals row is left
+// exactly as it is, so nothing is lost, the move is undoable from the toast,
+// and the cash panel can still show what the seller carry used to be.
+//
+// It also deliberately does NOT guess the Amount Forgiven. The carry balance
+// is the obvious candidate — it's the money the seller was going to be owed —
+// but "carried $285k" and "forgave $285k" are different deals, and this number
+// becomes the headline on a page investors read. It's offered as a one-click
+// suggestion in the panel instead, where it can be looked at.
+async function convertMorbyToCash(cardId, address) {
+  const deal = dealCache[cardId];
+  if (!deal) return;
+  const m = deal.morby || {};
+  const existing = deal.cash || {};
+
+  // R3's recipient ledger is keyed on card_id, not on structure, so a deal
+  // that was blasted as Morby carries that history across the move.
+  const hasBlasted = ((boardData && boardData.blastsByCard && boardData.blastsByCard[cardId]) || [])
+    .some(b => b.status === "sent");
+
+  const dropped = [];
+  if (m.seller_carry_balance) dropped.push(`seller carry ${fmtMoney(m.seller_carry_balance)}`);
+  if (m.deferred_interest_rate) dropped.push(`${m.deferred_interest_rate}% deferred interest`);
+  if (m.balloon_months) dropped.push(`${m.balloon_months}-month balloon`);
+  if (m.seller_flexibility_notes) dropped.push("seller flexibility notes");
+
+  const msg =
+    `Move "${address}" from Morby to Cash?\n\n` +
+    `CARRIED OVER: purchase price, deposits, timeline, DSCR assumptions, rents, taxes & insurance, property details, deck address and photos.\n\n` +
+    (dropped.length
+      ? `DROPPED from the deck — seller financing has no cash equivalent: ${dropped.join(", ")}.\n\n`
+      : "") +
+    `You still need to set the Amount Forgiven; the panel will suggest the old carry balance.\n\n` +
+    (hasBlasted
+      ? `NOTE: this deal has already been blasted. A normal blast skips anyone who's already received it, so buyers who got the Morby version won't get the cash one — use "Choose specific buyers" to reach them.\n\n`
+      : "") +
+    `The Morby terms are kept, so this can be undone.`;
+  if (!confirm(msg)) return;
+
+  const row = { card_id: cardId, updated_at: new Date().toISOString() };
+  for (const f of MORBY_TO_CASH_FIELDS) {
+    // Never clobber a value already on the cash row. Converting a second time
+    // (after an undo, or after moving back and forth) must not wipe edits
+    // made on the cash side.
+    const blank = existing[f] === null || existing[f] === undefined || existing[f] === "";
+    if (blank && m[f] !== null && m[f] !== undefined) row[f] = m[f];
+  }
+
+  // Belt and braces: cash_deals has no column for any of these, so one
+  // slipping into MORBY_TO_CASH_FIELDS would 400 the upsert on a live button.
+  for (const f of MORBY_ONLY_FIELDS) delete row[f];
+
+  const { error: cErr } = await supa.from("cash_deals").upsert(row, { onConflict: "card_id" });
+  if (cErr) { toast(`Couldn't move to Cash: ${cErr.message}`, { type: "error" }); return; }
+  // deal_type flips LAST: if the upsert failed we've changed nothing, rather
+  // than stranding the card in a group with no terms row behind it.
+  const { error: pErr } = await supa.from("properties").update({ deal_type: "cash" }).eq("card_id", cardId);
+  if (pErr) { toast(`Couldn't move to Cash: ${pErr.message}`, { type: "error" }); return; }
+
+  // The hosted Deal Deck at deal-decks/<slug>.pdf is still the MORBY deck —
+  // seller carry, balloon, the lot. deck.js gates its PDF button (and the
+  // /deck/<slug>.pdf route) purely on that file existing, so leaving it would
+  // hand investors a seller-finance deck for a deal the page calls cash.
+  // Removing it just hides the button until the next blast or Copy PDF link
+  // regenerates it from the cash terms. Best-effort: never fail the move.
+  const slug = deal.prop && deal.prop.deck_slug;
+  if (slug) {
+    try { await supa.storage.from("property-photos").remove([`deal-decks/${slug}.pdf`]); }
+    catch (e) { console.warn("stale deck PDF cleanup failed:", e.message); }
+  }
+
+  expandedDealCards.add(cardId); // land in the panel, not on a collapsed row
+  toast(`Moved "${address}" to Cash — set the Amount Forgiven before blasting.`, {
+    type: "success",
+    actionLabel: "Undo",
+    onAction: async () => {
+      const { error } = await supa.from("properties").update({ deal_type: "morby" }).eq("card_id", cardId);
+      if (error) { toast(`Undo failed: ${error.message}`, { type: "error" }); return; }
+      await loadAll();
+    },
+  });
+  await loadAll();
+}
+
+// Cash → Morby. Only offered on a card that still HAS a morby_deals row, i.e.
+// one that came from a conversion — so this is "undo the move", available long
+// after the toast is gone, not a general structure switcher.
+async function moveCashBackToMorby(cardId, address) {
+  if (!confirm(`Move "${address}" back to Morby?\n\nThe Morby terms are still on file. Anything you entered on the cash side is kept too, so you can move it to Cash again.`)) return;
+  const { error } = await supa.from("properties").update({ deal_type: "morby" }).eq("card_id", cardId);
+  if (error) { toast(`Couldn't move back: ${error.message}`, { type: "error" }); return; }
+  expandedDealCards.add(cardId);
+  toast(`Moved "${address}" back to Morby.`, {
+    type: "success",
+    actionLabel: "Undo",
+    onAction: async () => {
+      const { error: e2 } = await supa.from("properties").update({ deal_type: "cash" }).eq("card_id", cardId);
+      if (e2) { toast(`Undo failed: ${e2.message}`, { type: "error" }); return; }
+      await loadAll();
+    },
+  });
+  await loadAll();
 }
 
 async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {

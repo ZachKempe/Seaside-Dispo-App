@@ -174,8 +174,36 @@ the "Call today" strip from leads + recent deck views, and the follow-up nudge
 marked `[follow-up]` in `deal_blasts.detail` — that marker is what caps it at one per deal. Other cross-function helpers live in `netlify/functions/lib/` (`capture.js`,
 `deck-token.js`, `deck-photo.js`, `heartbeat.js`, `ghl-sms.js`, `unsub.js`,
 `interest-receipt.js`, `contact.js`, `buyer-intake.js`,
-`onboard-sequence.js`, `buy-box-form.js`, `deck-pdf.js`). `unsub.js` owns both minting and verifying the unsubscribe token —
+`onboard-sequence.js`, `buy-box-form.js`, `deck-pdf.js`, `deal-address.js`). `unsub.js` owns both minting and verifying the unsubscribe token —
 they must agree or live links in already-sent email break (pinned in `tests/unsub.test.js`).
+
+**The Deal Deck Address override lives on the STRUCTURE table** — `morby_deals`
+(migration 012) and `cash_deals` (035) — and has never existed on `properties`.
+`lib/deal-address.js` (`dealAddress(prop, structRow)`) is the only place that resolves it;
+never read `prop.address_override`, which is permanently `undefined` and falls through to the
+card name without erroring. That silence is why every Morby deck page, blast email, blast SMS
+and emailed-PDF filename ignored the corrected address from migration 012 until Aug 2026 —
+only the locally-generated PDF ever honored it. `tests/deal-address.test.js` fails if any
+function under `netlify/functions/` reads the column off a properties row again.
+
+⚠ The override is **coupled to reply capture**: blast subjects carry it, and
+`capture-replies.js` looks a reply's property up by the street in the subject. It matches
+`properties.name` first and then falls back to `address_override` on both structure tables —
+without that fallback, correcting a deal's address silently stops capturing its replies.
+`lib/deck-slug.js` deliberately does NOT consult the override: a slug is an opaque published
+identifier, not a display string.
+
+**Deals move between structures.** A Morby deal that ends up as a cash deal is moved with
+"→ Move to Cash" on the card (`convertMorbyToCash`), which copies the columns that mean the
+same thing on both tables (`MORBY_TO_CASH_FIELDS`) and **leaves `morby_deals` intact** — so
+the move is lossless, undoable from the toast, reversible later via "↩ Back to Morby", and
+the old seller carry stays available as a *suggested* Amount Forgiven. It is only ever
+suggested: "carried $285k" and "forgave $285k" are different deals, and that number is the
+deck's headline. `tests/structure-move.test.js` checks every copied field against the real
+`cash_deals` column list, because an unknown column is a 400 on a live button. The move also
+deletes the hosted `deal-decks/<slug>.pdf` (still the Morby deck) and warns that R3's
+recipient ledger is keyed on `card_id`, so a normal re-blast skips buyers who already got
+the Morby version — use "Choose specific buyers" for those.
 
 Buyer records are deduped on **digits-only phone / lower-cased email** — the CSV importer
 (`classifyImport`) and the Add Buyer form (`findDuplicateBuyer`) must keep using the same

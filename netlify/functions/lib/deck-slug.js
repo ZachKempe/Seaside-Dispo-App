@@ -4,8 +4,13 @@
 // Drift here would mint two different slugs for the same deal, so nobody
 // re-implements it locally.
 
+// Deliberately does NOT consult address_override. That column lives on the
+// structure table, so this read was always undefined (see lib/deal-address.js)
+// — and wiring it up now would change the slug minted for every future deal.
+// A slug is an opaque published identifier, not a display string: the deck page
+// renders the override, and the URL keeps whatever it was minted with.
 function deckSlug(prop) {
-  const base = (prop.address_override || prop.name || "deal").toLowerCase();
+  const base = (prop.name || "deal").toLowerCase();
   return base.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "deal";
 }
 

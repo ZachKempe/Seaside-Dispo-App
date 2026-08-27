@@ -438,9 +438,63 @@
     return rows.filter(([, v]) => v && v !== "—");
   }
 
+  // ── Cash / wholesale price stack ────────────────────────────────
+  // The third structure. A cash deal is priced off a SELLER CONCESSION:
+  //
+  //     original_price − amount_forgiven = purchase_price
+  //
+  // All three are stored, all three are optional, and a deal is routinely
+  // entered (or extracted from a contract) knowing only two — so the third is
+  // derived here rather than rendered as a blank row. When all three are on
+  // file they are used as stored: a deal where the concession doesn't equal
+  // the arithmetic difference is Zach's call to make, not this function's to
+  // silently "fix" on a buyer-facing page.
+  //
+  // There is deliberately NO cash-at-close here, and buyerCashAtClose must
+  // never be called on a cash deal. On a Morby deal the DSCR loan proceeds
+  // exceed the buyer's cash in, which produces a real payday at the closing
+  // table that gets split; on a cash deal the buyer funds the purchase and
+  // walks away with equity, not a check. The forgiven amount IS the headline.
+  function cashPriceStack(cash) {
+    const c = cash || {};
+    let purchase = Number(c.purchase_price) || 0;
+    let forgiven = Number(c.amount_forgiven) || 0;
+    let original = Number(c.original_price) || 0;
+    if (!original && purchase && forgiven) original = purchase + forgiven;
+    else if (!forgiven && original && purchase && original > purchase) forgiven = original - purchase;
+    else if (!purchase && original && forgiven && original > forgiven) purchase = original - forgiven;
+    // Discount off the original price — the "% off" the deck leads with.
+    // Guarded against a forgiven amount that exceeds the original (bad data),
+    // which would otherwise print something like "140% off".
+    const discountPct = (original > 0 && forgiven > 0 && forgiven < original)
+      ? Number(((forgiven / original) * 100).toFixed(1))
+      : null;
+    return { original, forgiven, purchase, discountPct };
+  }
+
+  // Cash rows — shared by the deck page AND the cash email's snapshot table,
+  // the same way morbyTermRows is. Order matches the PDF: the price stack
+  // reads top-down original → forgiven → purchase, so the concession sits
+  // between the two prices it explains.
+  function cashTermRows(cash) {
+    const c = cash || {};
+    const { original, forgiven, purchase, discountPct } = cashPriceStack(c);
+    const rows = [
+      ["Original Price", fmtMoney(original)],
+      ["Amount Forgiven", forgiven ? `${fmtMoney(forgiven)}${discountPct ? ` · ${discountPct}% off` : ""}` : "—"],
+      ["Purchase Price", fmtMoney(purchase)],
+      ["Down Payment / EMD", fmtMoney(c.down_payment)],
+      ["Earnest Money", fmtMoney(c.earnest_money_amount)],
+      ["Inspection Period", c.inspection_period_days ? `${c.inspection_period_days} days` : "—"],
+      ["Close of Escrow", c.close_of_escrow_days ? `${c.close_of_escrow_days} days` : "—"],
+    ];
+    return rows.filter(([, v]) => v && v !== "—");
+  }
+
   return {
     fmtMoney, fmtPct, matchesDeal, buyerCashAtClose, dscrMonthlyPayment,
     subtoSummaryRows, subtoTermRows, morbyTermRows,
+    cashPriceStack, cashTermRows,
     subtoCarry, subtoRentOptions, subtoTeaserOption, subtoPrincipalPaydown,
     subtoRateArbitrage, amortizedPayment, parseRatePct,
     LOAD_PCT, RESERVE_MONTHS, MODE_LABEL, MARKET_RATE_TODAY,

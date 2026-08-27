@@ -31,12 +31,22 @@ function morbySubject(address) {
   return `Stack Method Deal: ${address}`;
 }
 
+// Cash / wholesale blast email subject. The forgiven amount is this
+// structure's whole hook, so it rides in the subject the way the entry fee
+// does for Sub-To. Same "<prefix>: <name> | <hook>" shape, which is what
+// propertyNameFromSubject already knows how to take apart.
+function cashSubject(address, amountForgiven) {
+  const n = Number(amountForgiven) || 0;
+  return `Cash Deal: ${address}` + (n ? ` | $${n.toLocaleString()} Forgiven` : "");
+}
+
 // Subjects the reply capturer searches Gmail for. Includes both current
 // formats plus the legacy Sub-To phrasing, so replies to any blast still in
 // the 7-day capture window are matched during/after a wording change.
 const REPLY_SEARCH_SUBJECTS = [
   "New Sub-To Deal",   // current Sub-To
   "Stack Method Deal", // current Morby / Stack
+  "Cash Deal",         // current cash / wholesale
   "New SubTo Deal",    // legacy Sub-To — safe to drop once no blasts with this wording remain in the 7d window
 ];
 
@@ -53,11 +63,12 @@ function replyGmailQuery() {
 // the downstream property lookup can ilike-match on the street.
 //   "Re: New Sub-To Deal: 123 Main St, Ocala, FL 34479 | $5,000 Entry Fee" -> "123 Main St"
 //   "Re: Stack Method Deal: 456 Oak Ave, Dallas, TX"                       -> "456 Oak Ave"
+//   "Re: Cash Deal: 3014 N Tampa St, Tampa, FL | $285,000 Forgiven"        -> "3014 N Tampa St"
 //   "Re: New SubTo Deal — 789 Pine Rd, Austin, TX | $3,000 Entry Fee"      -> "789 Pine Rd" (legacy)
 function propertyNameFromSubject(subject) {
   const s = String(subject || "");
   // Current formats share "<prefix>: <name>[ | ...]".
-  let m = s.match(/(?:New Sub-To Deal|Stack Method Deal)\s*:\s*([^|]+)/i);
+  let m = s.match(/(?:New Sub-To Deal|Stack Method Deal|Cash Deal)\s*:\s*([^|]+)/i);
   // Legacy Sub-To used an em/en/hyphen dash instead of a colon.
   if (!m) m = s.match(/New SubTo Deal\s*[—–-]\s*([^|]+)/i);
   if (!m) return "";
@@ -67,6 +78,7 @@ function propertyNameFromSubject(subject) {
 module.exports = {
   subtoSubject,
   morbySubject,
+  cashSubject,
   replyGmailQuery,
   propertyNameFromSubject,
   REPLY_SEARCH_SUBJECTS,

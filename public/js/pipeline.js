@@ -85,10 +85,19 @@ function renderBoard() {
   }).join("");
 }
 
+// Deal-structure tag: key drives the CSS class, label the text. Sub-To is the
+// fallback, so any structure not listed here would be mislabeled as Sub-To —
+// add new ones to this map, not to a ternary.
+const PL_DEAL_TYPES = {
+  morby: { key: "morby", label: "Morby" },
+  cash:  { key: "cash",  label: "Cash" },
+};
+const plDealType = (p) => PL_DEAL_TYPES[p.deal_type] || { key: "subto", label: "Sub-To" };
+
 function renderPlCard(p) {
   const stage = p.dispo_stage || "prep";
   const color = (DISPO_BY_KEY[stage] || DISPO_BY_KEY.prep).color;
-  const dealType = p.deal_type === "morby" ? "morby" : "subto";
+  const dealType = plDealType(p);
   const notes = notesByCard[p.card_id] || [];
   const stale = isStaleDeal(p);
   const implied = DISPO_TERMINAL.has(stage) ? null : impliedDispoStage(leadsByCard[p.card_id], blastsByCard[p.card_id], recipsByCard[p.card_id]);
@@ -99,7 +108,7 @@ function renderPlCard(p) {
   <div class="pl-card" draggable="true" data-card-id="${escapeHtml(p.card_id)}" style="--pl-color:${color}">
     <div class="pl-card-title">${escapeHtml(p.name)}</div>
     <div class="pl-card-meta">
-      <span class="pl-tag pl-tag-${dealType}">${dealType === "morby" ? "Morby" : "Sub-To"}</span>
+      <span class="pl-tag pl-tag-${dealType.key}">${dealType.label}</span>
       ${p.state ? `<span class="pill pill-state" style="font-size:0.68rem">${escapeHtml(p.state)}</span>` : ""}
       ${price ? `<span class="pl-mini">${price}</span>` : ""}
       ${notes.length ? `<span class="pl-mini" title="${notes.length} note${notes.length === 1 ? "" : "s"}">💬 ${notes.length}</span>` : ""}
@@ -178,7 +187,7 @@ function openDetail(cardId) {
   openCardId = cardId;
   const stage = p.dispo_stage || "prep";
   const cur = DISPO_BY_KEY[stage] || DISPO_BY_KEY.prep;
-  const dealType = p.deal_type === "morby" ? "Morby" : "Sub-To";
+  const dealType = plDealType(p);
   const notes = notesByCard[cardId] || [];
   const implied = DISPO_TERMINAL.has(stage) ? null : impliedDispoStage(leadsByCard[cardId], blastsByCard[cardId], recipsByCard[cardId]);
   const suggests = implied && DISPO_BY_KEY[implied].rank > cur.rank;
@@ -198,7 +207,7 @@ function openDetail(cardId) {
       <div>
         <h2 style="margin:0 0 4px;font-size:1.15rem;color:var(--navy-dark)">${escapeHtml(p.name)}</h2>
         <div class="flex gap-8" style="align-items:center;flex-wrap:wrap">
-          <span class="pl-tag pl-tag-${p.deal_type === "morby" ? "morby" : "subto"}">${dealType}</span>
+          <span class="pl-tag pl-tag-${dealType.key}">${dealType.label}</span>
           ${p.state ? `<span class="pill pill-state">${escapeHtml(p.state)}</span>` : ""}
           ${price ? `<span class="muted" style="font-size:0.82rem">${price}</span>` : ""}
           <a href="/dashboard.html#deal=${encodeURIComponent(p.card_id)}" style="font-size:0.82rem" title="Open this deal's full card on the Posting dashboard (terms, copy, blasts, leads)">Posting ↗</a>

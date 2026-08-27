@@ -283,3 +283,88 @@ test("morbyTermRows renders present fields and drops missing ones", () => {
   assert.ok(!("Monthly Payment" in byLabel));
   assert.equal(morbyTermRows({}).length, 0);
 });
+
+// ── Cash / wholesale price stack ──────────────────────────────────
+// The third structure. These numbers go on a buyer-facing deck, an email and
+// an SMS, so the derivation rules are pinned here rather than left to the
+// three callers to agree on by accident.
+const { cashPriceStack, cashTermRows } = require("../public/js/deal-shared");
+
+test("cashPriceStack keeps all three numbers when all three are stored", () => {
+  const s = cashPriceStack({ original_price: 855000, amount_forgiven: 285000, purchase_price: 570000 });
+  assert.equal(s.original, 855000);
+  assert.equal(s.forgiven, 285000);
+  assert.equal(s.purchase, 570000);
+});
+
+test("cashPriceStack derives whichever single number is missing", () => {
+  // original missing
+  assert.equal(cashPriceStack({ purchase_price: 570000, amount_forgiven: 285000 }).original, 855000);
+  // forgiven missing
+  assert.equal(cashPriceStack({ original_price: 855000, purchase_price: 570000 }).forgiven, 285000);
+  // purchase missing
+  assert.equal(cashPriceStack({ original_price: 855000, amount_forgiven: 285000 }).purchase, 570000);
+});
+
+test("cashPriceStack never invents a number from one input alone", () => {
+  const s = cashPriceStack({ purchase_price: 570000 });
+  assert.equal(s.purchase, 570000);
+  assert.equal(s.forgiven, 0);
+  assert.equal(s.original, 0);
+  assert.equal(s.discountPct, null);
+  const empty = cashPriceStack({});
+  assert.deepEqual([empty.original, empty.forgiven, empty.purchase], [0, 0, 0]);
+  assert.equal(cashPriceStack(null).purchase, 0);
+});
+
+test("cashPriceStack reports the discount off the ORIGINAL price", () => {
+  assert.equal(cashPriceStack({ original_price: 100000, amount_forgiven: 25000 }).discountPct, 25);
+  assert.equal(cashPriceStack({ original_price: 855000, amount_forgiven: 285000 }).discountPct, 33.3);
+});
+
+test("cashPriceStack refuses a discount that isn't one — never prints over 100% off", () => {
+  // Bad data: forgiving more than the property was ever priced at.
+  assert.equal(cashPriceStack({ original_price: 100000, amount_forgiven: 140000 }).discountPct, null);
+  // Equal is not a discount either — it would read as "100% off".
+  assert.equal(cashPriceStack({ original_price: 100000, amount_forgiven: 100000 }).discountPct, null);
+});
+
+test("cashTermRows reads original → forgiven → purchase, in that order", () => {
+  const rows = cashTermRows({ original_price: 855000, amount_forgiven: 285000, purchase_price: 570000 });
+  assert.deepEqual(rows.map(([k]) => k).slice(0, 3), ["Original Price", "Amount Forgiven", "Purchase Price"]);
+  assert.equal(rows[1][1], "$285,000 · 33.3% off");
+});
+
+test("cashTermRows drops empty rows rather than printing dashes", () => {
+  const rows = cashTermRows({ purchase_price: 300000 });
+  const labels = rows.map(([k]) => k);
+  assert.deepEqual(labels, ["Purchase Price"]);
+  // An all-cash close with no deposit line shows neither.
+  assert.ok(!labels.includes("Down Payment / EMD"));
+  assert.ok(!labels.includes("Earnest Money"));
+  assert.deepEqual(cashTermRows({}), []);
+});
+
+test("cashTermRows includes the deposit and timeline lines when they exist", () => {
+  const rows = cashTermRows({
+    original_price: 400000, amount_forgiven: 100000, purchase_price: 300000,
+    down_payment: 20000, earnest_money_amount: 5000,
+    inspection_period_days: 10, close_of_escrow_days: 21,
+  });
+  const byLabel = Object.fromEntries(rows);
+  assert.equal(byLabel["Down Payment / EMD"], "$20,000");
+  assert.equal(byLabel["Earnest Money"], "$5,000");
+  assert.equal(byLabel["Inspection Period"], "10 days");
+  assert.equal(byLabel["Close of Escrow"], "21 days");
+});
+
+test("a cash deal never produces a cash-at-close figure", () => {
+  // buyerCashAtClose is Morby-only. Pinned because wiring it to a cash deal
+  // would print money that never changes hands at the table.
+  const cash = { original_price: 855000, amount_forgiven: 285000, purchase_price: 570000 };
+  assert.ok(!("cash_at_close" in cash));
+  assert.deepEqual(
+    cashTermRows(cash).map(([k]) => k).filter(k => /cash at close/i.test(k)),
+    [],
+  );
+});

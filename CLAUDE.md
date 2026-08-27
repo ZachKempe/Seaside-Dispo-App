@@ -23,7 +23,7 @@ modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline eit
 |---|---|---|
 | Sign in | `public/index.html` | Supabase email/password auth + forgot-password (`reset.html` handles the recovery link) |
 | Reports | `public/reports.html` | Read-only rollups: per-deal funnel, copy-variation performance, time-in-stage aging, closed-deal stats |
-| Posting Dashboard | `public/dashboard.html` | Deals (Sub-To via contract upload, Morby via LOI upload — both AI-extracted), terms, copy variations, email/SMS blasts, per-deal leads |
+| Posting Dashboard | `public/dashboard.html` | Deals in three structure groups (Sub-To via contract upload, Morby via LOI upload, Cash via contract upload — all AI-extracted), terms, copy variations, email/SMS blasts, per-deal leads |
 | Buyer Dashboard | `public/buyers.html` | Buyer CRM: master-detail list, CSV import, deal matcher, buy-box onboarding |
 | Pipeline | `public/pipeline.html` | Kanban dispo board: manual stages, drag-drop, shared notes, stale flags |
 | Deck page (public) | `/deck/<slug>` → `netlify/functions/deck.js` | Buyer-facing deal page; `?b=<token>` attributes views/interest to a buyer; `.pdf` suffix redirects to the stored PDF |
@@ -91,6 +91,21 @@ modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline eit
   `browser-extension/` (📸 button → `dashboard.html#import-photos=…`) or the 🧲
   bookmarklet in the dashboard gallery block.
 - `parse-loi.js` — sends an LOI PDF to the Claude API, extracts Morby deal terms.
+- `parse-cash.js` — the **third structure**'s intake (migration 035). Purchase contract
+  (+ an optional concession addendum / payoff letter / original listing) → Claude extracts
+  the price stack into `cash_deals`, creating a `properties` row (`card_id` `cash-…`).
+  A cash deal is a wholesale purchase priced off a **seller concession**:
+  `original_price − amount_forgiven = purchase_price`. All three columns are nullable and
+  `cashPriceStack` derives whichever is missing, so a contract that only states two still
+  renders a complete stack; parse-cash reconciles once at intake and only ever FILLS a
+  blank — a stated concession beats arithmetic.
+  Structurally the cash deck is **the Morby deck minus seller financing**: no carry balance,
+  no deferred rate, no balloon, no seller-flexibility notes. It keeps the DSCR loan block and
+  the LTR/STR net-cash-flow columns. There is deliberately **no cash-at-close** anywhere on
+  a cash deal — `buyerCashAtClose` must never be called on one. On a Morby deal the DSCR loan
+  proceeds exceed the buyer's cash in, which produces a real payday at the table that gets
+  split; a cash buyer funds the purchase and walks away with equity, so the **amount forgiven
+  is the headline** (deck-page hero, email band, SMS first line, PDF summary band).
 - `parse-subto.js` / `generate-copy.js` — the Sub-To intake (Trello retired July 2026):
   contract + optional mortgage-statement PDFs → Claude extracts `deal_terms` and creates
   the card (`card_id` `subto-…`); a second call writes 3 marketing copy variations FROM
@@ -117,8 +132,17 @@ modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline eit
 `public/js/deal-shared.js`** (UMD: browser gets `window.DealShared`, functions
 `require("../../public/js/deal-shared")`). The dashboard blast preview, `send-blast.js`, the
 emails, and the deck page all import from it, so what you preview is what sends. Never
-re-implement `matchesDeal`, `buyerCashAtClose`, `dscrMonthlyPayment`, `engagementScore`, or
-the term-row builders locally — past drift between copies caused real bugs.
+re-implement `matchesDeal`, `buyerCashAtClose`, `dscrMonthlyPayment`, `cashPriceStack`,
+`engagementScore`, or the term-row builders locally — past drift between copies caused real
+bugs.
+
+**Sub-To is the FALLBACK structure everywhere it's resolved**, so every other structure has
+to be named explicitly — `dealStrategyOf` (dashboard.js), the `dealStrategy` ternary in
+`blast-core.js`, the `allSubto` board filter, and `plDealType` (pipeline.js). A structure
+missing from one of those doesn't fail loudly; it quietly files a cash deal under Sub-To and
+blasts it with a Sub-To email. `dealMatchPrice` exists for the same reason: a cash deal has
+no `deal_terms` row, so reading `terms.price` hands `matchesDeal` a 0 — and a 0 price makes
+it skip every buyer's budget cap.
 
 Two Block 4 companions to `matchesDeal`, both **advisory** — neither may ever be wired into
 the send path, and `matchesDeal` stays the sole authority on who receives a blast:
@@ -178,7 +202,7 @@ dashboard "✓ synced" indicator and the consecutive-failure email alert).
 ## Database / migrations
 
 Numbered SQL files in `sql/`, **run manually** in the Supabase SQL editor — there is no
-migration runner. Take the next number (highest is `033_onboard_sequence.sql`). Every new
+migration runner. Take the next number (highest is `035_cash_deals.sql`). Every new
 migration must END with `insert into schema_migrations (filename) values ('0XX_name.sql')
 on conflict do nothing;` so applied state stays queryable. Migrations must be
 additive/idempotent (`if not exists`, `do $$` policy guards) and the frontend must fail soft

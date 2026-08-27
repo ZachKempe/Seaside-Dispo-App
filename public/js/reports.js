@@ -86,7 +86,7 @@ function renderFunnel(props, recipsBy, eventsBy, viewsBy, leadsBy) {
       <thead><tr><th>Deal</th><th>Stage</th><th>Sent</th><th>Opened</th><th>Clicked</th><th>Deck views</th><th>Interested+</th></tr></thead>
       <tbody>${rows.map(r => `
         <tr>
-          <td><b>${shortAddr(r.p.name)}</b>${r.p.deal_type === "morby" ? ` <span class="muted" style="font-size:0.7rem">Morby</span>` : ""}${r.p.archived ? ` <span class="muted" style="font-size:0.7rem">archived</span>` : ""}</td>
+          <td><b>${shortAddr(r.p.name)}</b>${r.p.deal_type === "morby" ? ` <span class="muted" style="font-size:0.7rem">Morby</span>` : r.p.deal_type === "cash" ? ` <span class="muted" style="font-size:0.7rem">Cash</span>` : ""}${r.p.archived ? ` <span class="muted" style="font-size:0.7rem">archived</span>` : ""}</td>
           <td>${stageChip(r.p.dispo_stage)}</td>
           <td class="rpt-num"><b>${r.sent}</b></td>
           <td>${metricCell(r.opened, r.sent, "#3182CE")}</td>

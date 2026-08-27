@@ -446,7 +446,7 @@ async function loadAll() {
   // blast × buyer), so pulling whole tables gets slow at scale — we only
   // ever need rows for the active cards on screen.
   const cardIds = (props || []).map(p => p.card_id);
-  const [{ data: terms, error: termsErr }, { data: statuses, error: statusesErr }, { data: fbPosts, error: fbErr }, { data: buyers, error: buyersErr }, { data: leads, error: leadsErr }, { data: blasts, error: blastsErr }, { data: acq, error: acqErr }, { data: morby, error: morbyErr }, { data: recips, error: recipsErr }, { data: deckViews }, { data: emailEvents }, { data: tasks }, { data: activities, error: actErr }] = await Promise.all([
+  const [{ data: terms, error: termsErr }, { data: statuses, error: statusesErr }, { data: fbPosts, error: fbErr }, { data: buyers, error: buyersErr }, { data: leads, error: leadsErr }, { data: blasts, error: blastsErr }, { data: acq, error: acqErr }, { data: morby, error: morbyErr }, { data: cash }, { data: recips, error: recipsErr }, { data: deckViews }, { data: emailEvents }, { data: tasks }, { data: activities, error: actErr }] = await Promise.all([
     supa.from("deal_terms").select("*").in("card_id", cardIds),
     supa.from("property_status").select("*").in("card_id", cardIds),
     supa.from("facebook_posts").select("*").in("card_id", cardIds),
@@ -460,6 +460,10 @@ async function loadAll() {
     supa.from("deal_blasts").select("card_id,channel,status,detail,variation_index,variation_title,blasted_at").in("card_id", cardIds),
     supa.from("deal_acquisition").select("*").in("card_id", cardIds),
     supa.from("morby_deals").select("*").in("card_id", cardIds),
+    // Deliberately NOT in loadErrors: like deal_tasks/email_events, this fails
+    // soft until its migration (035) runs. No card can be deal_type 'cash'
+    // before then, so an empty result changes nothing on screen.
+    supa.from("cash_deals").select("*").in("card_id", cardIds),
     // Paged (F3): one blast writes a recipient row per buyer, and deck views /
     // email opens multiply per blast — all three blow past 1,000 rows first.
     fetchAllRows(() => supa.from("blast_recipients").select("card_id,channel,status,buyer_id").in("card_id", cardIds).order("id")),
@@ -517,6 +521,7 @@ async function loadAll() {
   for (const e of (emailEvents || [])) (eventsByCard[e.card_id] ||= []).push(e);
   const acqByCard = Object.fromEntries((acq || []).map(a => [a.card_id, a]));
   const morbyByCard = Object.fromEntries((morby || []).map(m => [m.card_id, m]));
+  const cashByCard = Object.fromEntries((cash || []).map(c => [c.card_id, c]));
   const tasksByCard = {}; // empty until 027 migration runs
   for (const t of (tasks || [])) (tasksByCard[t.card_id] ||= []).push(t);
 
@@ -528,7 +533,7 @@ async function loadAll() {
     props: props || [], buyers: buyers || [], leads: leads || [], deckViews: deckViews || [],
     activities: activities || [],
     termsByCard, statusByCard, fbByCard, leadsByCard, blastsByCard, recipsByCard,
-    viewsByCard, eventsByCard, acqByCard, morbyByCard, tasksByCard,
+    viewsByCard, eventsByCard, acqByCard, morbyByCard, cashByCard, tasksByCard,
     loadErrors,
   };
   renderBoard();
@@ -540,7 +545,7 @@ function renderBoard() {
   if (!boardData) return;
   const content = document.getElementById("content");
   const { props, buyers, leads, deckViews, activities, termsByCard, statusByCard, fbByCard, leadsByCard,
-          blastsByCard, recipsByCard, viewsByCard, eventsByCard, acqByCard, morbyByCard, tasksByCard } = boardData;
+          blastsByCard, recipsByCard, viewsByCard, eventsByCard, acqByCard, morbyByCard, cashByCard, tasksByCard } = boardData;
 
   // B4.1 — the buy-box completeness number, on the page Zach opens daily. A
   // wildcard buyer has no state, strategy or budget on file, so they land in
@@ -580,11 +585,16 @@ function renderBoard() {
   };
   const applyView = (list) => list.filter(matchesView).sort(SORTERS[dealView.sort] || SORTERS.attention);
 
-  const renderArgs = (p) => renderCard(p, termsByCard, statusByCard, fbByCard, buyers || [], leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard, eventsByCard, attByCard[p.card_id]);
-  const allSubto = props.filter(p => (p.deal_type || "subto") !== "morby");
+  const renderArgs = (p) => renderCard(p, termsByCard, statusByCard, fbByCard, buyers || [], leadsByCard, blastsByCard, acqByCard, morbyByCard, cashByCard, recipsByCard, viewsByCard, eventsByCard, attByCard[p.card_id]);
+  // Sub-To is the fallback bucket, so it must EXCLUDE every other structure by
+  // name — listing only "morby" here is what would silently file cash deals
+  // under Sub-To and blast them with a Sub-To email.
+  const allSubto = props.filter(p => !["morby", "cash"].includes(p.deal_type || "subto"));
   const allMorby = props.filter(p => p.deal_type === "morby");
+  const allCash = props.filter(p => p.deal_type === "cash");
   const subtoProps = applyView(allSubto);
   const morbyProps = applyView(allMorby);
+  const cashProps = applyView(allCash);
   const filtered = !!q || dealView.filter !== "all";
   const attentionCount = props.filter(p => attByCard[p.card_id].score >= 20).length;
 
@@ -655,10 +665,31 @@ function renderBoard() {
         </div>
       </div>
       ${morbyProps.length ? stack(morbyProps) : (allMorby.length ? noMatch : `<div class="empty">No Morby deals yet — click "+ Add Morby Deal" and upload an LOI to create one.</div>`)}
+    </div>
+    <div class="deal-type-group">
+      <div class="deal-type-group-header flex-between">
+        <span>💵 Cash Deals <span class="muted">${groupCount(cashProps, allCash)}</span></span>
+        <button type="button" class="btn btn-primary btn-sm" id="add-cash-btn">+ Add Cash Deal</button>
+      </div>
+      <div id="add-cash-panel" class="card hidden" style="margin-bottom:16px">
+        <h3 style="margin-top:0">New Cash Deal — Upload Contract</h3>
+        <p class="muted" style="font-size:0.85rem">Upload the purchase contract — PDF or image (JPG/PNG). Add the seller concession addendum, payoff letter or original listing as a second file if the discount lives there. Claude extracts the price stack (original → forgiven → purchase) and creates the card, ready to review and blast.</p>
+        <div class="flex gap-8" style="flex-wrap:wrap;align-items:center">
+          <label style="font-size:0.8rem">Contract (required)<br><input type="file" id="add-cash-contract" accept="application/pdf,image/jpeg,image/png,image/gif,image/webp" style="max-width:260px"></label>
+          <label style="font-size:0.8rem">Concession / payoff / listing (optional)<br><input type="file" id="add-cash-concession" accept="application/pdf,image/jpeg,image/png,image/gif,image/webp" style="max-width:260px"></label>
+        </div>
+        <div class="flex gap-8 mt-8" style="flex-wrap:wrap;align-items:center">
+          <button type="button" class="btn btn-primary btn-sm" id="add-cash-submit">📤 Extract &amp; Create</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="add-cash-cancel">Cancel</button>
+          <span id="add-cash-status" class="muted" style="font-size:0.82rem"></span>
+        </div>
+      </div>
+      ${cashProps.length ? stack(cashProps) : (allCash.length ? noMatch : `<div class="empty">No cash deals yet — click "+ Add Cash Deal" and upload the contract to create one.</div>`)}
     </div>`;
   wireCardEvents();
   wireAddMorbyPanel();
   wireAddSubtoPanel();
+  wireAddCashPanel();
   wireTriageBar();
   wireCallList();
 
@@ -740,9 +771,26 @@ function scoreBuyerForDeal(b, state, price, piti, beds) {
   return { score, reasons, missing };
 }
 
-function matchedBuyersForDeal(p, t, buyers) {
-  const state = p.state, price = Number(t.price) || 0, piti = Number(t.piti) || 0, beds = Number(t.beds) || 0;
-  const dealStrategy = p.deal_type === "morby" ? "morby" : "subto";
+// Which buyer strategy a deal blasts to. Sub-To is the FALLBACK, so every
+// other structure has to be named explicitly — mirrors blast-core.js, which
+// is the authority on the live send. A structure missing from this ternary
+// doesn't fail loudly; it quietly blasts to the wrong buyer list.
+function dealStrategyOf(p) {
+  return p.deal_type === "morby" ? "morby" : p.deal_type === "cash" ? "cash" : "subto";
+}
+
+// The price matchesDeal screens each buyer's max_price against. A cash deal
+// has no deal_terms row at all, so reading terms.price would hand matchesDeal
+// a 0 — and a 0 price makes it skip the budget cap entirely, previewing a
+// $570k deal as a match for a buyer who told us $200k.
+function dealMatchPrice(p, t, cash) {
+  if (p.deal_type === "cash") return DealShared.cashPriceStack(cash || {}).purchase || 0;
+  return Number(t.price) || 0;
+}
+
+function matchedBuyersForDeal(p, t, buyers, cash) {
+  const state = p.state, price = dealMatchPrice(p, t, cash), piti = Number(t.piti) || 0, beds = Number(t.beds) || 0;
+  const dealStrategy = dealStrategyOf(p);
   return buyers
     .filter(b => matchesDeal(b, dealStrategy, state, price, piti, beds))
     .map(b => {
@@ -756,9 +804,9 @@ function matchedBuyersForDeal(p, t, buyers) {
 // (nearMissDeal in deal-shared.js owns the band). They are never included in
 // a blast automatically: they show up as their own group in the picker so
 // they can be added one at a time, on purpose.
-function nearMissBuyersForDeal(p, t, buyers) {
-  const state = p.state, price = Number(t.price) || 0, piti = Number(t.piti) || 0, beds = Number(t.beds) || 0;
-  const dealStrategy = p.deal_type === "morby" ? "morby" : "subto";
+function nearMissBuyersForDeal(p, t, buyers, cash) {
+  const state = p.state, price = dealMatchPrice(p, t, cash), piti = Number(t.piti) || 0, beds = Number(t.beds) || 0;
+  const dealStrategy = dealStrategyOf(p);
   const out = [];
   for (const b of buyers) {
     const near = DealShared.nearMissDeal(b, dealStrategy, state, price, piti, beds);
@@ -931,10 +979,17 @@ function attentionBadges(att) {
 
 // Compact one-line row — the collapsed default every card renders as until
 // expanded. Address + the numbers that matter + why it needs attention.
-function renderCompactCard(p, t, morby, matchCount, leads, blasts, views, att, dealType) {
+function renderCompactCard(p, t, morby, cash, matchCount, leads, blasts, views, att, dealType) {
   const sent = (blasts || []).filter(b => b.status === "sent").length;
   const bits = [];
-  if (dealType === "morby") {
+  if (dealType === "cash") {
+    // Forgiven amount is this structure's headline everywhere else, so it
+    // leads the collapsed row too.
+    const stack = DealShared.cashPriceStack(cash || {});
+    if (stack.purchase) bits.push(fmtMoney(stack.purchase));
+    if (stack.forgiven) bits.push(`${fmtMoney(stack.forgiven)} forgiven`);
+    bits.push(`👥 ${matchCount}`);
+  } else if (dealType === "morby") {
     if (morby && morby.purchase_price) bits.push(fmtMoney(morby.purchase_price));
   } else {
     if (t.price) bits.push(fmtMoney(t.price));
@@ -956,11 +1011,12 @@ function renderCompactCard(p, t, morby, matchCount, leads, blasts, views, att, d
     </div>`;
 }
 
-function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard, blastsByCard, acqByCard, morbyByCard, recipsByCard, viewsByCard, eventsByCard, attention) {
+function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard, blastsByCard, acqByCard, morbyByCard, cashByCard, recipsByCard, viewsByCard, eventsByCard, attention) {
   const t = termsByCard[p.card_id] || {};
   const status = (statusByCard[p.card_id] || {}).status || "active";
   const posts = fbByCard[p.card_id] || [];
-  const matched = matchedBuyersForDeal(p, t, buyers);
+  const cash = (cashByCard && cashByCard[p.card_id]) || {};
+  const matched = matchedBuyersForDeal(p, t, buyers, cash);
   const matchCount = matched.length;
   const leads = leadsByCard[p.card_id] || [];
   const blasts = blastsByCard[p.card_id] || [];
@@ -968,12 +1024,12 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
   const acq = acqByCard[p.card_id] || {};
   const morby = (morbyByCard && morbyByCard[p.card_id]) || {};
   const dealType = p.deal_type || "subto";
-  dealCache[p.card_id] = { prop: p, terms: t, matched, nearMiss: nearMissBuyersForDeal(p, t, buyers), leads, acq, morby };
+  dealCache[p.card_id] = { prop: p, terms: t, matched, nearMiss: nearMissBuyersForDeal(p, t, buyers, cash), leads, acq, morby, cash };
 
   // ── Triage: collapsed (compact) mode is the default. One row per deal;
   // click to expand into the full working card. ──
   if (!expandedDealCards.has(p.card_id)) {
-    return renderCompactCard(p, t, morby, matchCount, leads, blasts,
+    return renderCompactCard(p, t, morby, cash, matchCount, leads, blasts,
       (viewsByCard && viewsByCard[p.card_id]) || [], attention, dealType);
   }
 
@@ -999,7 +1055,35 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
           <button class="btn btn-ghost btn-sm collapse-deal-btn" data-card-id="${escapeHtml(p.card_id)}" title="Collapse to one line">▴</button>
         </div>
       </div>
-      ${renderMorbyPanel(p, morby, t, acq)}
+      ${renderStructurePanel(p, morby, t, acq, "morby")}
+    </div>`;
+  }
+
+  // ── Cash deals use the same stripped-down workflow as Morby: created from
+  // a contract upload, worked entirely in one panel, blasted as a Deal Deck.
+  // No marketing-copy variations or FB posting tools. ──
+  if (dealType === "cash") {
+    return `
+    <div class="card prop-card cash-card" data-card-id="${escapeHtml(p.card_id)}">
+      <div class="flex-between">
+        <div>
+          <p class="prop-title">${escapeHtml(p.name)}</p>
+          <div class="prop-meta">
+            ${p.state ? `<span class="pill pill-state">${escapeHtml(p.state)}</span>` : ""}
+            ${dispoStageChip(p)}
+            ${p.deck_slug ? `<a href="${escapeHtml(deckUrlFor(p))}" target="_blank" rel="noopener">Deck page ↗</a>` : ""}
+            <button type="button" class="btn btn-ghost btn-sm deck-copy-btn" data-card-id="${escapeHtml(p.card_id)}" style="font-size:0.72rem;padding:1px 8px" title="Copy the public deck-page link for DMs / FB groups">🔗 Copy link</button>
+            <button type="button" class="btn btn-ghost btn-sm deck-pdf-copy-btn" data-card-id="${escapeHtml(p.card_id)}" style="font-size:0.72rem;padding:1px 8px" title="Copy a direct link to the Deal Deck PDF — generates and hosts it first if this deal hasn't been blasted yet">📄 Copy PDF link</button>
+          </div>
+        </div>
+        <div class="flex gap-8">
+          <span class="muted" style="font-size:0.78rem;align-self:center">👥 ${matchCount} matching</span>
+          <button class="btn btn-primary btn-sm morby-send-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Generate the Deal Deck PDF and blast it to matching cash buyers">📣 Send Deal Deck</button>
+          <button class="btn btn-ghost btn-sm morby-delete-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" title="Remove this cash deal">🗑 Remove</button>
+          <button class="btn btn-ghost btn-sm collapse-deal-btn" data-card-id="${escapeHtml(p.card_id)}" title="Collapse to one line">▴</button>
+        </div>
+      </div>
+      ${renderStructurePanel(p, cash, t, acq, "cash")}
     </div>`;
   }
 
@@ -1460,10 +1544,25 @@ const MORBY_DSCR_DEFAULTS = {
 
 // (dscrMonthlyPayment comes from /js/deal-shared.js)
 
-function renderMorbyPanel(p, morby, terms, acq) {
-  const m = morby || {};
+// Shared editor panel for BOTH structure-backed deal types (Morby and Cash).
+// One renderer on purpose: the two panels share the address override, the deck
+// photo, the gallery, the property type, the timeline, the property details,
+// the income/expense block and the DSCR assumptions — every one of which would
+// otherwise be a second copy free to drift.
+//
+//   kind "morby" — LOI terms + Seller Financing + Seller Flexibility
+//   kind "cash"  — the three-number price stack; NO seller financing, no
+//                  balloon, no flexibility notes (the seller is out at close)
+//
+// The panel carries data-table so wireStructurePanels() knows which table to
+// upsert into, and data-structure so the deck generator knows which content
+// model to build. `row` is the morby_deals or cash_deals record.
+function renderStructurePanel(p, row, terms, acq, kind) {
+  const m = row || {};
   const ac = acq || {};
   const cardId = escapeHtml(p.card_id);
+  const isCash = kind === "cash";
+  const table = isCash ? "cash_deals" : "morby_deals";
   const num = (v) => (v === null || v === undefined) ? "" : v;
   const txt = (v) => escapeHtml(v == null ? "" : String(v));
   const propertyType = m.property_type || "single_family";
@@ -1471,15 +1570,100 @@ function renderMorbyPanel(p, morby, terms, acq) {
   const dscrRate = m.dscr_rate != null ? m.dscr_rate : defaults.rate;
   const dscrLtv = m.dscr_ltv != null ? m.dscr_ltv : defaults.ltv;
   const dscrCredit = m.dscr_credit_score != null ? m.dscr_credit_score : defaults.credit;
+  const stack = isCash ? DealShared.cashPriceStack(m) : null;
+
+  // Upload block — the same shape, different documents and different function.
+  const uploadSection = isCash ? `
+    <div class="acq-section">
+      <h4>📤 Upload Contract</h4>
+      <p class="muted" style="font-size:0.78rem;margin-top:-4px">Upload the purchase contract (PDF or image). Add the concession addendum / payoff letter / original listing as a second file if the discount lives there. The form below auto-fills — review before generating the Deal Deck.</p>
+      <div class="flex gap-8" style="flex-wrap:wrap;align-items:center">
+        <label style="font-size:0.78rem">Contract<br><input type="file" class="cash-contract-input" accept="application/pdf,image/jpeg,image/png,image/gif,image/webp" style="max-width:230px"></label>
+        <label style="font-size:0.78rem">Concession (optional)<br><input type="file" class="cash-concession-input" accept="application/pdf,image/jpeg,image/png,image/gif,image/webp" style="max-width:230px"></label>
+        <button type="button" class="btn btn-ghost btn-sm cash-extract-btn" data-card-id="${cardId}">📤 Extract</button>
+        <span class="cash-extract-status muted" style="font-size:0.78rem"></span>
+      </div>
+    </div>` : `
+    <div class="acq-section">
+      <h4>📤 Upload LOI</h4>
+      <p class="muted" style="font-size:0.78rem;margin-top:-4px">Upload the signed LOI (PDF) and the form below will be auto-filled — review and adjust before generating the Deal Deck.</p>
+      <div class="flex gap-8" style="flex-wrap:wrap;align-items:center">
+        <input type="file" class="morby-loi-input" accept="application/pdf" style="max-width:280px">
+        <button type="button" class="btn btn-ghost btn-sm morby-loi-btn" data-card-id="${cardId}">📤 Extract from LOI</button>
+        <span class="morby-loi-status muted" style="font-size:0.78rem"></span>
+      </div>
+    </div>`;
+
+  // Financial terms. The cash version leads with the price stack, because the
+  // forgiven amount is the headline on the deck, the email and the SMS.
+  const termsSection = isCash ? `
+    <div class="acq-section">
+      <h4>💰 Price &amp; Concession</h4>
+      <p class="muted" style="font-size:0.78rem;margin-top:-4px">Original price − amount forgiven = purchase price. Enter any two and the third is derived — leave one blank rather than guessing at it.</p>
+      <div class="acq-grid">
+        <div class="acq-field"><label>Original price</label><input type="number" class="acq-input" data-field="original_price" value="${num(m.original_price)}" placeholder="${stack.original || ""}"></div>
+        <div class="acq-field"><label>Amount forgiven</label><input type="number" class="acq-input" data-field="amount_forgiven" value="${num(m.amount_forgiven)}" placeholder="${stack.forgiven || ""}"><p class="muted" style="font-size:0.74rem;margin-top:4px">${stack.discountPct ? `${stack.discountPct}% off the original price.` : "The seller's concession — the deck's headline number."}</p></div>
+        <div class="acq-field"><label>Purchase price</label><input type="number" class="acq-input" data-field="purchase_price" value="${num(m.purchase_price)}" placeholder="${stack.purchase || ""}"><p class="muted" style="font-size:0.74rem;margin-top:4px">What the buyer funds at closing.</p></div>
+      </div>
+    </div>
+
+    <div class="acq-section">
+      <h4>📝 Contract Terms</h4>
+      <div class="acq-grid">
+        <div class="acq-field"><label>Down payment / EMD</label><input type="number" class="acq-input" data-field="down_payment" value="${num(m.down_payment)}"><p class="muted" style="font-size:0.74rem;margin-top:4px">Optional — leave blank on an all-cash close.</p></div>
+        <div class="acq-field"><label>Earnest money amount</label><input type="number" class="acq-input" data-field="earnest_money_amount" value="${num(m.earnest_money_amount)}"></div>
+        <div class="acq-field"><label>Closing costs</label><input type="text" class="acq-input" data-field="closing_costs_note" value="${txt(m.closing_costs_note != null ? m.closing_costs_note : "Buyer pays all closing costs")}"></div>
+        <div class="acq-field"><label>Broker commission</label><input type="text" class="acq-input" data-field="broker_commission" value="${txt(m.broker_commission != null ? m.broker_commission : "None")}"></div>
+        <div class="acq-field"><label>Listing agent commission (%)</label><input type="number" step="0.01" class="acq-input" data-field="additional_broker_pct" value="${num(m.additional_broker_pct)}"><p class="muted" style="font-size:0.74rem;margin-top:4px">A % of purchase price, disclosed on the deck as a transaction cost.</p></div>
+      </div>
+    </div>` : `
+    <div class="acq-section">
+      <h4>📝 LOI / Financial Terms</h4>
+      <div class="acq-grid">
+        <div class="acq-field"><label>Purchase price</label><input type="number" class="acq-input" data-field="purchase_price" value="${num(m.purchase_price)}"></div>
+        <div class="acq-field"><label>Down payment / EMD</label><input type="number" class="acq-input" data-field="down_payment" value="${num(m.down_payment)}"></div>
+        <div class="acq-field"><label>Earnest money amount</label><input type="number" class="acq-input" data-field="earnest_money_amount" value="${num(m.earnest_money_amount)}"></div>
+        <div class="acq-field"><label>Closing costs</label><input type="text" class="acq-input" data-field="closing_costs_note" value="${txt(m.closing_costs_note != null ? m.closing_costs_note : "Buyer pays all closing costs")}"></div>
+        <div class="acq-field"><label>Broker commission</label><input type="text" class="acq-input" data-field="broker_commission" value="${txt(m.broker_commission != null ? m.broker_commission : "None")}"></div>
+        <div class="acq-field"><label>Listing agent commission (%)</label><input type="number" step="0.01" class="acq-input" data-field="additional_broker_pct" value="${num(m.additional_broker_pct)}"><p class="muted" style="font-size:0.74rem;margin-top:4px">A % of purchase price. Reduces Cash at Close.</p></div>
+      </div>
+    </div>
+
+    <!-- Section: Seller Financing (Deferred Interest) — Morby only -->
+    <div class="acq-section">
+      <h4>🏦 Seller Financing (Deferred Interest)</h4>
+      <div class="acq-grid">
+        <div class="acq-field"><label>Seller carry balance</label><input type="number" class="acq-input" data-field="seller_carry_balance" value="${num(m.seller_carry_balance)}"></div>
+        <div class="acq-field"><label>Interest structure</label>
+          <select class="acq-input" data-field="interest_type">
+            <option value="deferred" ${(m.interest_type || "deferred") === "deferred" ? "selected" : ""}>Deferred (compounds; full balance + accrued interest due at balloon)</option>
+            <option value="interest_only" ${m.interest_type === "interest_only" ? "selected" : ""}>Interest Only (no compounding; balloon payoff = principal)</option>
+          </select>
+        </div>
+        <div class="acq-field"><label>Interest rate (%)</label><input type="number" step="0.01" class="acq-input" data-field="deferred_interest_rate" value="${num(m.deferred_interest_rate)}"></div>
+        <div class="acq-field"><label>Monthly payment during deferral</label><input type="number" class="acq-input" data-field="monthly_payment" value="${num(m.monthly_payment != null ? m.monthly_payment : 0)}"></div>
+        <div class="acq-field"><label>Balloon (months)</label><input type="number" class="acq-input" data-field="balloon_months" value="${num(m.balloon_months)}"></div>
+      </div>
+    </div>`;
+
+  // Seller Flexibility is a seller-financing artifact — a cash seller is out
+  // at closing and has nothing left to be flexible about.
+  const flexSection = isCash ? "" : `
+    <div class="acq-section">
+      <h4>🤝 Seller Flexibility Notes</h4>
+      <div class="acq-grid">
+        <div class="acq-field" style="grid-column:1/-1"><textarea class="acq-input" data-field="seller_flexibility_notes" rows="3" placeholder="e.g. Seller willing to finance $X after balloon...">${txt(m.seller_flexibility_notes)}</textarea></div>
+      </div>
+    </div>`;
 
   return `
-  <div class="morby-panel" data-card-id="${cardId}">
+  <div class="structure-panel ${isCash ? "cash-panel" : "morby-panel"}" data-card-id="${cardId}" data-structure="${isCash ? "cash" : "morby"}" data-table="${table}">
     <span class="acq-saved-flash">Saved ✓</span>
 
     <!-- Section: Deal Deck Address -->
     <div class="acq-section">
       <h4>📍 Deal Deck Address</h4>
-      <p class="muted" style="font-size:0.78rem;margin-top:-4px">Used as the property address on the Deal Deck PDF. Defaults to the Trello card name — correct it here if that's wrong, without renaming the card.</p>
+      <p class="muted" style="font-size:0.78rem;margin-top:-4px">Used as the property address on the Deal Deck PDF and the deck page. Defaults to the card name — correct it here if that's wrong, without renaming the card.</p>
       <div class="acq-field">
         <input type="text" class="acq-input" data-field="address_override" placeholder="${escapeHtml(p.name || "")}" value="${txt(m.address_override)}">
       </div>
@@ -1505,16 +1689,7 @@ function renderMorbyPanel(p, morby, terms, acq) {
       ${galleryBlockHtml(p, ac)}
     </div>
 
-    <!-- Section: Upload LOI -->
-    <div class="acq-section">
-      <h4>📤 Upload LOI</h4>
-      <p class="muted" style="font-size:0.78rem;margin-top:-4px">Upload the signed LOI (PDF) and the form below will be auto-filled — review and adjust before generating the Deal Deck.</p>
-      <div class="flex gap-8" style="flex-wrap:wrap;align-items:center">
-        <input type="file" class="morby-loi-input" accept="application/pdf" style="max-width:280px">
-        <button type="button" class="btn btn-ghost btn-sm morby-loi-btn" data-card-id="${cardId}">📤 Extract from LOI</button>
-        <span class="morby-loi-status muted" style="font-size:0.78rem"></span>
-      </div>
-    </div>
+    ${uploadSection}
 
     <!-- Section: Property Type -->
     <div class="acq-section">
@@ -1527,35 +1702,7 @@ function renderMorbyPanel(p, morby, terms, acq) {
       </div>
     </div>
 
-    <!-- Section: LOI / Financial Terms -->
-    <div class="acq-section">
-      <h4>📝 LOI / Financial Terms</h4>
-      <div class="acq-grid">
-        <div class="acq-field"><label>Purchase price</label><input type="number" class="acq-input" data-field="purchase_price" value="${num(m.purchase_price)}"></div>
-        <div class="acq-field"><label>Down payment / EMD</label><input type="number" class="acq-input" data-field="down_payment" value="${num(m.down_payment)}"></div>
-        <div class="acq-field"><label>Earnest money amount</label><input type="number" class="acq-input" data-field="earnest_money_amount" value="${num(m.earnest_money_amount)}"></div>
-        <div class="acq-field"><label>Closing costs</label><input type="text" class="acq-input" data-field="closing_costs_note" value="${txt(m.closing_costs_note != null ? m.closing_costs_note : "Buyer pays all closing costs")}"></div>
-        <div class="acq-field"><label>Broker commission</label><input type="text" class="acq-input" data-field="broker_commission" value="${txt(m.broker_commission != null ? m.broker_commission : "None")}"></div>
-        <div class="acq-field"><label>Listing agent commission (%)</label><input type="number" step="0.01" class="acq-input" data-field="additional_broker_pct" value="${num(m.additional_broker_pct)}"><p class="muted" style="font-size:0.74rem;margin-top:4px">A % of purchase price. Reduces Cash at Close.</p></div>
-      </div>
-    </div>
-
-    <!-- Section: Seller Financing (Deferred Interest) -->
-    <div class="acq-section">
-      <h4>🏦 Seller Financing (Deferred Interest)</h4>
-      <div class="acq-grid">
-        <div class="acq-field"><label>Seller carry balance</label><input type="number" class="acq-input" data-field="seller_carry_balance" value="${num(m.seller_carry_balance)}"></div>
-        <div class="acq-field"><label>Interest structure</label>
-          <select class="acq-input" data-field="interest_type">
-            <option value="deferred" ${(m.interest_type || "deferred") === "deferred" ? "selected" : ""}>Deferred (compounds; full balance + accrued interest due at balloon)</option>
-            <option value="interest_only" ${m.interest_type === "interest_only" ? "selected" : ""}>Interest Only (no compounding; balloon payoff = principal)</option>
-          </select>
-        </div>
-        <div class="acq-field"><label>Interest rate (%)</label><input type="number" step="0.01" class="acq-input" data-field="deferred_interest_rate" value="${num(m.deferred_interest_rate)}"></div>
-        <div class="acq-field"><label>Monthly payment during deferral</label><input type="number" class="acq-input" data-field="monthly_payment" value="${num(m.monthly_payment != null ? m.monthly_payment : 0)}"></div>
-        <div class="acq-field"><label>Balloon (months)</label><input type="number" class="acq-input" data-field="balloon_months" value="${num(m.balloon_months)}"></div>
-      </div>
-    </div>
+    ${termsSection}
 
     <!-- Section: Timeline & Contingencies -->
     <div class="acq-section">
@@ -1609,19 +1756,14 @@ function renderMorbyPanel(p, morby, terms, acq) {
       </div>
     </div>
 
-    <!-- Section: Seller Flexibility Notes -->
-    <div class="acq-section">
-      <h4>🤝 Seller Flexibility Notes</h4>
-      <div class="acq-grid">
-        <div class="acq-field" style="grid-column:1/-1"><textarea class="acq-input" data-field="seller_flexibility_notes" rows="3" placeholder="e.g. Seller willing to finance $X after balloon...">${txt(m.seller_flexibility_notes)}</textarea></div>
-      </div>
-    </div>
+    ${flexSection}
 
     <div class="flex gap-8 mt-8">
       <button type="button" class="btn btn-primary btn-sm morby-deck-btn" data-card-id="${cardId}">📄 Download Deal Deck (PDF)</button>
     </div>
   </div>`;
 }
+
 
 function wireCardEvents() {
   // ── Triage: expand a compact row / collapse a full card. State lives in
@@ -2390,8 +2532,13 @@ function wireAcqPanels() {
 
 // ── Morby Deal tab — inline auto-save on blur/change ──
 function wireMorbyPanel() {
-  document.querySelectorAll(".morby-panel").forEach(panel => {
+  // `.structure-panel` covers BOTH the Morby and the Cash panel — which table
+  // a field lands in comes from the panel's own data-table, so adding a fourth
+  // structure later means rendering a panel, not editing this function.
+  document.querySelectorAll(".structure-panel").forEach(panel => {
     const cardId = panel.dataset.cardId;
+    const table = panel.dataset.table || "morby_deals";
+    const cacheKey = panel.dataset.structure === "cash" ? "cash" : "morby";
     const flash = panel.querySelector(".acq-saved-flash");
     let flashTimer = null;
     const showSaved = () => {
@@ -2402,10 +2549,10 @@ function wireMorbyPanel() {
 
     async function saveField(field, value) {
       const row = { card_id: cardId, [field]: value, updated_at: new Date().toISOString() };
-      const { error } = await supa.from("morby_deals").upsert(row, { onConflict: "card_id" });
+      const { error } = await supa.from(table).upsert(row, { onConflict: "card_id" });
       if (error) { alert(`Couldn't save: ${error.message}`); return; }
       const deal = dealCache[cardId];
-      if (deal) deal.morby = { ...(deal.morby || {}), [field]: value };
+      if (deal) deal[cacheKey] = { ...(deal[cacheKey] || {}), [field]: value };
       showSaved();
     }
 
@@ -2489,13 +2636,15 @@ function wireMorbyPanel() {
   document.querySelectorAll(".estimate-ti-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
       const cardId = btn.dataset.cardId;
-      const panel = document.querySelector(`.morby-panel[data-card-id="${cardId}"]`);
+      const panel = document.querySelector(`.structure-panel[data-card-id="${cardId}"]`);
       const deal  = dealCache[cardId];
       if (!panel || !deal) return;
 
-      // Read live purchase price from form.
+      // Read live purchase price from form. Both structures store it under
+      // purchase_price, so the same selector works for either panel.
+      const structKey = panel.dataset.structure === "cash" ? "cash" : "morby";
       const priceInput = panel.querySelector('.acq-input[data-field="purchase_price"]');
-      const price = Number(priceInput?.value) || Number(deal.morby?.purchase_price) || 0;
+      const price = Number(priceInput?.value) || Number(deal[structKey]?.purchase_price) || 0;
       if (!price) { alert("Enter a Purchase Price first."); return; }
 
       // State from the property record.
@@ -2534,7 +2683,7 @@ function wireMorbyPanel() {
         const pdfBase64 = await generateDealDeck(cardId, null, { returnBase64: true });
         btn.textContent = original;
         btn.disabled = false;
-        openBlastModal(btn, { isMorbyDeck: true, dealDeckPdf: pdfBase64 });
+        openBlastModal(btn, { isDeckPdfBlast: true, dealDeckPdf: pdfBase64 });
       } catch (e) {
         alert(`Couldn't generate Deal Deck: ${e.message}`);
         btn.textContent = original;
@@ -2543,9 +2692,14 @@ function wireMorbyPanel() {
     });
   });
 
-  // ── Upload LOI → AI extraction ──
+  // ── Upload LOI → AI extraction (Morby) ──
   document.querySelectorAll(".morby-loi-btn").forEach(btn => {
     btn.addEventListener("click", () => extractLoi(btn));
+  });
+
+  // ── Upload contract → AI extraction (Cash) ──
+  document.querySelectorAll(".cash-extract-btn").forEach(btn => {
+    btn.addEventListener("click", () => extractCashContract(btn));
   });
 
   // ── Remove a deal card. With the Trello sync retired (July 2026) this is
@@ -2588,7 +2742,7 @@ async function pdfFileToBase64(file) {
 
 async function extractLoi(btn) {
   const cardId = btn.dataset.cardId;
-  const panel = btn.closest(".morby-panel");
+  const panel = btn.closest(".structure-panel");
   const fileInput = panel.querySelector(".morby-loi-input");
   const statusEl = panel.querySelector(".morby-loi-status");
   const file = fileInput.files && fileInput.files[0];
@@ -2778,17 +2932,149 @@ function wireAddSubtoPanel() {
   });
 }
 
+// Files Claude accepts. HEIC (the iPhone default) is deliberately excluded —
+// Claude's API rejects it — so we steer the user to convert rather than fail
+// server-side with a cryptic message. Shared by both cash upload paths.
+const CASH_ALLOWED = ["application/pdf", "image/jpeg", "image/png", "image/gif", "image/webp"];
+const CASH_MAX_BYTES = 4 * 1024 * 1024; // base64 inflates ~4/3, and it all rides one function call
+
+async function cashFilePayload(f) {
+  return { media_type: f.type, data: await pdfFileToBase64(f) };
+}
+
+// Validates the (contract, optional concession) pair the same way for the
+// "+ Add Cash Deal" panel and the in-card re-extract. Returns an error string
+// or null — callers surface it in their own status element.
+function cashUploadError(contract, concession) {
+  if (!contract) return "Choose the contract file first.";
+  const files = [contract, concession].filter(Boolean);
+  if (files.some(f => !CASH_ALLOWED.includes(f.type))) {
+    return "Files must be PDF, JPG, PNG, GIF, or WebP. (iPhone HEIC photos: convert to JPG first.)";
+  }
+  if (files.reduce((n, f) => n + f.size, 0) > CASH_MAX_BYTES) {
+    return "Files too large — keep the combined size under 4 MB (compress/re-save, or screenshot a smaller region).";
+  }
+  return null;
+}
+
+// ── In-card "📤 Extract" on a cash panel — re-reads the contract into an
+// EXISTING card, the way extractLoi does for Morby. parse-cash upserts on
+// card_id, so this refreshes the terms without creating a second card. ──
+async function extractCashContract(btn) {
+  const cardId = btn.dataset.cardId;
+  const panel = btn.closest(".structure-panel");
+  const contractInput = panel.querySelector(".cash-contract-input");
+  const concessionInput = panel.querySelector(".cash-concession-input");
+  const statusEl = panel.querySelector(".cash-extract-status");
+  const contract = contractInput.files && contractInput.files[0];
+  const concession = concessionInput.files && concessionInput.files[0];
+
+  const err = cashUploadError(contract, concession);
+  if (err) { statusEl.textContent = err; return; }
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Reading…";
+  statusEl.textContent = "";
+  try {
+    const body = { card_id: cardId, contract: await cashFilePayload(contract) };
+    if (concession) body.concession = await cashFilePayload(concession);
+    btn.textContent = "Extracting…";
+    const { data: { session: s } } = await supa.auth.getSession();
+    const res = await fetch("/.netlify/functions/parse-cash", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
+      body: JSON.stringify(body),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || "Extraction failed");
+    statusEl.textContent = "✓ Extracted — review the terms below.";
+    await loadAll();
+  } catch (e) {
+    statusEl.textContent = `Couldn't extract: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+// ── "+ Add Cash Deal" — create a card from a contract upload. Mirrors
+// wireAddSubtoPanel, minus the generate-copy call: cash deals go out as a Deal
+// Deck (like Morby), not as the three marketing-copy variations. ──
+function wireAddCashPanel() {
+  const addBtn = document.getElementById("add-cash-btn");
+  const panel = document.getElementById("add-cash-panel");
+  const cancelBtn = document.getElementById("add-cash-cancel");
+  const submitBtn = document.getElementById("add-cash-submit");
+  const contractInput = document.getElementById("add-cash-contract");
+  const concessionInput = document.getElementById("add-cash-concession");
+  const statusEl = document.getElementById("add-cash-status");
+  if (!addBtn) return;
+
+  addBtn.addEventListener("click", () => panel.classList.toggle("hidden"));
+  cancelBtn.addEventListener("click", () => {
+    panel.classList.add("hidden");
+    contractInput.value = "";
+    concessionInput.value = "";
+    statusEl.textContent = "";
+  });
+
+  submitBtn.addEventListener("click", async () => {
+    const contract = contractInput.files && contractInput.files[0];
+    const concession = concessionInput.files && concessionInput.files[0];
+    const err = cashUploadError(contract, concession);
+    if (err) { statusEl.textContent = err; return; }
+
+    const original = submitBtn.textContent;
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Reading files…";
+    statusEl.textContent = "";
+    try {
+      const body = { contract: await cashFilePayload(contract) };
+      if (concession) body.concession = await cashFilePayload(concession);
+
+      submitBtn.textContent = "Extracting terms with AI…";
+      const { data: { session: s } } = await supa.auth.getSession();
+      const res = await fetch("/.netlify/functions/parse-cash", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
+        body: JSON.stringify(body),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || "Extraction failed");
+      // Open the new card in full so the extracted price stack is reviewed,
+      // not buried as a collapsed row.
+      if (result.card_id) expandedDealCards.add(result.card_id);
+
+      panel.classList.add("hidden");
+      contractInput.value = "";
+      concessionInput.value = "";
+      await loadAll(); // re-renders #content, so report via toast
+      toast("✓ Cash deal created — check the price stack before blasting.", { type: "success" });
+    } catch (e) {
+      statusEl.textContent = `Couldn't create deal: ${e.message}`;
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = original;
+    }
+  });
+}
+
 async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
   const deal = dealCache[cardId];
   if (!deal) return;
   const p = deal.prop, t = deal.terms || {};
-  // Use live values straight from the form, so an edited field that
-  // hasn't blurred (and therefore hasn't saved to morby_deals yet) is
-  // still reflected in the generated deck.
-  const m = { ...(deal.morby || {}) };
-  const morbyPanel = document.querySelector(`.morby-panel[data-card-id="${cardId}"]`);
-  if (morbyPanel) {
-    morbyPanel.querySelectorAll(".acq-input[data-field]").forEach(input => {
+  // Both structures render through this one generator: the jsPDF layout engine
+  // below (section headers, rows, two-column sections, footer) is identical,
+  // and only the CONTENT MODEL differs. Duplicating it for cash would be ~500
+  // lines free to drift apart visually.
+  const isCash = p.deal_type === "cash";
+  // Use live values straight from the form, so an edited field that hasn't
+  // blurred (and therefore hasn't saved yet) is still reflected in the deck.
+  const m = { ...((isCash ? deal.cash : deal.morby) || {}) };
+  const structPanel = document.querySelector(`.structure-panel[data-card-id="${cardId}"]`);
+  if (structPanel) {
+    structPanel.querySelectorAll(".acq-input[data-field]").forEach(input => {
       const field = input.dataset.field;
       if (input.value === "") { m[field] = null; return; }
       m[field] = input.type === "number" ? Number(input.value) : input.value;
@@ -2800,7 +3086,13 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
   const dscrRate = m.dscr_rate != null ? Number(m.dscr_rate) : defaults.rate;
   const dscrLtv = m.dscr_ltv != null ? Number(m.dscr_ltv) : defaults.ltv;
   const dscrCredit = m.dscr_credit_score != null ? m.dscr_credit_score : defaults.credit;
-  const price = Number(m.purchase_price) || 0;
+  const stack = isCash ? DealShared.cashPriceStack(m) : null;
+  // On a cash deal the DSCR loan sizes off the DERIVED purchase price, not the
+  // stored column: a deal entered as original + forgiven leaves purchase_price
+  // null, and reading it raw produced a $0 loan and a $0 debt-service payment
+  // on a buyer-facing deck. (Sizing off purchase price, not the original, is
+  // also the conservative read — lenders lend on the lower of price or value.)
+  const price = isCash ? (stack.purchase || 0) : (Number(m.purchase_price) || 0);
   const loanAmount = price * (dscrLtv / 100);
   const monthlyDebtService = dscrMonthlyPayment(price, dscrRate, dscrLtv);
 
@@ -2809,7 +3101,12 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
   //   commission, split in half. Shown as a headline figure only when positive.
   const addlBrokerPct = Number(m.additional_broker_pct) || 0;
   const addlBrokerFee = price * (addlBrokerPct / 100);
-  const cashToBuyerAtClose = (loanAmount - (Number(m.down_payment) || 0) - price * 0.05 - addlBrokerFee) / 2;
+  // Deliberately 0 on a cash deal — there is no assignment split to take a
+  // share of, so any figure here would be money that never changes hands.
+  // Every downstream use is already gated on `> 0`.
+  const cashToBuyerAtClose = isCash
+    ? 0
+    : (loanAmount - (Number(m.down_payment) || 0) - price * 0.05 - addlBrokerFee) / 2;
 
   const fmt = (n) => `$${Math.round(Number(n) || 0).toLocaleString()}`;
   const fmtPct = (n) => `${Number(n) || 0}%`;
@@ -2818,13 +3115,26 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
 
   // Plain key/value rows for each section — laid out manually with jsPDF
   // (no html2canvas / off-screen DOM rendering, which was producing blank pages).
-  const loiRows = [
-    ["Purchase Price", fmt(m.purchase_price), true],
-    ["Down Payment / EMD", fmt(m.down_payment)],
-    ["Earnest Money", fmt(m.earnest_money_amount)],
-    ["Closing Costs", m.closing_costs_note || "Buyer pays all closing costs"],
-    ["Broker Commission", m.broker_commission || "None"],
-  ];
+  const loiRows = isCash
+    ? [
+        // The price stack reads top-down, so the concession sits between the
+        // two prices it explains. Down Payment / EMD only appears when it's
+        // actually on the contract — an all-cash close has no such line.
+        ["Original Price", fmt(stack.original)],
+        ["Amount Forgiven", `${fmt(stack.forgiven)}${stack.discountPct ? ` (${stack.discountPct}% off)` : ""}`, true],
+        ["Purchase Price", fmt(stack.purchase), true],
+        ...(Number(m.down_payment) ? [["Down Payment / EMD", fmt(m.down_payment)]] : []),
+        ["Earnest Money", fmt(m.earnest_money_amount)],
+        ["Closing Costs", m.closing_costs_note || "Buyer pays all closing costs"],
+        ["Broker Commission", m.broker_commission || "None"],
+      ]
+    : [
+        ["Purchase Price", fmt(m.purchase_price), true],
+        ["Down Payment / EMD", fmt(m.down_payment)],
+        ["Earnest Money", fmt(m.earnest_money_amount)],
+        ["Closing Costs", m.closing_costs_note || "Buyer pays all closing costs"],
+        ["Broker Commission", m.broker_commission || "None"],
+      ];
   if (addlBrokerPct > 0) {
     loiRows.push(["Listing Agent Commission", `${addlBrokerPct}% (${fmt(addlBrokerFee)})`]);
   }
@@ -2871,6 +3181,10 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
   // Cash Flow Analysis is laid out as a simple P&L: income, less debt
   // service (DSCR loan + seller financing), equals net cash flow.
   const sellerPmt  = Number(m.monthly_payment)   || 0;
+  // A cash deal has no seller note, so this isn't a $0 payment — it's a line
+  // that doesn't exist. Printing "Seller Financing Pmt ($0)" invites the
+  // question of what seller financing.
+  const sellerPmtRow = isCash ? [] : [["Seller Financing Pmt", fmtExpense(sellerPmt)]];
   const taxes      = Number(m.monthly_taxes)      || 0;
   const insurance  = Number(m.monthly_insurance)  || 0;
   let cashFlowLeftRows, cashFlowRightRows;
@@ -2881,7 +3195,7 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
     cashFlowLeftRows = [
       ["Net Operating Income",   fmt(noi)],
       ["DSCR Loan Payment",      fmtExpense(monthlyDebtService)],
-      ["Seller Financing Pmt",   fmtExpense(sellerPmt)],
+      ...sellerPmtRow,
       ...(taxes     ? [["Property Taxes",   fmtExpense(taxes)]]     : []),
       ...(insurance ? [["Insurance",         fmtExpense(insurance)]] : []),
       ["Net Cash Flow",          fmt(netCashFlow), true],
@@ -2899,7 +3213,7 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
     cashFlowLeftRows = [
       ["Rental Income (LTR)",  fmt(ltr)],
       ["DSCR Loan Payment",    fmtExpense(monthlyDebtService)],
-      ["Seller Financing Pmt", fmtExpense(sellerPmt)],
+      ...sellerPmtRow,
       ...(taxes     ? [["Property Taxes",  fmtExpense(taxes)]]     : []),
       ...(insurance ? [["Insurance",        fmtExpense(insurance)]] : []),
       ["Net Cash Flow",        fmt(ltrNet), true],
@@ -2907,7 +3221,7 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
     cashFlowRightRows = [
       ["Rental Income (STR)",  fmt(str)],
       ["DSCR Loan Payment",    fmtExpense(monthlyDebtService)],
-      ["Seller Financing Pmt", fmtExpense(sellerPmt)],
+      ...sellerPmtRow,
       ...(taxes     ? [["Property Taxes",  fmtExpense(taxes)]]     : []),
       ...(insurance ? [["Insurance",        fmtExpense(insurance)]] : []),
       ["Net Cash Flow",        fmt(strNet), true],
@@ -2957,6 +3271,14 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
     doc.setFontSize(16);
     doc.setTextColor(...NAVY);
     doc.text("Seaside Horizon", textX, y);
+    // Structure label, right-aligned on the header line, so the deck names
+    // what kind of deal it is before a single number is read.
+    if (isCash) {
+      doc.setFontSize(11);
+      doc.setTextColor(...GOLD);
+      const tag = "CASH DEAL";
+      doc.text(tag, pageW - marginX - doc.getTextWidth(tag), y);
+    }
     y += 18;
     doc.setDrawColor(...GOLD);
     doc.setLineWidth(2);
@@ -2982,7 +3304,25 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
     // summary column (only when positive) instead of a separate band, so
     // the deck stays one page.
     const cashStat = cashToBuyerAtClose > 0 ? [["Cash at Close", fmt(cashToBuyerAtClose)]] : [];
-    const summaryStats = propertyType === "commercial"
+    // Cash: the price stack replaces Seller Carry Balance, and Balloon is gone
+    // — there is no note to balloon. Amount Forgiven sits second, where the
+    // eye lands after the price.
+    const summaryStats = isCash
+      ? (propertyType === "commercial"
+          ? [
+              ["Purchase Price", fmt(stack.purchase)],
+              ["Amount Forgiven", fmt(stack.forgiven)],
+              ["Original Price", fmt(stack.original)],
+              [cashFlowLabelLtr, cashFlowHeadlineLtr],
+            ]
+          : [
+              ["Purchase Price", fmt(stack.purchase)],
+              ["Amount Forgiven", fmt(stack.forgiven)],
+              ["Original Price", fmt(stack.original)],
+              [cashFlowLabelLtr, cashFlowHeadlineLtr],
+              [cashFlowLabelStr, cashFlowHeadlineStr],
+            ])
+      : propertyType === "commercial"
       ? [
           ["Purchase Price", fmt(m.purchase_price)],
           ...cashStat,
@@ -3175,7 +3515,12 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
 
     // ── Investment Highlights ──
     const highlights = [];
-    if (m.seller_carry_balance) {
+    if (isCash) {
+      if (stack.forgiven) {
+        const offPart = stack.discountPct ? ` — ${stack.discountPct}% off the ${fmt(stack.original)} original price` : "";
+        highlights.push(`Seller is forgiving ${fmt(stack.forgiven)}${offPart}. That discount is equity you own the day you close.`);
+      }
+    } else if (m.seller_carry_balance) {
       const paymentPart = m.monthly_payment
         ? `payments of ${fmt(m.monthly_payment)}/mo`
         : "no monthly payments";
@@ -3193,7 +3538,12 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
     } else {
       highlights.push(`Projected cash flow of ${cashFlowHeadlineLtr}/mo (long-term rental) or ${cashFlowHeadlineStr}/mo (short-term rental) at ${fmtPct(dscrLtv)} LTV / ${fmtPct(dscrRate)} DSCR terms.`);
     }
-    if (m.purchase_price) {
+    if (isCash) {
+      if (stack.purchase) {
+        const forgivenPart = stack.forgiven ? ` with ${fmt(stack.forgiven)} forgiven` : "";
+        highlights.push(`Total purchase price of ${fmt(stack.purchase)}${forgivenPart}. Cash close — no loan to take over and no seller carryback.`);
+      }
+    } else if (m.purchase_price) {
       const dpPart = m.down_payment ? ` with ${fmt(m.down_payment)} down` : "";
       highlights.push(`Total purchase price of ${fmt(m.purchase_price)}${dpPart}.`);
     }
@@ -3203,13 +3553,17 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
       y += 3;
     }
 
-    sectionHeader("LOI / Financial Terms");
+    sectionHeader(isCash ? "Purchase Terms" : "LOI / Financial Terms");
     loiRows.forEach(([l, v, b]) => row(l, v, b));
     y += 5;
 
-    sectionHeader(sellerFinancingTitle);
-    financingRows.forEach(([l, v, b]) => row(l, v, b));
-    y += 5;
+    // Seller Financing has no cash equivalent — the seller is paid in full and
+    // out at closing. The whole section is omitted, not zeroed.
+    if (!isCash) {
+      sectionHeader(sellerFinancingTitle);
+      financingRows.forEach(([l, v, b]) => row(l, v, b));
+      y += 5;
+    }
 
     twoColumnSection("Timeline & Contingencies", timelineRows, "DSCR Loan", dscrRows);
     y += 5;
@@ -3222,7 +3576,8 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
     }
     y += 5;
 
-    if (m.seller_flexibility_notes) {
+    // Also seller-financing-only: a cash seller has nothing left to flex on.
+    if (!isCash && m.seller_flexibility_notes) {
       sectionHeader("Seller Flexibility");
       paragraph(m.seller_flexibility_notes);
       y += 5;
@@ -3356,23 +3711,25 @@ async function deleteLead() {
   loadAll();
 }
 
-let activeBlast = null; // { cardId, address, statusEl, matched, isMorbyDeck?, dealDeckPdf? }
+let activeBlast = null; // { cardId, address, statusEl, matched, isDeckPdfBlast?, dealDeckPdf? }
+// Buyer-facing name for each structure, used in the blast modal's subtitle.
+const STRUCTURE_AUDIENCE = { morby: "Stack Method", cash: "cash", subto: "Sub-To" };
 
-function openBlastModal(btn, { isMorbyDeck = false, dealDeckPdf = null, followUpIds = null } = {}) {
+function openBlastModal(btn, { isDeckPdfBlast = false, dealDeckPdf = null, followUpIds = null } = {}) {
   const cardId = btn.dataset.cardId;
   const address = btn.dataset.address;
-  // Morby cards don't have a .blast-status el in the same .flex-between — use card header
+  // Morby/cash cards don't have a .blast-status el in the same .flex-between — use card header
   const statusEl = btn.closest(".flex-between")?.querySelector(".blast-status") || btn.closest(".card")?.querySelector(".blast-status") || btn;
   const deal = dealCache[cardId];
   const matched = (deal && deal.matched) || [];
   const nearMiss = (deal && deal.nearMiss) || [];
-  const variations = isMorbyDeck ? [] : ((deal && deal.prop && deal.prop.variations) || []);
+  const variations = isDeckPdfBlast ? [] : ((deal && deal.prop && deal.prop.variations) || []);
   // Deal params let us score any buyer (even ones not auto-matched) when the
   // user filters the "Choose specific buyers" list by method.
   const dealParams = deal
-    ? { state: deal.prop.state, price: Number(deal.terms?.price) || 0, piti: Number(deal.terms?.piti) || 0, beds: Number(deal.terms?.beds) || 0 }
+    ? { state: deal.prop.state, price: dealMatchPrice(deal.prop, deal.terms || {}, deal.cash), piti: Number(deal.terms?.piti) || 0, beds: Number(deal.terms?.beds) || 0 }
     : { state: "", price: 0, piti: 0, beds: 0 };
-  activeBlast = { cardId, address, statusEl, matched, nearMiss, variations, isMorbyDeck, dealDeckPdf, dealParams, selectedIds: new Set() };
+  activeBlast = { cardId, address, statusEl, matched, nearMiss, variations, isDeckPdfBlast, dealDeckPdf, dealParams, selectedIds: new Set() };
 
   const varSel = document.getElementById("blast-variation-select");
   const varField = document.getElementById("blast-variation-field");
@@ -3393,9 +3750,10 @@ function openBlastModal(btn, { isMorbyDeck = false, dealDeckPdf = null, followUp
     varPreview.textContent = "";
   }
 
-  document.getElementById("blast-modal-title").textContent = isMorbyDeck ? `Send Deal Deck — ${address}` : `Send Blast — ${address}`;
-  document.getElementById("blast-modal-sub").textContent = isMorbyDeck
-    ? `Deal Deck PDF will be emailed to ${matched.length} Stack Method buyer${matched.length === 1 ? "" : "s"}.`
+  document.getElementById("blast-modal-title").textContent = isDeckPdfBlast ? `Send Deal Deck — ${address}` : `Send Blast — ${address}`;
+  const audienceName = STRUCTURE_AUDIENCE[(deal && deal.prop && deal.prop.deal_type) || "subto"] || "matching";
+  document.getElementById("blast-modal-sub").textContent = isDeckPdfBlast
+    ? `Deal Deck PDF will be emailed to ${matched.length} ${audienceName} buyer${matched.length === 1 ? "" : "s"}.`
     : `${matched.length} buyer${matched.length === 1 ? "" : "s"} match this deal's state${matched.some(b=>b.max_price||b.max_piti||b.min_beds) ? " & criteria" : ""}.`;
   renderAudienceSplit(matched, nearMiss);
   document.getElementById("blast-mode-all").checked = true;
@@ -3644,7 +4002,7 @@ async function runBlast({ test }) {
     if (buyerIds) body.buyer_ids = buyerIds;
     if (activeBlast.followUp) body.follow_up = true;
     body.channels = channels;
-    if (activeBlast.isMorbyDeck) {
+    if (activeBlast.isDeckPdfBlast) {
       // Email carries the PDF; SMS (if selected) sends the key numbers as text.
       body.deal_deck_pdf = activeBlast.dealDeckPdf;
     } else if (activeBlast.variations && activeBlast.variations.length) {
@@ -3673,7 +4031,7 @@ async function runBlast({ test }) {
 
     // LIVE (F4): goes to the background function — 202 immediately, up to a
     // 15-minute send budget — then we watch progress via blast_recipients.
-    if (activeBlast.isMorbyDeck) {
+    if (activeBlast.isDeckPdfBlast) {
       // A background invocation's payload caps at ~256 KB, far too small for
       // an inline base64 PDF — stage it in Storage and pass the path.
       const b64 = (body.deal_deck_pdf || "").split("base64,").pop();

@@ -67,3 +67,25 @@ test("replyGmailQuery contains every phrase we build for", () => {
   assert.ok(q.includes('subject:"New Sub-To Deal"'));
   assert.ok(q.includes('subject:"Stack Method Deal"'));
 });
+
+test("cashSubject → propertyNameFromSubject round-trips the street", () => {
+  const { cashSubject } = require("../netlify/functions/lib/subjects");
+  const subj = cashSubject("3014 N Tampa St, Tampa, FL 33603", 285000);
+  assert.equal(subj, "Cash Deal: 3014 N Tampa St, Tampa, FL 33603 | $285,000 Forgiven");
+  assert.equal(propertyNameFromSubject(subj), "3014 N Tampa St");
+});
+
+test("cashSubject with no forgiven amount drops the hook and still round-trips", () => {
+  const { cashSubject } = require("../netlify/functions/lib/subjects");
+  const subj = cashSubject("77 Bay Rd, Tampa, FL", 0);
+  assert.equal(subj, "Cash Deal: 77 Bay Rd, Tampa, FL");
+  assert.equal(propertyNameFromSubject(subj), "77 Bay Rd");
+  assert.equal(propertyNameFromSubject("Re: " + subj), "77 Bay Rd");
+});
+
+test("the reply capturer searches for the cash subject too", () => {
+  // A structure missing from REPLY_SEARCH_SUBJECTS silently stops its replies
+  // — the exact failure this file exists to prevent.
+  assert.ok(REPLY_SEARCH_SUBJECTS.includes("Cash Deal"));
+  assert.ok(replyGmailQuery().includes('subject:"Cash Deal"'));
+});

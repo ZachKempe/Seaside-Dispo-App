@@ -10,6 +10,7 @@
 const { verifyDeckToken, viewToken } = require("./lib/deck-token");
 const {
   fmtMoney, buyerCashAtClose, subtoTermRows, morbyTermRows,
+  cashTermRows, cashPriceStack,
   subtoCarry, subtoRentOptions, subtoPrincipalPaydown, RESERVE_MONTHS,
 } = require("../../public/js/deal-shared");
 const { resolveDealPhotos } = require("./lib/deck-photo");
@@ -221,9 +222,13 @@ exports.handler = async (event) => {
     const encCard = encodeURIComponent(cardId);
     const iso = (ms) => encodeURIComponent(new Date(Date.now() - ms).toISOString());
     // Counts run BEFORE this visitor's own view is logged, so they only reflect others.
-    const [termsRows, morbyRows, acqRows, statusRows, views24, views7d, pdfCount, gallery, hasPdf] = await Promise.all([
+    const [termsRows, morbyRows, cashRows, acqRows, statusRows, views24, views7d, pdfCount, gallery, hasPdf] = await Promise.all([
       sb(`/deal_terms?card_id=eq.${encCard}&select=*&limit=1`),
       sb(`/morby_deals?card_id=eq.${encCard}&select=*&limit=1`),
+      // Fails soft to [] when migration 035 hasn't run yet: no card can be
+      // deal_type 'cash' before it does, so isCash stays false and every
+      // branch below behaves exactly as it did.
+      sb(`/cash_deals?card_id=eq.${encCard}&select=*&limit=1`).catch(() => []),
       sb(`/deal_acquisition?card_id=eq.${encCard}&select=cover_image_url&limit=1`),
       sb(`/property_status?card_id=eq.${encCard}&select=status&limit=1`),
       sbCount(`/deck_views?card_id=eq.${encCard}&kind=eq.view&viewed_at=gte.${iso(24 * 3600e3)}`),
@@ -236,10 +241,16 @@ exports.handler = async (event) => {
     ]);
     const terms = (termsRows || [])[0] || {};
     const morby = (morbyRows || [])[0] || {};
+    const cash = (cashRows || [])[0] || {};
     const cover = ((acqRows || [])[0] || {}).cover_image_url || "";
     const status = (((statusRows || [])[0] || {}).status || "active").toLowerCase();
     const isMorby = prop.deal_type === "morby";
-    const address = prop.address_override || prop.name || "Deal";
+    const isCash = prop.deal_type === "cash";
+    // NOTE: `prop.address_override` is always undefined — the column lives on
+    // morby_deals, never on properties (migration 012). Left as-is rather than
+    // changed here, but cash_deals.address_override IS honored, so the cash
+    // deck page and the cash PDF can't show different addresses.
+    const address = (isCash && cash.address_override) || prop.address_override || prop.name || "Deal";
     const street = address.split(",")[0].trim();
     const cityLine = address.split(",").slice(1).join(",").trim();
 
@@ -298,7 +309,7 @@ exports.handler = async (event) => {
       ? `<span style="display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#1F7A54;background:#E4F4EC;border:1px solid #B7E3CC;padding:5px 11px;border-radius:999px"><span style="width:6px;height:6px;border-radius:50%;background:#1F7A54;box-shadow:0 0 0 3px rgba(31,122,84,.18)"></span>${statusLabel}</span>`
       : `<span style="display:inline-flex;align-items:center;font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#8A6D1F;background:#FaF3DC;border:1px solid #EAD9A0;padding:5px 11px;border-radius:999px">${statusLabel}</span>`;
 
-    const dealTypeLabel = isMorby ? "Seller Finance · Stack Method" : "Subject-To Deal";
+    const dealTypeLabel = isCash ? "Cash Deal" : isMorby ? "Seller Finance · Stack Method" : "Subject-To Deal";
     const mapHref = "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(address);
 
     const bannerBg = heroPhoto ? `` : `background:linear-gradient(150deg,${NAVY_DARK} 0%,${NAVY} 45%,#20406f 100%);`;
@@ -321,7 +332,17 @@ exports.handler = async (event) => {
 
     // Money hero
     let heroLabel, heroValue, heroSub;
-    if (isMorby) {
+    if (isCash) {
+      // Deliberately NOT buyerCashAtClose. A cash buyer funds the purchase and
+      // walks away with equity, not a check at the table — printing a
+      // cash-at-close figure here would be a number that does not exist.
+      const { forgiven, discountPct } = cashPriceStack(cash);
+      heroLabel = "Amount Forgiven";
+      heroValue = forgiven > 0 ? "$" + Math.round(forgiven).toLocaleString() : "—";
+      heroSub = discountPct
+        ? `What the seller is giving up on this deal — ${discountPct}% off the original price, and equity you own the day you close.`
+        : "What the seller is giving up on this deal — equity you own the day you close.";
+    } else if (isMorby) {
       const cash = buyerCashAtClose(morby);
       heroLabel = "Estimated Cash to You at Close";
       heroValue = cash > 0 ? "~$" + Math.round(cash).toLocaleString() : "—";
@@ -372,7 +393,7 @@ exports.handler = async (event) => {
       </div>` : "";
 
     // Deal terms grid
-    const rows = isMorby ? morbyTermRows(morby) : subtoTermRows(terms);
+    const rows = isCash ? cashTermRows(cash) : isMorby ? morbyTermRows(morby) : subtoTermRows(terms);
     const termsSec = rows.length ? `
       <div class="terms-sec" style="margin:24px 20px 0">
         <div style="display:flex;align-items:center;gap:10px;margin:0 4px 12px"><span style="font-size:11.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:${NAVY}">Deal Terms</span><span style="flex:1;height:1px;background:linear-gradient(90deg,#E0D9C9,transparent)"></span></div>
@@ -390,7 +411,7 @@ exports.handler = async (event) => {
     // Wrapped whole: nothing in here may take down a deal page. On any throw we
     // log and drop the section, and the page renders exactly as it did before.
     let rentSec = "";
-    if (!isMorby) {
+    if (!isMorby && !isCash) {
       try {
         const rentOpts = subtoRentOptions(terms);
         if (rentOpts.length) {

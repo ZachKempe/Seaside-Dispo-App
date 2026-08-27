@@ -14,14 +14,17 @@
 
 const { deckToken } = require("./deck-token");
 const { ensureDeckSlug } = require("./deck-slug");
-const { subtoSubject, morbySubject } = require("./subjects");
+const { subtoSubject, morbySubject, cashSubject } = require("./subjects");
 const { fetchAllRows } = require("./fetch-all");
 const { suppressedPhoneDigits } = require("./sms-optout");
 const { sendSms } = require("./ghl-sms");
 const { unsubUrlFor } = require("./unsub");
 const { digitsOnly } = require("./capture");
 const { uploadDeckPdf } = require("./deck-pdf");
-const { matchesDeal, buyerCashAtClose, morbyTermRows, subtoTeaserOption } = require("../../../public/js/deal-shared");
+const {
+  matchesDeal, buyerCashAtClose, morbyTermRows, subtoTeaserOption,
+  cashTermRows, cashPriceStack,
+} = require("../../../public/js/deal-shared");
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -398,6 +401,111 @@ function buildMorbySms(prop, morby, deckUrl, alsoEmailed) {
   return lines.join("\n");
 }
 
+// ── Cash / wholesale Deal Deck email ─────────────────────────────
+// Same skeleton as buildMorbyEmail, with ONE deliberate difference: the
+// headline band is the amount the seller is forgiving, not a cash-at-close
+// figure. buyerCashAtClose must never be called on a cash deal — the buyer
+// funds the purchase and walks away with equity, so a "cash to you at close"
+// number here would be money that does not change hands.
+// Term rows come from lib/deal-shared (cashTermRows), the same source the deck
+// page renders from, so email and page can't drift.
+function buildCashEmail(prop, cash, unsubUrl, buyer, deckUrlForBuyer, deckPdfUrl) {
+  const address = cash.address_override || prop.name || "";
+  const { forgiven, original, discountPct } = cashPriceStack(cash);
+  const subject = cashSubject(address, forgiven);
+  const greeting = `Hi ${firstNameOf(buyer)},`;
+
+  const forgivenBand = forgiven > 0 ? `
+        <tr><td style="padding:18px 32px 0">
+          <div style="background:#F0FFF4;border:2px solid #48BB78;border-radius:10px;padding:20px 22px;text-align:center">
+            <div style="font-size:13px;letter-spacing:1.5px;text-transform:uppercase;color:#276749;font-weight:700">Amount Forgiven</div>
+            <div style="font-size:40px;font-weight:800;color:#22543D;margin-top:4px;line-height:1.1">$${Math.round(forgiven).toLocaleString()}</div>
+            <div style="font-size:12px;color:#2F855A;margin-top:6px;font-weight:600">${discountPct ? `${discountPct}% off the $${Math.round(original).toLocaleString()} original price — equity you own the day you close.` : "What the seller is giving up — equity you own the day you close."}</div>
+          </div>
+        </td></tr>` : "";
+
+  const rows = cashTermRows(cash);
+  const termRows = rows.map(([label, val]) =>
+    `<tr><td style="padding:6px 12px;color:#718096;font-size:13px;border-bottom:1px solid #EDF2F7">${escapeHtml(label)}</td>` +
+    `<td style="padding:6px 12px;font-weight:600;font-size:13px;color:#1A202C;border-bottom:1px solid #EDF2F7">${escapeHtml(val)}</td></tr>`
+  ).join("");
+
+  const addressLine = CONTACT_ADDRESS ? `<br>Seaside Horizon · ${escapeHtml(CONTACT_ADDRESS)}` : "";
+  const unsubFooter = unsubUrl
+    ? `<tr><td colspan="2" style="padding:6px 32px 16px;font-size:11px;color:#A0AEC0;background:#fff">You're receiving this because you're on Seaside Horizon's buyer list. <a href="${escapeHtml(unsubUrl)}" style="color:#A0AEC0;text-decoration:underline">Unsubscribe</a>.${addressLine}</td></tr>`
+    : "";
+
+  const ctaButtons = [
+    deckUrlForBuyer
+      ? `<a href="${escapeHtml(deckUrlForBuyer)}" style="display:inline-block;background:${BRAND_NAVY};color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:14px;border:1px solid ${BRAND_GOLD}">View deal &amp; respond</a>`
+      : "",
+    deckPdfUrl
+      ? `<a href="${escapeHtml(deckPdfUrl)}" style="display:inline-block;background:#fff;color:${BRAND_NAVY};text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:14px;border:1px solid ${BRAND_NAVY}">Deal Deck (PDF)</a>`
+      : "",
+  ].filter(Boolean).join(`<span style="display:inline-block;width:10px">&nbsp;</span>`);
+
+  const deckIntro = deckPdfUrl
+    ? "The full Deal Deck with all the financials is linked below."
+    : "The full deal details are on the deal page below.";
+
+  const html = `
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F0F4F8;padding:24px 0;font-family:Arial,Helvetica,sans-serif">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #E2E8F0">
+        <tr><td style="background:linear-gradient(135deg,${BRAND_NAVY_DARK} 0%,${BRAND_NAVY} 100%);padding:24px 32px;color:#fff">
+          <table cellpadding="0" cellspacing="0"><tr>
+            <td style="vertical-align:middle;padding-right:14px"><img src="${LOGO_URL}" alt="Seaside Horizon" width="44" height="44" style="display:block;border-radius:8px;background:#fff;padding:4px"></td>
+            <td style="vertical-align:middle">
+              <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:${BRAND_GOLD};font-weight:700">Seaside Horizon · Cash Deal</div>
+              <div style="font-size:21px;font-weight:700;margin-top:3px;color:#fff">${escapeHtml(address)}</div>
+            </td>
+          </tr></table>
+        </td></tr>
+        <tr><td style="height:4px;background:${BRAND_GOLD};font-size:0;line-height:0">&nbsp;</td></tr>
+        <tr><td style="padding:20px 32px 0;color:${BRAND_NAVY};font-size:14px">
+          <p style="margin:0">${escapeHtml(greeting)} I have a new cash deal I wanted to get in front of you — the seller is taking a real discount to move it. ${deckIntro}</p>
+        </td></tr>
+        ${forgivenBand}
+        <tr><td style="padding:16px 32px 8px;color:${BRAND_NAVY};font-size:14px">
+          <p style="margin:0 0 12px;font-weight:700;color:${BRAND_NAVY}">Deal Snapshot:</p>
+          <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E2E8F0;border-radius:8px;overflow:hidden">
+            ${termRows}
+          </table>
+        </td></tr>
+        <tr><td style="padding:16px 32px 20px">
+          ${ctaButtons ? `<div style="margin:0 0 14px">${ctaButtons}</div>` : ""}
+          <p style="margin:0;font-size:13px;color:#4A5568"><strong>Cash close.</strong> No loan to take over and no seller carryback — full financial analysis and DSCR numbers on the deck.</p>
+          ${CONTACT_PHONE ? `<p style="margin:8px 0 0;font-size:13px;color:#4A5568">Interested? Reply to this email or call/text <strong>${escapeHtml(CONTACT_NAME)}</strong> at <strong>${escapeHtml(CONTACT_PHONE)}</strong>.</p>` : ""}
+        </td></tr>
+        <tr><td style="background:${BRAND_NAVY_DARK};padding:16px 32px;color:#fff">
+          <div style="font-size:14px;font-weight:700">${escapeHtml(CONTACT_NAME)}</div>
+          ${CONTACT_PHONE ? `<div style="font-size:13px;color:${BRAND_GOLD};margin-top:2px;font-weight:600">${escapeHtml(CONTACT_PHONE)}</div>` : ""}
+        </td></tr>
+        ${unsubFooter}
+      </table>
+    </td></tr>
+  </table>`;
+
+  return { subject, html };
+}
+
+// Plain-text SMS for a cash deal — leads with the forgiven amount, the way
+// the Morby text leads with cash at close.
+function buildCashSms(prop, cash, deckUrl, alsoEmailed) {
+  const address = cash.address_override || prop.name || "";
+  const fmt = (n) => `$${Math.round(Number(n) || 0).toLocaleString()}`;
+  const { forgiven, original, purchase, discountPct } = cashPriceStack(cash);
+  const lines = [`Cash Deal: ${address}`];
+  if (forgiven > 0) lines.push(`Seller forgiving: ${fmt(forgiven)}${discountPct ? ` (${discountPct}% off)` : ""}`);
+  if (original) lines.push(`Original price: ${fmt(original)}`);
+  if (purchase) lines.push(`Your price: ${fmt(purchase)}`);
+  if (deckUrl) lines.push(`Deal deck: ${deckUrl}`);
+  lines.push(`Interested? Reply here${CONTACT_PHONE ? ` or call/text ${CONTACT_NAME} at ${CONTACT_PHONE}` : ""}.`);
+  if (alsoEmailed) lines.push(`We also emailed you this deal — check your spam folder if you don't see it.`);
+  lines.push(`Reply STOP to opt out.`);
+  return lines.join("\n");
+}
+
 // Sub-To SMS body: the shared deal copy plus the opt-out line SMS marketing
 // requires. Kept out of buildDealCopyText itself because that text is also
 // the email body, where "Reply STOP" makes no sense.
@@ -477,7 +585,7 @@ async function runBlast(payload, user) {
     const targetIdSet = targeted ? new Set(buyer_ids.map(Number)) : null;
     const useResend = !!(RESEND_API_KEY && RESEND_FROM);
 
-    const [props, termsRows, acqRows, buyers, morbyRows] = await Promise.all([
+    const [props, termsRows, acqRows, buyers, morbyRows, cashRows] = await Promise.all([
       sb(`/properties?card_id=eq.${encodeURIComponent(card_id)}&select=*&limit=1`, { method: "GET" }),
       sb(`/deal_terms?card_id=eq.${encodeURIComponent(card_id)}&select=*&limit=1`, { method: "GET" }),
       sb(`/deal_acquisition?card_id=eq.${encodeURIComponent(card_id)}&select=cover_image_url&limit=1`, { method: "GET" }),
@@ -485,6 +593,9 @@ async function runBlast(payload, user) {
       // drops every buyer past row 1,000 from the send.
       fetchAllRows(p => sb(p, { method: "GET" }), `/buyers?active=eq.true&select=*`),
       sb(`/morby_deals?card_id=eq.${encodeURIComponent(card_id)}&select=*&limit=1`, { method: "GET" }),
+      // Fails soft to [] before migration 035: no card can be deal_type 'cash'
+      // until it runs, so dealStrategy never resolves to "cash" either.
+      sb(`/cash_deals?card_id=eq.${encodeURIComponent(card_id)}&select=*&limit=1`, { method: "GET" }).catch(() => []),
     ]);
     const prop = (props || [])[0];
     if (!prop) throw httpError(404, "property not found");
@@ -501,10 +612,21 @@ async function runBlast(payload, user) {
       `${SITE_URL}/deck/${deckSlugVal}.pdf?b=${deckToken(buyerId)}${source ? `&s=${source}` : ""}`;
     const terms = (termsRows || [])[0] || {};
     const morbyTerms = (morbyRows || [])[0] || {};
+    const cashTerms = (cashRows || [])[0] || {};
     const coverImageUrl = ((acqRows || [])[0] || {}).cover_image_url || "";
     const address = prop.name || prop.card_id;
-    const dealStrategy = prop.deal_type === "morby" ? "morby" : "subto";
-    const price = Number(terms.price) || 0;
+    const dealStrategy = prop.deal_type === "morby" ? "morby"
+      : prop.deal_type === "cash" ? "cash"
+      : "subto";
+    // A cash deal has no deal_terms row, so terms.price is 0 — which makes
+    // matchesDeal skip every buyer's max_price cap and send a $570k deal to a
+    // buyer who told us $200k. Read the price from the structure that actually
+    // holds it. (Morby has the same gap on morby_deals.purchase_price; left
+    // alone here deliberately — changing it would change who receives Morby
+    // blasts, which isn't part of this change.)
+    const price = dealStrategy === "cash"
+      ? (cashPriceStack(cashTerms).purchase || 0)
+      : (Number(terms.price) || 0);
     const piti = Number(terms.piti) || 0;
     const beds = Number(terms.beds) || 0;
 
@@ -545,7 +667,8 @@ async function runBlast(payload, user) {
     //     Netlify background invocation's payload caps at ~256 KB, far too
     //     small for an inline PDF, so the dashboard stages it in Storage).
     let pdfBase64 = deal_deck_pdf ? deal_deck_pdf.split("base64,").pop() : null;
-    if (!pdfBase64 && deal_deck_path && dealStrategy === "morby") {
+    const usesDeckPdf = dealStrategy === "morby" || dealStrategy === "cash";
+    if (!pdfBase64 && deal_deck_path && usesDeckPdf) {
       const r = await fetch(`${SB_URL}/storage/v1/object/property-photos/${deal_deck_path}`, {
         headers: { apikey: SB_SERVICE_KEY, Authorization: `Bearer ${SB_SERVICE_KEY}` },
       });
@@ -565,6 +688,8 @@ async function runBlast(payload, user) {
       }
     }
     const isMorbyDeck = !!(pdfBase64 && dealStrategy === "morby");
+    const isCashDeck = !!(pdfBase64 && dealStrategy === "cash");
+    const hasDeckPdf = isMorbyDeck || isCashDeck;
 
     // M12: host the Deal Deck ONCE and link it, instead of hanging a copy off
     // every recipient's email. Attachments inflate message size, trigger
@@ -582,23 +707,38 @@ async function runBlast(payload, user) {
     // stored slug up, so a collision-suffixed or legacy slug used to put the
     // file somewhere nothing served it.
     let deckUrl = null;
-    if (isMorbyDeck) {
+    if (hasDeckPdf) {
       try { deckUrl = await uploadDealDeckPdf(deckSlugVal, pdfBase64); }
       catch (e) { console.warn("deck PDF upload failed (falling back to attachment):", e.message); }
     }
     // Fallback only: if hosting failed, attach as before rather than send a
     // deal email with no deck in it at all.
-    const pdfAttachments = (isMorbyDeck && !deckUrl) ? [{
+    const pdfAttachments = (hasDeckPdf && !deckUrl) ? [{
       filename: `Deal Deck - ${(prop.address_override || prop.name || card_id).replace(/[\\/:*?"<>|]/g, "")}.pdf`,
       content: pdfBase64,
     }] : null;
-    const pdfHosted = isMorbyDeck && !!deckUrl;
+    const pdfHosted = hasDeckPdf && !!deckUrl;
 
     // Helper: build email content, swapping to the Morby template when needed.
     // Passes the buyer so the Morby email can greet them by first name.
-    const buildEmail = (unsubUrl, buyer, deckUrlForBuyer, deckPdfUrlForBuyer) => isMorbyDeck
-      ? buildMorbyEmail(prop, morbyTerms, unsubUrl, buyer, deckUrlForBuyer, deckPdfUrlForBuyer)
-      : buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer, deckUrlForBuyer);
+    // Cash keys off the STRATEGY, not off a PDF existing. The Morby branch
+    // requires isMorbyDeck (a PDF) and otherwise falls through to the Sub-To
+    // template — copying that here would render a cash deal's email from an
+    // empty deal_terms row, i.e. an entry fee and a PITI that don't exist.
+    const buildEmail = (unsubUrl, buyer, deckUrlForBuyer, deckPdfUrlForBuyer) =>
+      dealStrategy === "cash"
+        ? buildCashEmail(prop, cashTerms, unsubUrl, buyer, deckUrlForBuyer, deckPdfUrlForBuyer)
+        : isMorbyDeck
+          ? buildMorbyEmail(prop, morbyTerms, unsubUrl, buyer, deckUrlForBuyer, deckPdfUrlForBuyer)
+          : buildHtmlEmail(prop, terms, unsubUrl, coverImageUrl, buyer, deckUrlForBuyer);
+
+    // One SMS body builder for both the test send and the live loop — they
+    // used to carry the same ternary twice, which is exactly how a third
+    // structure gets added to one and not the other.
+    const smsBody = (url, alsoEmailed) =>
+      dealStrategy === "cash" ? buildCashSms(prop, cashTerms, url, alsoEmailed)
+      : dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms, url, alsoEmailed)
+      : buildSubtoSms(prop, terms);
 
     // SMS audience gate: opted in, has a phone, and the number isn't in
     // sms_suppressions (migration 032 — STOP replies that matched no buyer
@@ -637,7 +777,7 @@ async function runBlast(payload, user) {
         else if (!to) result.sms = { sent: 0, failed: 1, error: "no test phone number available" };
         else {
           try {
-            await sendSms(to, `[TEST]\n${dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms, deckUrl, wantEmail) : buildSubtoSms(prop, terms)}`);
+            await sendSms(to, `[TEST]\n${smsBody(deckUrl, wantEmail)}`);
             const smsWouldReach = targeted
               ? matched.filter(smsAllowed).length
               : matched.filter(b => b.tier === "A" && smsAllowed(b)).length;
@@ -729,7 +869,7 @@ async function runBlast(payload, user) {
           result.sms = { sent: 0, failed: 0, note: retryMode ? "no failed texts to retry" : "no new opted-in buyers with a phone" };
         } else {
           let sent = 0, failed = 0;
-          const message = dealStrategy === "morby" ? buildMorbySms(prop, morbyTerms, deckUrl, wantEmail) : buildSubtoSms(prop, terms);
+          const message = smsBody(deckUrl, wantEmail);
           for (const b of smsBuyers) {
             const perMsg = message + `\n\nView deal & respond: ${deckPageUrl(b.id, "sms")}`;
             try {

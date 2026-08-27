@@ -311,6 +311,14 @@ is where every forgot-password link had been going.
 ## Conventions
 
 - Escape everything rendered into HTML (`escapeHtml` client-side, `esc` in `deck.js`).
+- The Deal Deck PDF is set in **Hanken Grotesk** (`public/fonts/`, OFL), embedded into
+  jsPDF by `loadDeckFontData`/`registerDeckFont` in `dashboard.js` and used via the single
+  `deckFont` local — never re-add a literal `"helvetica"` there, or half the deck reverts.
+  It's the sans in seasidehorizon.com's own stack (`"Soehne Buch","Hanken Grotesk",…`);
+  the site's actual display face, Söhne, deliberately can't be used — it's served as Klim
+  *test* cuts carrying 68 glyphs (no `$`, `%`, `(`, `)`, `—`), which a deck of dollar
+  figures would render full of holes, and the test licence doesn't cover embedding. If a
+  licensed Söhne OTF ever lands, swapping `DECK_FONT_FILES` is the whole change.
 - Soft-delete + undo toast over hard deletes; deletes/archives are reversible.
 - Build specs for larger features live in `docs/` and the repo root (`*-BUILD-SPEC.md`);
   `dispo-stage-tracker-BUILD-SPEC.md` records locked product decisions (six manual stages,

@@ -2781,14 +2781,7 @@ function wireMorbyPanel() {
 }
 
 async function pdfFileToBase64(file) {
-  const buf = await file.arrayBuffer();
-  let binary = "";
-  const bytes = new Uint8Array(buf);
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
+  return arrayBufferToBase64(await file.arrayBuffer());
 }
 
 async function extractLoi(btn) {
@@ -3419,9 +3412,12 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
   if (btn) { btn.textContent = "Generating…"; btn.disabled = true; }
   try {
     await loadJsPdf();
-    const logoDataUrl = await loadLogoDataUrl();
+    const [logoDataUrl, deckFonts] = await Promise.all([loadLogoDataUrl(), loadDeckFontData()]);
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit: "pt", format: "letter", orientation: "portrait" });
+    // Every setFont below goes through this, so a font that failed to load
+    // degrades the whole deck to Helvetica rather than half of it.
+    const deckFont = registerDeckFont(doc, deckFonts);
     const pageW = doc.internal.pageSize.getWidth();
     const pageH = doc.internal.pageSize.getHeight();
     const marginX = 48;
@@ -3444,7 +3440,7 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
         textX = marginX + logoSize + 10;
       } catch (e) { /* ignore logo failures, fall back to text-only header */ }
     }
-    doc.setFont("helvetica", "bold");
+    doc.setFont(deckFont, "bold");
     doc.setFontSize(16);
     doc.setTextColor(...NAVY);
     doc.text("Seaside Horizon", textX, y);
@@ -3463,7 +3459,7 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
     y += 22;
 
     // ── Title ──
-    doc.setFont("helvetica", "bold");
+    doc.setFont(deckFont, "bold");
     doc.setFontSize(14);
     doc.setTextColor(...NAVY_DARK);
     doc.text(`Deal Info — ${dealAddress}`, marginX, y);
@@ -3518,12 +3514,12 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
     const cellW = colW / summaryStats.length;
     summaryStats.forEach(([label, value], i) => {
       const cx = marginX + cellW * i + cellW / 2;
-      doc.setFont("helvetica", "normal");
+      doc.setFont(deckFont, "normal");
       doc.setFontSize(6.5);
       doc.setTextColor(255, 255, 255);
       const labelW = doc.getTextWidth(label.toUpperCase());
       doc.text(label.toUpperCase(), cx - labelW / 2, y + 22);
-      doc.setFont("helvetica", "bold");
+      doc.setFont(deckFont, "bold");
       doc.setFontSize(12);
       doc.setTextColor(...GOLD);
       const valW = doc.getTextWidth(value);
@@ -3541,7 +3537,7 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
       ensureSpace(28);
       doc.setFillColor(245, 247, 250);
       doc.rect(marginX - 6, y - 13, colW + 12, 21, "F");
-      doc.setFont("helvetica", "bold");
+      doc.setFont(deckFont, "bold");
       doc.setFontSize(10.5);
       doc.setTextColor(...NAVY);
       doc.text(title, marginX, y);
@@ -3561,7 +3557,7 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
     // grow the row by the extra lines so nothing collides downward either.
     const VALUE_LINE_H = 11.5;
     const wrapValue = (label, value, width, bold) => {
-      doc.setFont("helvetica", bold ? "bold" : "normal");
+      doc.setFont(deckFont, bold ? "bold" : "normal");
       doc.setFontSize(9.5);
       const text = String(value);
       // 12pt of air between label and value; never wrap narrower than 90pt, or
@@ -3580,7 +3576,7 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
         doc.rect(marginX - 6, y - 11, colW + 12, h, "F");
       }
       rowIndex++;
-      doc.setFont("helvetica", bold ? "bold" : "normal");
+      doc.setFont(deckFont, bold ? "bold" : "normal");
       doc.setFontSize(9.5);
       doc.setTextColor(30, 30, 46);
       if (bold) {
@@ -3596,7 +3592,7 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
     };
 
     const paragraph = (text) => {
-      doc.setFont("helvetica", "normal");
+      doc.setFont(deckFont, "normal");
       doc.setFontSize(9);
       doc.setTextColor(30, 30, 46);
       const lines = doc.splitTextToSize(text, colW);
@@ -3610,7 +3606,7 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
 
     // Bulleted list — used for the Investment Highlights summary.
     const bulletParagraph = (text) => {
-      doc.setFont("helvetica", "normal");
+      doc.setFont(deckFont, "normal");
       doc.setFontSize(9.5);
       doc.setTextColor(30, 30, 46);
       const lines = doc.splitTextToSize(text, colW - 14);
@@ -3637,7 +3633,7 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
         doc.setFillColor(250, 250, 252);
         doc.rect(x - 6, y - 11, w + 12, h, "F");
       }
-      doc.setFont("helvetica", bold ? "bold" : "normal");
+      doc.setFont(deckFont, bold ? "bold" : "normal");
       doc.setFontSize(9.5);
       doc.setTextColor(30, 30, 46);
       if (bold) {
@@ -3671,7 +3667,7 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
       doc.setFillColor(245, 247, 250);
       doc.rect(marginX - 6, y - 13, halfW + 12, 21, "F");
       doc.rect(marginX + halfW + gap - 6, y - 13, halfW + 12, 21, "F");
-      doc.setFont("helvetica", "bold");
+      doc.setFont(deckFont, "bold");
       doc.setFontSize(10.5);
       doc.setTextColor(...NAVY);
       doc.text(leftTitle, marginX, y);
@@ -3775,7 +3771,7 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
       doc.setDrawColor(...GOLD);
       doc.setLineWidth(1.5);
       doc.line(marginX, pageH - 40, pageW - marginX, pageH - 40);
-      doc.setFont("helvetica", "normal");
+      doc.setFont(deckFont, "normal");
       doc.setFontSize(8);
       doc.setTextColor(160, 160, 160);
       const footer = "Seaside Horizon · Confidential — for review purposes only";
@@ -3811,6 +3807,65 @@ function loadLogoDataUrl() {
     }))
     .catch(() => null);
   return _logoDataUrlPromise;
+}
+
+// ── Deal Deck typeface ──────────────────────────────────────────────────────
+// The PDF is set in Hanken Grotesk, the sans in seasidehorizon.com's own font
+// stack (`"Soehne Buch", "Hanken Grotesk", sans-serif`) — so a deck sheet and
+// the website read as the same brand. It is deliberately NOT Söhne itself:
+// the site serves Klim's *test* cuts (`test-soehne-*.woff2`), which carry only
+// 68 glyphs — no `$`, `%`, `(`, `)` or `—` — so a deck full of dollar figures
+// would render with holes in it, and the test licence doesn't cover embedding
+// in buyer-facing collateral. Hanken Grotesk is OFL (see fonts/OFL.txt),
+// embeddable, and covers Latin-1 plus the typographic punctuation the LOI text
+// carries.
+//
+// jsPDF needs the raw TTF as base64 in its virtual filesystem, so the files are
+// fetched once per page and re-registered on each doc (the VFS is per-document).
+// Everything here fails soft: if a fetch dies, the deck falls back to Helvetica
+// and still generates — the same rule the logo already follows.
+const DECK_FONT_FILES = [
+  { file: "HankenGrotesk-Regular.ttf", style: "normal" },
+  { file: "HankenGrotesk-Bold.ttf", style: "bold" },
+];
+const DECK_FONT_FAMILY = "HankenGrotesk";
+let _deckFontPromise = null;
+
+function loadDeckFontData() {
+  if (_deckFontPromise) return _deckFontPromise;
+  _deckFontPromise = Promise.all(DECK_FONT_FILES.map(({ file, style }) =>
+    fetch(`/fonts/${file}`)
+      .then((r) => { if (!r.ok) throw new Error(`${file}: ${r.status}`); return r.arrayBuffer(); })
+      .then((buf) => ({ file, style, base64: arrayBufferToBase64(buf) }))
+  )).catch(() => null);
+  return _deckFontPromise;
+}
+
+// btoa() only takes a binary string, and spreading a whole font or contract
+// into String.fromCharCode blows the argument limit — hence the chunking.
+// Shared with pdfFileToBase64, which is the same conversion off a File.
+function arrayBufferToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+// Registers the brand font on `doc` and returns the family name to set —
+// "helvetica" if the font never loaded, so callers need no branch of their own.
+function registerDeckFont(doc, fonts) {
+  if (!fonts) return "helvetica";
+  try {
+    for (const { file, style, base64 } of fonts) {
+      doc.addFileToVFS(file, base64);
+      doc.addFont(file, DECK_FONT_FAMILY, style);
+    }
+    return DECK_FONT_FAMILY;
+  } catch (e) {
+    return "helvetica";
+  }
 }
 
 let _jsPdfPromise = null;

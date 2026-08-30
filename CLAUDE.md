@@ -97,6 +97,14 @@ duplicate buyers who each receive their own blast.
   `browser-extension/` (📸 button → `dashboard.html#import-photos=…`) or the 🧲
   bookmarklet in the dashboard gallery block.
 - `parse-loi.js` — sends an LOI PDF to the Claude API, extracts Morby deal terms.
+- `parse-contacts.js` — "Import from PDF" for the Contacts page: a roster / attendee list /
+  page of business cards → Claude → `{contacts:[…]}`. It **writes nothing and never holds the
+  service-role key** — the rows go back to the browser and through the same
+  preview → dedupe → confirm flow a CSV import uses, so a misread page is something you
+  cancel rather than 80 rows you have to undo. `tests/parse-contacts.test.js` pins that (it
+  fails if the file gains a `/rest/v1` write), plus the response shaping: every field is a
+  string, unreachable rows are dropped, fences are stripped, a `refusal` stop_reason is
+  reported instead of parsed, and both the auth and size guards run *before* any API spend.
 - `parse-cash.js` — the **third structure**'s intake (migration 035). Purchase contract
   (+ an optional concession addendum / payoff letter / original listing) → Claude extracts
   the price stack into `cash_deals`, creating a `properties` row (`card_id` `cash-…`).
@@ -223,7 +231,10 @@ sending. If a send path ever needs it, give it its own recipient ledger and opt-
 route it through `buyers`. The page fails soft before 036 runs, naming the file to run.
 Its CSV import shares the buyer engine but dedupes **within one `contact_type`**: a mortgage
 broker who also does transactional lending is one person and two legitimate rows, so a
-cross-type dedupe would silently drop the second.
+cross-type dedupe would silently drop the second. PDF import (`parse-contacts.js`) enters the
+same flow one step earlier — the extracted rows are normalized through the *same*
+`normalizeState` / `validEmail` helpers as CSV rows, so "Florida" becomes `FL` and a
+hallucinated non-address becomes blank on both routes.
 
 The nav's **Contacts** dropdown is inlined in each page's `<nav>` (same convention as the
 rest of the top bar; `.nav-drop` in `app.css`). Buyers is the dropdown's first item *and* the

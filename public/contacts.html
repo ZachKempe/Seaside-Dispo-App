@@ -116,16 +116,19 @@
     <div class="card" style="width:100%;max-width:640px;max-height:88vh;overflow-y:auto">
       <h2 style="margin-top:0">📥 Import Contacts</h2>
       <p class="muted" style="font-size:0.85rem;margin-top:-6px">
-        Drop a CSV from anywhere — a conference attendee list, a broker roster, an export from your phone.
-        Columns are auto-detected, contacts are deduped against the list you're importing into, and only new ones are added.
+        Drop a <strong>CSV</strong> or a <strong>PDF</strong> — a conference attendee list, a lender roster, a directory,
+        a page of scanned business cards. CSV columns are auto-detected; a PDF is read by Claude. Either way you review
+        what was found, it's deduped against the list you're importing into, and only new ones are added.
       </p>
 
       <div id="import-drop" style="border:2px dashed var(--border);border-radius:10px;padding:28px;text-align:center;cursor:pointer;background:#F7FAFC">
         <div style="font-size:1.6rem">📄</div>
-        <div style="font-weight:600;color:var(--navy-dark);margin-top:6px">Click to choose a CSV, or drag one here</div>
-        <div class="muted" style="font-size:0.8rem;margin-top:4px">.csv files only · first row should be column headers</div>
-        <input type="file" id="import-file" accept=".csv,text/csv" class="hidden">
+        <div style="font-weight:600;color:var(--navy-dark);margin-top:6px">Click to choose a CSV or PDF, or drag one here</div>
+        <div class="muted" style="font-size:0.8rem;margin-top:4px">.csv (first row = column headers) or .pdf (up to ~18MB)</div>
+        <input type="file" id="import-file" accept=".csv,text/csv,.pdf,application/pdf" class="hidden">
       </div>
+
+      <div id="import-status" class="hidden" style="margin-top:14px;font-size:0.88rem"></div>
 
       <div id="import-config" class="hidden">
         <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px;margin-top:16px">
@@ -137,8 +140,10 @@
           </div>
         </div>
 
-        <div class="field mt-8"><label style="font-weight:600">Column mapping <span class="muted" style="font-weight:400">(auto-detected — adjust if needed)</span></label></div>
-        <div id="import-mapping" class="grid" style="grid-template-columns:1fr 1fr;gap:10px"></div>
+        <div id="import-mapping-block">
+          <div class="field mt-8"><label style="font-weight:600">Column mapping <span class="muted" style="font-weight:400">(auto-detected — adjust if needed)</span></label></div>
+          <div id="import-mapping" class="grid" style="grid-template-columns:1fr 1fr;gap:10px"></div>
+        </div>
 
         <div id="import-summary" class="card" style="background:#F7FAFC;margin-top:14px;font-size:0.88rem"></div>
 

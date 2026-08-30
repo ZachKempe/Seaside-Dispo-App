@@ -305,7 +305,7 @@ tr:hover td { background: #FAFBFC; }
 .hidden { display: none !important; }
 .flex { display: flex; align-items: center; }
 .flex-between { display: flex; align-items: center; justify-content: space-between; }
-.gap-8 { gap: 8px; } .gap-12 { gap: 12px; }
+.gap-8 { gap: 8px; } .gap-12 { gap: 12px; } .gap-16 { gap: 16px; }
 .muted { color: var(--text-3); }
 .mt-8 { margin-top: 8px; } .mt-16 { margin-top: 16px; }
 

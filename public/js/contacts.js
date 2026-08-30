@@ -11,14 +11,14 @@
 // `lower` is spelled out rather than derived: .toLowerCase() on the plural
 // turns "DSCR Lenders" into "dscr lenders" and "VIP Agents" into "vip agents".
 const CONTACT_TYPES = [
-  { key: "dscr_lender",           icon: "🏦", plural: "DSCR Lenders",          singular: "DSCR Lender",          lower: "DSCR lenders" },
-  { key: "mortgage_broker",       icon: "📋", plural: "Mortgage Brokers",      singular: "Mortgage Broker",      lower: "mortgage brokers" },
-  { key: "transactional_lender",  icon: "⚡", plural: "Transactional Lenders", singular: "Transactional Lender", lower: "transactional lenders" },
-  { key: "vip_agent",             icon: "⭐", plural: "VIP Agents",            singular: "VIP Agent",            lower: "VIP agents" },
+  { key: "dscr_lender",           icon: "🏦", plural: "DSCR Lenders",          singular: "DSCR Lender",          lower: "DSCR lenders",          lowerOne: "DSCR lender" },
+  { key: "mortgage_broker",       icon: "📋", plural: "Mortgage Brokers",      singular: "Mortgage Broker",      lower: "mortgage brokers",      lowerOne: "mortgage broker" },
+  { key: "transactional_lender",  icon: "⚡", plural: "Transactional Lenders", singular: "Transactional Lender", lower: "transactional lenders", lowerOne: "transactional lender" },
+  { key: "vip_agent",             icon: "⭐", plural: "VIP Agents",            singular: "VIP Agent",            lower: "VIP agents",            lowerOne: "VIP agent" },
 ];
 const DEFAULT_TYPE = CONTACT_TYPES[0].key;
 function typeInfo(key) {
-  return CONTACT_TYPES.find(t => t.key === key) || { key, icon: "👤", plural: "Contacts", singular: "Contact", lower: "contacts" };
+  return CONTACT_TYPES.find(t => t.key === key) || { key, icon: "👤", plural: "Contacts", singular: "Contact", lower: "contacts", lowerOne: "contact" };
 }
 
 let allContacts = [];            // every type — the tab counts need the full set
@@ -312,6 +312,12 @@ function closeModal() { document.getElementById("modal-backdrop").classList.add(
 let importState = null;
 
 function renderImportConfig() {
+  document.getElementById("import-mapping-block").classList.toggle("hidden", importState.kind === "pdf");
+  if (importState.kind === "pdf") {
+    document.getElementById("import-config").classList.remove("hidden");
+    recomputeImport();
+    return;
+  }
   const { headers } = importState.raw;
   const mapping = importState.mapping;
   const fields = [
@@ -338,7 +344,9 @@ function renderImportConfig() {
 function recomputeImport() {
   const targetType = document.getElementById("import-type").value;
   const info = typeInfo(targetType);
-  const parsed = buildRowsFromCsv(importState.raw.rows, importState.mapping);
+  const parsed = importState.kind === "pdf"
+    ? importState.parsed
+    : buildRowsFromCsv(importState.raw.rows, importState.mapping);
   const { fresh, dupes, invalid } = classifyImport(parsed, ofType(targetType));
   importState.fresh = fresh;
   importState.targetType = targetType;
@@ -366,22 +374,81 @@ function recomputeImport() {
     </table>
     ${fresh.length > 8 ? `<div class="muted" style="padding:6px">…and ${fresh.length - 8} more</div>` : ""}` : "";
   const btn = document.getElementById("import-confirm");
-  btn.textContent = `Import ${fresh.length} ${fresh.length === 1 ? info.singular.toLowerCase() : info.lower}`;
+  btn.textContent = `Import ${fresh.length} ${fresh.length === 1 ? info.lowerOne : info.lower}`;
   btn.classList.toggle("hidden", fresh.length === 0);
   btn.disabled = fresh.length === 0;
 }
 
+function importStatus(html, cls = "muted") {
+  const el = document.getElementById("import-status");
+  el.className = cls;
+  el.innerHTML = html;
+  el.classList.toggle("hidden", !html);
+}
+
 function handleImportFile(file) {
   if (!file) return;
-  if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") { alert("Please choose a .csv file."); return; }
+  const isPdf = /\.pdf$/i.test(file.name) || file.type === "application/pdf";
+  const isCsv = /\.csv$/i.test(file.name) || file.type === "text/csv";
+  if (isPdf) { handleImportPdf(file); return; }
+  if (!isCsv) { alert("Please choose a .csv or .pdf file."); return; }
   const reader = new FileReader();
   reader.onload = () => {
     const all = parseCsv(reader.result);
     if (all.length < 2) { alert("That CSV has no data rows."); return; }
-    importState = { raw: { headers: all[0], rows: all.slice(1) }, mapping: detectMapping(all[0]), fresh: [] };
+    importStatus("");
+    importState = { kind: "csv", raw: { headers: all[0], rows: all.slice(1) }, mapping: detectMapping(all[0]), fresh: [] };
     renderImportConfig();
   };
   reader.readAsText(file);
+}
+
+// A PDF can't be parsed in the browser — it goes to /parse-contacts, which
+// reads it with Claude and returns rows. That function writes NOTHING: the
+// rows land in the same preview/dedupe/confirm flow a CSV goes through, so a
+// misread page is something you see and cancel, not something you undo.
+async function handleImportPdf(file) {
+  document.getElementById("import-config").classList.add("hidden");
+  document.getElementById("import-confirm").classList.add("hidden");
+  importStatus(`<span class="spinner" style="display:inline-block;vertical-align:-3px;margin-right:8px"></span>Reading <strong>${escapeHtml(file.name)}</strong>… this can take up to a minute for a long list.`);
+  try {
+    const { data: { session } } = await supa.auth.getSession();
+    if (!session) throw new Error("Not signed in.");
+    const b64 = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(",")[1] || "");
+      r.onerror = () => reject(new Error("Couldn't read that file."));
+      r.readAsDataURL(file);
+    });
+    const res = await fetch("/.netlify/functions/parse-contacts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ pdf_base64: b64 }),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(out.error || `Failed (${res.status})`);
+
+    // Normalize through the same helpers the CSV path uses, so "Florida"
+    // becomes FL and a garbled email becomes blank on both routes.
+    const parsed = (out.contacts || []).map(c => {
+      const email = validEmail(c.email) ? c.email : "";
+      const notes = [c.title, c.notes].map(v => (v || "").trim()).filter(Boolean).join(" · ");
+      return { name: c.name || "", phone: c.phone || "", email, company: c.company || "", states: normalizeState(c.states), notes };
+    });
+    if (!parsed.length) {
+      importStatus(`Couldn't find any people in <strong>${escapeHtml(file.name)}</strong>. Try a different file, or add them by hand.`, "");
+      document.getElementById("import-status").style.color = "var(--red)";
+      return;
+    }
+    importState = { kind: "pdf", parsed, fresh: [], fileName: file.name };
+    importStatus(`Read <strong>${parsed.length}</strong> ${parsed.length === 1 ? "person" : "people"} from <strong>${escapeHtml(file.name)}</strong>. Check them below before importing.`
+      + (out.truncated ? ` <span style="color:var(--red)">Only the first ${parsed.length} were read — the rest of the file was skipped.</span>` : ""));
+    document.getElementById("import-status").style.color = "";
+    renderImportConfig();
+  } catch (e) {
+    importStatus(`Couldn't read that PDF: ${escapeHtml(e.message)}`, "");
+    document.getElementById("import-status").style.color = "var(--red)";
+  }
 }
 
 async function runImport() {
@@ -412,12 +479,14 @@ async function runImport() {
   if (targetType !== activeType) setType(targetType);
   await loadContacts();
   const info = typeInfo(targetType);
-  alert(`Imported ${added} new ${added === 1 ? info.singular.toLowerCase() : info.lower}.`
+  alert(`Imported ${added} new ${added === 1 ? info.lowerOne : info.lower}.`
     + (failed ? ` ${failed} failed — check console.` : ""));
 }
 
 function openImport() {
   importState = null;
+  importStatus("");
+  document.getElementById("import-status").style.color = "";
   document.getElementById("import-config").classList.add("hidden");
   document.getElementById("import-confirm").classList.add("hidden");
   document.getElementById("import-file").value = "";

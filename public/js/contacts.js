@@ -33,7 +33,7 @@ function contactStates(c) {
   return (c.states || "").split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
 }
 function phoneHref(c) { return (c.phone || "").replace(/[^\d+]/g, ""); }
-function digitsOnly(p) { return String(p || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, ""); }
+// digitsOnly / parseCsv / detectMapping / classifyImport come from /js/csv-import.js.
 
 // PostgREST reports an unrun migration as a missing relation rather than a
 // crash. The page has to say so plainly instead of showing an empty list that
@@ -300,6 +300,132 @@ function openModal(c) {
 }
 function closeModal() { document.getElementById("modal-backdrop").classList.add("hidden"); }
 
+// ─────────────────────────────────────────────────────────────────────
+// CSV import
+// Same engine as the buyer importer (/js/csv-import.js) — this file only
+// supplies what's specific to contacts: which list the rows land in, and a
+// dedupe scoped to THAT list. Scoping matters: a mortgage broker who also
+// does transactional lending is one person but two legitimate entries, so
+// deduping across all types would silently drop the second one.
+// ─────────────────────────────────────────────────────────────────────
+
+let importState = null;
+
+function renderImportConfig() {
+  const { headers } = importState.raw;
+  const mapping = importState.mapping;
+  const fields = [
+    ["name", "Name"], ["first", "First name"], ["last", "Last name"],
+    ["email", "Email"], ["phone", "Phone"], ["company", "Company"],
+    ["state", "State(s)"], ["notes", "Notes"],
+  ];
+  const opts = (sel) => `<option value="">— none —</option>` +
+    headers.map((h, i) => `<option value="${i}" ${sel === i ? "selected" : ""}>${escapeHtml(h || `Column ${i + 1}`)}</option>`).join("");
+  document.getElementById("import-mapping").innerHTML = fields.map(([f, label]) =>
+    `<div class="field"><label style="font-size:0.78rem">${label}</label><select class="map-sel" data-field="${f}">${opts(mapping[f])}</select></div>`
+  ).join("");
+  document.getElementById("import-mapping").querySelectorAll(".map-sel").forEach(sel => {
+    sel.addEventListener("change", () => {
+      const f = sel.dataset.field;
+      mapping[f] = sel.value === "" ? null : Number(sel.value);
+      recomputeImport();
+    });
+  });
+  document.getElementById("import-config").classList.remove("hidden");
+  recomputeImport();
+}
+
+function recomputeImport() {
+  const targetType = document.getElementById("import-type").value;
+  const info = typeInfo(targetType);
+  const parsed = buildRowsFromCsv(importState.raw.rows, importState.mapping);
+  const { fresh, dupes, invalid } = classifyImport(parsed, ofType(targetType));
+  importState.fresh = fresh;
+  importState.targetType = targetType;
+  const withPhone = fresh.filter(r => digitsOnly(r.phone)).length;
+  const withEmail = fresh.filter(r => r.email).length;
+  document.getElementById("import-summary").innerHTML = `
+    <div class="flex gap-16" style="flex-wrap:wrap">
+      <div><strong style="color:var(--navy-dark);font-size:1.1rem">${fresh.length}</strong> new to add</div>
+      <div class="muted">${dupes.length} already in ${escapeHtml(info.lower)}</div>
+      <div class="muted">${invalid.length} unusable (no name/contact)</div>
+    </div>
+    <div class="muted" style="font-size:0.8rem;margin-top:6px">Of the new: ${withPhone} have a phone, ${withEmail} have an email.</div>`;
+  const preview = fresh.slice(0, 8);
+  document.getElementById("import-preview").innerHTML = preview.length ? `
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="text-align:left;color:var(--text-2)">
+        <th style="padding:4px 6px">Name</th><th style="padding:4px 6px">Company</th><th style="padding:4px 6px">Phone</th><th style="padding:4px 6px">Email</th><th style="padding:4px 6px">States</th>
+      </tr></thead>
+      <tbody>${preview.map(r => `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:4px 6px">${escapeHtml(r.name)}</td>
+        <td style="padding:4px 6px">${escapeHtml(r.company)}</td>
+        <td style="padding:4px 6px">${escapeHtml(r.phone)}</td>
+        <td style="padding:4px 6px">${escapeHtml(r.email)}</td>
+        <td style="padding:4px 6px">${escapeHtml(r.states)}</td></tr>`).join("")}</tbody>
+    </table>
+    ${fresh.length > 8 ? `<div class="muted" style="padding:6px">…and ${fresh.length - 8} more</div>` : ""}` : "";
+  const btn = document.getElementById("import-confirm");
+  btn.textContent = `Import ${fresh.length} ${fresh.length === 1 ? info.singular.toLowerCase() : info.lower}`;
+  btn.classList.toggle("hidden", fresh.length === 0);
+  btn.disabled = fresh.length === 0;
+}
+
+function handleImportFile(file) {
+  if (!file) return;
+  if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") { alert("Please choose a .csv file."); return; }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const all = parseCsv(reader.result);
+    if (all.length < 2) { alert("That CSV has no data rows."); return; }
+    importState = { raw: { headers: all[0], rows: all.slice(1) }, mapping: detectMapping(all[0]), fresh: [] };
+    renderImportConfig();
+  };
+  reader.readAsText(file);
+}
+
+async function runImport() {
+  const fresh = importState.fresh || [];
+  if (!fresh.length) return;
+  const btn = document.getElementById("import-confirm");
+  btn.disabled = true;
+  const targetType = importState.targetType;
+  const source = document.getElementById("import-source").value.trim() || "import";
+  // Contacts have a real `company` column, so — unlike the buyer importer —
+  // nothing has to be stuffed into the notes text to survive.
+  const records = fresh.map(r => ({
+    contact_type: targetType,
+    name: r.name, email: r.email, phone: r.phone,
+    company: r.company, states: r.states, notes: r.notes,
+    source, active: true,
+  }));
+  let added = 0, failed = 0;
+  for (let i = 0; i < records.length; i += 200) {
+    const chunk = records.slice(i, i + 200);
+    btn.textContent = `Importing… ${i}/${records.length}`;
+    const { error } = await supa.from("contacts").insert(chunk);
+    if (error) { failed += chunk.length; console.error("import chunk failed:", error.message); }
+    else added += chunk.length;
+  }
+  closeImport();
+  // Land on the list the rows actually went into, not the one we started on.
+  if (targetType !== activeType) setType(targetType);
+  await loadContacts();
+  const info = typeInfo(targetType);
+  alert(`Imported ${added} new ${added === 1 ? info.singular.toLowerCase() : info.lower}.`
+    + (failed ? ` ${failed} failed — check console.` : ""));
+}
+
+function openImport() {
+  importState = null;
+  document.getElementById("import-config").classList.add("hidden");
+  document.getElementById("import-confirm").classList.add("hidden");
+  document.getElementById("import-file").value = "";
+  document.getElementById("import-type").value = activeType;
+  document.getElementById("import-backdrop").classList.remove("hidden");
+}
+function closeImport() { document.getElementById("import-backdrop").classList.add("hidden"); }
+
 // Switch lists without a reload, keeping the URL shareable and the back
 // button honest — the nav dropdown links to the same ?type= addresses.
 function setType(key, { push = true } = {}) {
@@ -322,7 +448,24 @@ function setType(key, { push = true } = {}) {
   document.getElementById("c-type").innerHTML =
     CONTACT_TYPES.map(t => `<option value="${t.key}">${t.icon} ${escapeHtml(t.singular)}</option>`).join("");
 
+  document.getElementById("import-type").innerHTML =
+    CONTACT_TYPES.map(t => `<option value="${t.key}">${t.icon} ${escapeHtml(t.plural)}</option>`).join("");
+
   document.getElementById("add-btn").addEventListener("click", () => openModal(null));
+
+  // ── Import engine wiring ──
+  const importDrop = document.getElementById("import-drop");
+  const importFile = document.getElementById("import-file");
+  document.getElementById("import-btn").addEventListener("click", openImport);
+  document.getElementById("import-cancel").addEventListener("click", closeImport);
+  document.getElementById("import-confirm").addEventListener("click", runImport);
+  document.getElementById("import-type").addEventListener("change", () => { if (importState) recomputeImport(); });
+  document.getElementById("import-backdrop").addEventListener("click", e => { if (e.target.id === "import-backdrop") closeImport(); });
+  importDrop.addEventListener("click", () => importFile.click());
+  importFile.addEventListener("change", () => handleImportFile(importFile.files[0]));
+  ["dragover","dragenter"].forEach(ev => importDrop.addEventListener(ev, e => { e.preventDefault(); importDrop.style.borderColor = "var(--navy)"; }));
+  ["dragleave","drop"].forEach(ev => importDrop.addEventListener(ev, e => { e.preventDefault(); importDrop.style.borderColor = "var(--border)"; }));
+  importDrop.addEventListener("drop", e => { const f = e.dataTransfer.files[0]; if (f) handleImportFile(f); });
   document.getElementById("modal-cancel").addEventListener("click", closeModal);
   document.getElementById("modal-backdrop").addEventListener("click", e => { if (e.target.id === "modal-backdrop") closeModal(); });
 

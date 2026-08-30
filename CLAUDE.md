@@ -15,6 +15,11 @@ use the service-role key via env vars.
 Page logic lives in `public/js/<page>.js` (one file per page, loaded after `supa.js`).
 Presentation helpers (`escapeHtml`, `timeAgo`, `fmtDate`) are in `public/js/ui-shared.js`;
 modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline either.
+The CSV import engine (`parseCsv`, `detectMapping`, `normalizeState`, `buildRowsFromCsv`,
+`classifyImport`, and the `digitsOnly`/`validEmail` dedupe keys) is `public/js/csv-import.js`,
+shared by the buyer and contact importers — a second copy of "which column is the phone
+number" and "have we already got this person" drifts silently, and drifted dedupe means
+duplicate buyers who each receive their own blast.
 `fmtMoney` is deliberately per-page (dashboard shows "—" for empty, buyers/pipeline show "").
 
 ### Surfaces
@@ -25,7 +30,7 @@ modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline eit
 | Reports | `public/reports.html` | Read-only rollups: per-deal funnel, copy-variation performance, time-in-stage aging, closed-deal stats |
 | Posting Dashboard | `public/dashboard.html` | Deals in three structure groups (Sub-To via contract upload, Morby via LOI upload, Cash via contract upload — all AI-extracted), terms, copy variations, email/SMS blasts, per-deal leads |
 | Buyer Dashboard | `public/buyers.html` | Buyer CRM: master-detail list, CSV import, deal matcher, buy-box onboarding |
-| Contacts | `public/contacts.html` | The non-buyer network: DSCR lenders, mortgage brokers, transactional lenders, VIP agents (`?type=` picks the list) |
+| Contacts | `public/contacts.html` | The non-buyer network: DSCR lenders, mortgage brokers, transactional lenders, VIP agents (`?type=` picks the list) + CSV import |
 | Pipeline | `public/pipeline.html` | Kanban dispo board: manual stages, drag-drop, shared notes, stale flags |
 | Deck page (public) | `/deck/<slug>` → `netlify/functions/deck.js` | Buyer-facing deal page; `?b=<token>` attributes views/interest to a buyer; `.pdf` suffix redirects to the stored PDF |
 
@@ -216,6 +221,9 @@ under `netlify/functions/` reads `contacts`: it is a directory (name, company, e
 markets, notes) plus a manual touch log in `contact_activity`, with no matching and no
 sending. If a send path ever needs it, give it its own recipient ledger and opt-out — never
 route it through `buyers`. The page fails soft before 036 runs, naming the file to run.
+Its CSV import shares the buyer engine but dedupes **within one `contact_type`**: a mortgage
+broker who also does transactional lending is one person and two legitimate rows, so a
+cross-type dedupe would silently drop the second.
 
 The nav's **Contacts** dropdown is inlined in each page's `<nav>` (same convention as the
 rest of the top bar; `.nav-drop` in `app.css`). Buyers is the dropdown's first item *and* the

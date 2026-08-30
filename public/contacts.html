@@ -57,6 +57,7 @@
         <div class="sub" id="contact-count"></div>
       </div>
       <div class="flex gap-8">
+        <button class="btn btn-ghost btn-sm" id="import-btn">📥 Import CSV</button>
         <button class="btn btn-primary btn-sm" id="add-btn">+ Add Contact</button>
       </div>
     </div>
@@ -110,8 +111,50 @@
     </div>
   </div>
 
+  <!-- ── Import contacts modal ── -->
+  <div id="import-backdrop" class="hidden modal-backdrop">
+    <div class="card" style="width:100%;max-width:640px;max-height:88vh;overflow-y:auto">
+      <h2 style="margin-top:0">📥 Import Contacts</h2>
+      <p class="muted" style="font-size:0.85rem;margin-top:-6px">
+        Drop a CSV from anywhere — a conference attendee list, a broker roster, an export from your phone.
+        Columns are auto-detected, contacts are deduped against the list you're importing into, and only new ones are added.
+      </p>
+
+      <div id="import-drop" style="border:2px dashed var(--border);border-radius:10px;padding:28px;text-align:center;cursor:pointer;background:#F7FAFC">
+        <div style="font-size:1.6rem">📄</div>
+        <div style="font-weight:600;color:var(--navy-dark);margin-top:6px">Click to choose a CSV, or drag one here</div>
+        <div class="muted" style="font-size:0.8rem;margin-top:4px">.csv files only · first row should be column headers</div>
+        <input type="file" id="import-file" accept=".csv,text/csv" class="hidden">
+      </div>
+
+      <div id="import-config" class="hidden">
+        <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px;margin-top:16px">
+          <div class="field"><label>Import into</label>
+            <select id="import-type"></select>
+          </div>
+          <div class="field"><label>Source tag</label>
+            <input id="import-source" placeholder="e.g. Best Ever conference" value="import">
+          </div>
+        </div>
+
+        <div class="field mt-8"><label style="font-weight:600">Column mapping <span class="muted" style="font-weight:400">(auto-detected — adjust if needed)</span></label></div>
+        <div id="import-mapping" class="grid" style="grid-template-columns:1fr 1fr;gap:10px"></div>
+
+        <div id="import-summary" class="card" style="background:#F7FAFC;margin-top:14px;font-size:0.88rem"></div>
+
+        <div id="import-preview" style="margin-top:10px;max-height:180px;overflow:auto;font-size:0.78rem"></div>
+      </div>
+
+      <div class="flex gap-8 mt-16" style="justify-content:flex-end">
+        <button type="button" class="btn btn-ghost" id="import-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary hidden" id="import-confirm">Import 0 contacts</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/js/supa.js"></script>
   <script src="/js/ui-shared.js"></script>
+  <script src="/js/csv-import.js"></script>
   <script src="/js/contacts.js"></script>
 </body>
 </html>

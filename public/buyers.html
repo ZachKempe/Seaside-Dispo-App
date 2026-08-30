@@ -16,7 +16,17 @@
     <nav>
       <a href="/dashboard.html">Posting</a>
       <a href="/pipeline.html">Pipeline</a>
-      <a href="/buyers.html" class="active">Buyers</a>
+      <div class="nav-drop">
+        <a href="/buyers.html" class="active" id="nav-contacts">Contacts ▾</a>
+        <div class="nav-drop-menu"><div>
+          <a href="/buyers.html" class="active">Buyers</a>
+          <div class="nav-drop-sep"></div>
+          <a href="/contacts.html?type=dscr_lender">DSCR Lenders</a>
+          <a href="/contacts.html?type=mortgage_broker">Mortgage Brokers</a>
+          <a href="/contacts.html?type=transactional_lender">Transactional Lenders</a>
+          <a href="/contacts.html?type=vip_agent">VIP Agents</a>
+        </div></div>
+      </div>
       <a href="/reports.html">Reports</a>
       <button class="logout" id="logout-btn">Sign Out</button>
     </nav>

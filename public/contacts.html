@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Contacts — Seaside Horizon</title>
+  <link rel="icon" type="image/png" href="/img/logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css">
+  <style>
+    /* Type switcher — same four entries as the nav dropdown, kept on the page
+       so you can move between lists without going back up to the top bar. */
+    .ct-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+    .ct-tab {
+      display: flex; align-items: center; gap: 7px; text-decoration: none;
+      background: #fff; border: 1px solid var(--border); border-radius: 999px;
+      padding: 7px 15px; font-size: 0.86rem; font-weight: 600; color: var(--text-2);
+      transition: background .15s, border-color .15s, color .15s;
+    }
+    .ct-tab:hover { border-color: var(--navy-light); color: var(--navy); }
+    .ct-tab.active { background: var(--navy); border-color: var(--navy); color: #fff; }
+    .ct-tab .ct-tab-n {
+      font-size: 0.74rem; font-weight: 700; background: #EDF2F7; color: var(--text-3);
+      border-radius: 999px; padding: 1px 7px; min-width: 20px; text-align: center;
+    }
+    .ct-tab.active .ct-tab-n { background: rgba(255,255,255,0.22); color: #fff; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><img src="/img/logo.png" alt="Seaside Horizon" class="brand-logo"> Seaside Horizon</div>
+    <nav>
+      <a href="/dashboard.html">Posting</a>
+      <a href="/pipeline.html">Pipeline</a>
+      <div class="nav-drop">
+        <a href="/buyers.html" class="active" id="nav-contacts">Contacts ▾</a>
+        <div class="nav-drop-menu"><div>
+          <a href="/buyers.html">Buyers</a>
+          <div class="nav-drop-sep"></div>
+          <a href="/contacts.html?type=dscr_lender">DSCR Lenders</a>
+          <a href="/contacts.html?type=mortgage_broker">Mortgage Brokers</a>
+          <a href="/contacts.html?type=transactional_lender">Transactional Lenders</a>
+          <a href="/contacts.html?type=vip_agent">VIP Agents</a>
+        </div></div>
+      </div>
+      <a href="/reports.html">Reports</a>
+      <button class="logout" id="logout-btn">Sign Out</button>
+    </nav>
+  </div>
+
+  <div class="page">
+    <div class="page-header">
+      <div>
+        <h1 id="page-title">Contacts</h1>
+        <div class="sub" id="contact-count"></div>
+      </div>
+      <div class="flex gap-8">
+        <button class="btn btn-primary btn-sm" id="add-btn">+ Add Contact</button>
+      </div>
+    </div>
+
+    <div class="ct-tabs" id="ct-tabs"></div>
+
+    <div id="loading" class="loading"><div class="spinner"></div>Loading contacts…</div>
+
+    <div id="main-ui" class="hidden">
+      <div class="buyer-md">
+        <div class="buyer-list" id="contact-list">
+          <div class="buyer-list-head">
+            <span id="list-label">Contacts</span>
+            <input type="search" id="list-search" placeholder="Search name, company, email, phone…">
+            <select id="list-sort" title="Sort contacts" style="width:auto;font-size:0.78rem;padding:4px 6px;border-radius:8px;border:1px solid var(--border)">
+              <option value="name">A–Z</option>
+              <option value="newest">Newest</option>
+              <option value="touched">Last contacted</option>
+            </select>
+            <span class="list-count" id="list-count"></span>
+          </div>
+          <div id="contact-rows"></div>
+        </div>
+        <div class="buyer-detail" id="contact-detail"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Add/Edit modal ── -->
+  <div id="modal-backdrop" class="hidden modal-backdrop">
+    <div class="card" style="width:100%;max-width:480px;max-height:85vh;overflow-y:auto">
+      <h2 id="modal-title" style="margin-top:0">Add Contact</h2>
+      <form id="contact-form">
+        <input type="hidden" id="c-id">
+        <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px">
+          <div class="field"><label>Name *</label><input id="c-name" required></div>
+          <div class="field"><label>Type</label>
+            <select id="c-type"></select>
+          </div>
+          <div class="field"><label>Company</label><input id="c-company" placeholder="Lender / brokerage name"></div>
+          <div class="field"><label>Phone</label><input id="c-phone"></div>
+          <div class="field" style="grid-column:1/-1"><label>Email</label><input type="email" id="c-email"></div>
+          <div class="field" style="grid-column:1/-1"><label>States / markets (comma-separated)</label><input id="c-states" placeholder="FL, TX, MN"></div>
+        </div>
+        <div class="field mt-8"><label>Notes</label><textarea id="c-notes" rows="3" placeholder="Terms, who referred them, what they're good for…"></textarea></div>
+        <div class="flex gap-8 mt-16" style="justify-content:flex-end">
+          <button type="button" class="btn btn-ghost" id="modal-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Contact</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/js/supa.js"></script>
+  <script src="/js/ui-shared.js"></script>
+  <script src="/js/contacts.js"></script>
+</body>
+</html>

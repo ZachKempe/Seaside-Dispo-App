@@ -25,6 +25,7 @@ modal chrome is the `.modal-backdrop` class in `app.css` — don't re-inline eit
 | Reports | `public/reports.html` | Read-only rollups: per-deal funnel, copy-variation performance, time-in-stage aging, closed-deal stats |
 | Posting Dashboard | `public/dashboard.html` | Deals in three structure groups (Sub-To via contract upload, Morby via LOI upload, Cash via contract upload — all AI-extracted), terms, copy variations, email/SMS blasts, per-deal leads |
 | Buyer Dashboard | `public/buyers.html` | Buyer CRM: master-detail list, CSV import, deal matcher, buy-box onboarding |
+| Contacts | `public/contacts.html` | The non-buyer network: DSCR lenders, mortgage brokers, transactional lenders, VIP agents (`?type=` picks the list) |
 | Pipeline | `public/pipeline.html` | Kanban dispo board: manual stages, drag-drop, shared notes, stale flags |
 | Deck page (public) | `/deck/<slug>` → `netlify/functions/deck.js` | Buyer-facing deal page; `?b=<token>` attributes views/interest to a buyer; `.pdf` suffix redirects to the stored PDF |
 
@@ -205,6 +206,22 @@ deletes the hosted `deal-decks/<slug>.pdf` (still the Morby deck) and warns that
 recipient ledger is keyed on `card_id`, so a normal re-blast skips buyers who already got
 the Morby version — use "Choose specific buyers" for those.
 
+**Contacts are NOT buyers, and that separation is the whole point.** The four non-buyer
+lists (DSCR lenders, mortgage brokers, transactional lenders, VIP agents) live in their own
+`contacts` table (migration 036, `contact_type` column), read only by
+`public/js/contacts.js`. They are deliberately kept out of `buyers` because `matchesDeal`
+passes anyone with no state/strategy/money cap as a **wildcard** — a lender filed among the
+buyers would silently receive every blast, forever, with nothing in the UI saying so. Nothing
+under `netlify/functions/` reads `contacts`: it is a directory (name, company, email, phone,
+markets, notes) plus a manual touch log in `contact_activity`, with no matching and no
+sending. If a send path ever needs it, give it its own recipient ledger and opt-out — never
+route it through `buyers`. The page fails soft before 036 runs, naming the file to run.
+
+The nav's **Contacts** dropdown is inlined in each page's `<nav>` (same convention as the
+rest of the top bar; `.nav-drop` in `app.css`). Buyers is the dropdown's first item *and* the
+trigger's own href, so a tap on touch — where `:hover` never fires — still lands somewhere
+useful.
+
 Buyer records are deduped on **digits-only phone / lower-cased email** — the CSV importer
 (`classifyImport`) and the Add Buyer form (`findDuplicateBuyer`) must keep using the same
 keys, and the form additionally checks soft-deleted rows so a removed buyer is restored
@@ -230,7 +247,7 @@ dashboard "✓ synced" indicator and the consecutive-failure email alert).
 ## Database / migrations
 
 Numbered SQL files in `sql/`, **run manually** in the Supabase SQL editor — there is no
-migration runner. Take the next number (highest is `035_cash_deals.sql`). Every new
+migration runner. Take the next number (highest is `036_contacts.sql`). Every new
 migration must END with `insert into schema_migrations (filename) values ('0XX_name.sql')
 on conflict do nothing;` so applied state stays queryable. Migrations must be
 additive/idempotent (`if not exists`, `do $$` policy guards) and the frontend must fail soft

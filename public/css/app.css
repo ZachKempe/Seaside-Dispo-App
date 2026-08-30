@@ -80,6 +80,28 @@ a { color: var(--navy); }
 }
 .topbar .logout:hover { background: rgba(255,255,255,0.22); }
 
+/* ── Nav dropdown (Contacts) ──
+   Hover- and keyboard-openable. The trigger is a real link, so a tap on
+   touch (where :hover never fires) still lands on the buyer list. */
+.nav-drop { position: relative; display: flex; align-items: center; }
+.nav-drop-menu {
+  position: absolute; right: 0; top: 100%; min-width: 210px;
+  padding-top: 10px;               /* hover bridge — the gap under the trigger */
+  display: none; z-index: 60;
+}
+.nav-drop:hover .nav-drop-menu, .nav-drop:focus-within .nav-drop-menu { display: block; }
+.nav-drop-menu > div {
+  background: #fff; border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(17,41,80,0.22); padding: 6px;
+}
+.topbar nav .nav-drop-menu a {
+  display: block; color: var(--text-2); font-size: 0.86rem; font-weight: 500;
+  padding: 9px 12px; border-radius: 7px; white-space: nowrap;
+}
+.topbar nav .nav-drop-menu a:hover { background: var(--bg); color: var(--navy); }
+.topbar nav .nav-drop-menu a.active { background: #EEF3FB; color: var(--navy); font-weight: 600; }
+.nav-drop-menu .nav-drop-sep { height: 1px; background: #EDF1F6; margin: 5px 8px; }
+
 /* ── Layout ── */
 .page {
   max-width: 1280px;

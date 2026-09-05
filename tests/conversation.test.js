@@ -78,6 +78,35 @@ test("Gmail: text/plain wins inside nested multipart; html-only falls back to st
     parts: [{ mimeType: "text/html", body: { data: b64url("<div>Line one<br>Line &amp; two</div><p>Para</p><style>.x{}</style>") } }],
   });
   assert.equal(C.extractBody(htmlOnly.payload), "Line one\nLine & two\nPara");
+
+  const indented = gmailMsg({
+    id: "i", from: "b@x.com", to: "z@y.com", subject: "s",
+    parts: [{ mimeType: "text/html", body: { data: b64url("<table><tr><td>\n        Was this email useful?\n      </td></tr>\n\n\n<tr><td>   Useful   </td></tr></table>") } }],
+  });
+  assert.equal(C.extractBody(indented.payload), "Was this email useful?\nUseful", "source indentation doesn't leak into the bubble");
+});
+
+test("Gmail: only mail exchanged WITH the buyer belongs in their thread", () => {
+  const ours = ["zach@seasidehorizon.com"];
+  const buyer = "buyer@x.com";
+  const fromBuyer = gmailMsg({ id: "1", from: "Buyer <buyer@x.com>", to: "zach@seasidehorizon.com", subject: "hi", body: "a" });
+  const toBuyer = gmailMsg({ id: "2", from: "zach@seasidehorizon.com", to: "Someone <else@y.com>, buyer@x.com", subject: "hi", labels: ["SENT"], body: "b" });
+  const newsletter = gmailMsg({ id: "3", from: "OpenAI <noreply@openai.com>", to: "zach@seasidehorizon.com", subject: "4 new image styles", body: "c" });
+  const toSomeoneElse = gmailMsg({ id: "4", from: "zach@seasidehorizon.com", to: "else@y.com", subject: "hi", labels: ["SENT"], body: "d" });
+  assert.ok(C.normalizeGmailMessage(fromBuyer, ours, buyer));
+  assert.ok(C.normalizeGmailMessage(toBuyer, ours, buyer));
+  assert.equal(C.normalizeGmailMessage(newsletter, ours, buyer), null);
+  assert.equal(C.normalizeGmailMessage(toSomeoneElse, ours, buyer), null);
+  // The seed buyer IS our mailbox: the inbox's newsletters must still stay out.
+  assert.equal(C.normalizeGmailMessage(newsletter, ours, "zach@seasidehorizon.com"), null);
+  // No buyer email given → no gate (back-compat for callers that pre-filter).
+  assert.ok(C.normalizeGmailMessage(newsletter, ours));
+});
+
+test("Gmail: a long blast body is capped in the thread", () => {
+  const long = gmailMsg({ id: "L", from: "b@x.com", to: "z@y.com", subject: "s", body: "x".repeat(5000) });
+  const m = C.normalizeGmailMessage(long, [], "b@x.com");
+  assert.ok(m.body.length < 1600 && m.body.endsWith("…"));
 });
 
 test("quoted history is stripped, but a quote-only message keeps its first line", () => {

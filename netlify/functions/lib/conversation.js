@@ -82,9 +82,22 @@ function htmlToText(html) {
     .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
     .replace(/\r/g, "")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
+    .split("\n").map((l) => l.replace(/\s+/g, " ").trim()).join("\n")
+    // HTML source is full of whitespace-only lines; one break between blocks.
+    .replace(/\n{2,}/g, "\n")
     .trim();
+}
+
+// Every address in a To/Cc header ("A <a@x>, b@y").
+function addressesOf(headerValue) {
+  return String(headerValue || "").split(",").map(addressOf).filter(Boolean);
+}
+
+// A long marketing blast doesn't need to be in the thread in full.
+const BODY_CAP = 1500;
+function capBody(s) {
+  s = String(s || "");
+  return s.length > BODY_CAP ? `${s.slice(0, BODY_CAP).trimEnd()}…` : s;
 }
 
 // Drop the quoted history a mail client appends below a reply, so the thread
@@ -120,14 +133,27 @@ function addressOf(headerValue) {
 // `ours` is the set of addresses we send from (Gmail from, Resend from,
 // reply-to). The SENT label is the primary signal — a Resend send never gets
 // that label, so the From header is the fallback that still classifies it.
-function normalizeGmailMessage(msg, ours) {
+//
+// `buyerEmail` gates what belongs in the thread at all: a message is theirs
+// only if it came FROM the buyer, or went from us TO the buyer. The Gmail
+// search is a loose from:/to: match, and for a buyer whose address is our
+// own mailbox (the seed buyer) it returns the entire inbox — newsletters
+// included — so the gate is what keeps a stranger's mail out of the thread.
+function normalizeGmailMessage(msg, ours, buyerEmail) {
   if (!msg) return null;
   const ourSet = new Set([...(ours || [])].map((a) => addressOf(a) || String(a || "").toLowerCase()).filter(Boolean));
   const fromAddr = addressOf(header(msg, "From"));
   const labels = msg.labelIds || [];
   const direction = labels.includes("SENT") || ourSet.has(fromAddr) ? "out" : "in";
+  const buyer = String(buyerEmail || "").trim().toLowerCase();
+  if (buyer) {
+    const recipients = [...addressesOf(header(msg, "To")), ...addressesOf(header(msg, "Cc"))];
+    const fromBuyer = fromAddr === buyer;
+    const toBuyer = (labels.includes("SENT") || ourSet.has(fromAddr)) && recipients.includes(buyer);
+    if (!fromBuyer && !toBuyer) return null;
+  }
   const raw = extractBody(msg.payload);
-  const body = stripQuotedReply(raw) || String(msg.snippet || "").trim();
+  const body = capBody(stripQuotedReply(raw) || String(msg.snippet || "").trim());
   const at = msg.internalDate ? new Date(Number(msg.internalDate)).toISOString() : toIso(header(msg, "Date"));
   return {
     id: `gmail:${msg.id}`,
@@ -243,7 +269,7 @@ function toIso(d) {
 
 module.exports = {
   isGhlSms, normalizeGhlMessage,
-  normalizeGmailMessage, extractBody, stripQuotedReply, htmlToText, addressOf,
+  normalizeGmailMessage, extractBody, stripQuotedReply, htmlToText, addressOf, addressesOf,
   mergeThread, latestEmail, replySubject,
   textToHtml, buildMime, base64Url,
 };

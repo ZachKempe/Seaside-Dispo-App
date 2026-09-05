@@ -108,7 +108,7 @@ async function getThread(buyer) {
         const raw = await gmail.fetchMessagesWith(token, buyer.email.trim().toLowerCase());
         email.ok = true;
         const ours = ourAddresses();
-        return raw.map((m) => normalizeGmailMessage(m, ours)).filter(Boolean);
+        return raw.map((m) => normalizeGmailMessage(m, ours, buyer.email)).filter(Boolean);
       } catch (e) {
         email.error = `Couldn't load email history from Gmail: ${e.message.slice(0, 200)}`;
         console.warn("email thread:", e.message);

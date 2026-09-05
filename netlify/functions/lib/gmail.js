@@ -44,13 +44,18 @@ async function gmailApi(token, path, opts = {}) {
   return r.json();
 }
 
-// Every message exchanged with `address` (either direction), newest first,
-// capped. `format=full` so the body can be shown, fetched in small parallel
-// chunks to stay well inside a function's time budget.
-async function fetchMessagesWith(token, address, { max = 40 } = {}) {
-  const q = `{from:${address} to:${address}} -in:chats newer_than:2y`;
+// Messages exchanged with `address`, capped. Quota is the constraint here
+// (Gmail bills ~5 units per call against a per-minute, per-user budget that
+// the first live-only version of the panel exhausted in an hour), so:
+//   • `q` comes from lib/conversation.js gmailQuery — incremental once the
+//     buyer has saved history, so the list call is the only regular cost;
+//   • `skipIds` (already in buyer_messages) are never fetched again;
+//   • the remaining gets run in small parallel chunks.
+async function fetchMessagesWith(token, address, { max = 40, q, skipIds } = {}) {
+  q = q || `{from:${address} to:${address}} -in:chats newer_than:2y`;
   const list = await gmailApi(token, `/messages?q=${encodeURIComponent(q)}&maxResults=${max}`);
-  const ids = (list.messages || []).map((m) => m.id);
+  const skip = skipIds || new Set();
+  const ids = (list.messages || []).map((m) => m.id).filter((id) => !skip.has(id));
   const out = [];
   for (let i = 0; i < ids.length; i += 10) {
     const chunk = await Promise.all(ids.slice(i, i + 10).map((id) =>

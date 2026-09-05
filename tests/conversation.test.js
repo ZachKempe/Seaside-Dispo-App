@@ -176,6 +176,43 @@ test("textToHtml escapes, paragraphs on blank lines, <br> within", () => {
   assert.ok(html.includes("a &lt;b&gt;<br>b"));
 });
 
+test("mergeThread folds the same text under two ids (webhook copy vs GHL listing, send response vs listing)", () => {
+  const live = [{ id: "ghl:abc", channel: "sms", direction: "in", body: "Is it available?", at: "2026-09-05T15:00:00Z" }];
+  const saved = [
+    { id: "webhook:ghl-+16305550142-Is it available?", channel: "sms", direction: "in", body: "Is it  available?", at: "2026-09-05T15:00:04Z" },
+    { id: "ghl:sent-1", channel: "sms", direction: "out", body: "Yes", at: "2026-09-05T15:01:00Z" },
+    { id: "ghl:other", channel: "sms", direction: "in", body: "Is it available?", at: "2026-09-06T15:00:00Z" }, // a day later: a real repeat
+  ];
+  const merged = C.mergeThread(live, saved);
+  assert.deepEqual(merged.map((m) => m.id), ["ghl:abc", "ghl:sent-1", "ghl:other"], "live copy wins; echo dropped; genuine repeat kept");
+  assert.ok(!C.isEcho({ channel: "sms", direction: "in", body: "x", at: "2026-09-05T15:00:00Z" }, { channel: "email", direction: "in", body: "x", at: "2026-09-05T15:00:00Z" }), "different channel is not an echo");
+});
+
+// ── Ledger round-trip (buyer_messages, 037) ───────────────────────
+test("a normalized message survives the ledger round-trip with the same id", () => {
+  const m = { id: "gmail:18f2a", channel: "email", direction: "in", body: "hi", subject: "Re: x", at: "2026-09-05T15:00:00.000Z", status: "", from: "Buyer <b@x.com>", thread_id: "t1", message_id: "<1@m>" };
+  const row = C.toLedgerRow(248, m);
+  assert.equal(row.buyer_id, 248);
+  assert.equal(row.provider, "gmail");
+  assert.equal(row.provider_id, "18f2a");
+  assert.equal(row.sent_at, m.at);
+  const back = C.fromLedgerRow(row);
+  assert.equal(back.id, m.id);
+  assert.equal(back.thread_id, "t1");
+  assert.equal(back.message_id, "<1@m>");
+  assert.equal(back.saved, true);
+  // The provider id can itself contain colons (webhook fallback ids).
+  assert.deepEqual(C.splitId("webhook:ghl-+1630:Is it?"), { provider: "webhook", providerId: "ghl-+1630:Is it?" });
+});
+
+test("gmailQuery is a full 2-year search with no history, incremental once there is some", () => {
+  assert.equal(C.gmailQuery("b@x.com"), "{from:b@x.com to:b@x.com} -in:chats newer_than:2y");
+  const q = C.gmailQuery("b@x.com", "2026-09-05T15:00:00Z");
+  const epoch = Number(q.match(/after:(\d+)/)[1]);
+  assert.ok(epoch <= Math.floor(Date.parse("2026-09-04T15:00:00Z") / 1000), "backs off at least a day");
+  assert.ok(!q.includes("newer_than"));
+});
+
 // ── The function's contract with the rest of the app ─────────────
 const FN = fs.readFileSync(path.join(__dirname, "..", "netlify", "functions", "buyer-messages.js"), "utf8");
 
@@ -192,6 +229,23 @@ test("the send path checks the STOP list and refuses hard-bounced addresses", ()
   assert.ok(FN.includes("sms_suppressions"), "SMS send must consult sms_suppressions");
   assert.ok(/email_bounced_at\)\s*throw/.test(FN), "email send must refuse when email_bounced_at is set");
   assert.ok(!FN.includes("/contacts?"), "contacts are not buyers — nothing here may read them");
+});
+
+test("history is saved, never re-fetched: ledger reads first, provider syncs skip saved ids, sends are saved", () => {
+  assert.ok(FN.includes("loadLedger(buyer.id)"), "GET must read buyer_messages before touching a provider");
+  assert.ok(/skipIds:\s*ledger \? savedIds/.test(FN), "Gmail sync must skip ids already in the ledger");
+  assert.ok(/gmailQuery\(address, ledger \? newestEmailAt/.test(FN), "Gmail search must be incremental once history exists");
+  assert.equal((FN.match(/saveToLedger\(buyer\.id, \[message\]\)/g) || []).length, 2, "both send paths write the ledger");
+  const hook = fs.readFileSync(path.join(__dirname, "..", "netlify", "functions", "ghl-inbound.js"), "utf8");
+  assert.ok(/buyer_messages\?on_conflict=provider,provider_id/.test(hook), "inbound webhook writes the ledger, idempotently");
+  const sql = fs.readFileSync(path.join(__dirname, "..", "sql", "037_buyer_messages.sql"), "utf8");
+  assert.ok(sql.includes("on buyer_messages (provider, provider_id)"), "the unique index the upserts rely on");
+  assert.ok(sql.trim().endsWith("on conflict do nothing;") && sql.includes("'037_buyer_messages.sql'"), "037 records itself in schema_migrations");
+});
+
+test("background polls only sync texts, and only while the tab is visible", () => {
+  const page = fs.readFileSync(path.join(__dirname, "..", "public", "js", "buyers.js"), "utf8");
+  assert.ok(/visibilityState === "visible"\) loadConvo\(\{ quiet: true, sync: "sms" \}\)/.test(page));
 });
 
 test("the page's timeline treats 📤 touches as sends, not notes", () => {

@@ -170,19 +170,73 @@ function normalizeGmailMessage(msg, ours, buyerEmail) {
 }
 
 // ── Merge ────────────────────────────────────────────────────────
-// One chronological list across channels, oldest first, de-duplicated by id.
+// One chronological list across channels, oldest first, de-duplicated by id
+// AND by content: the same text can reach us twice under different ids (the
+// inbound webhook's copy and GHL's own listing; a send response's id and the
+// conversation's id), so two messages with the same channel, direction and
+// body within ECHO_WINDOW_MS are one message. Earlier lists win — pass the
+// authoritative (provider) list first.
+const ECHO_WINDOW_MS = 10 * 60e3;
+function isEcho(a, b) {
+  return a.channel === b.channel && a.direction === b.direction
+    && norm(a.body) === norm(b.body)
+    && Math.abs(new Date(a.at || 0) - new Date(b.at || 0)) < ECHO_WINDOW_MS;
+}
+const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
 function mergeThread(...lists) {
   const seen = new Set();
   const out = [];
   for (const list of lists) {
     for (const m of list || []) {
       if (!m || seen.has(m.id)) continue;
+      if (out.some((o) => isEcho(o, m))) { seen.add(m.id); continue; }
       seen.add(m.id);
       out.push(m);
     }
   }
   out.sort((a, b) => new Date(a.at || 0) - new Date(b.at || 0));
   return out;
+}
+
+// ── Ledger (buyer_messages, migration 037) ───────────────────────
+// A normalized message's id is "<provider>:<provider_id>"; the table stores
+// the two halves. Round-trips must be lossless so a synced row and a live row
+// for the same message collide on the unique index instead of duplicating.
+function splitId(id) {
+  const i = String(id || "").indexOf(":");
+  return i < 0 ? { provider: "", providerId: String(id || "") } : { provider: id.slice(0, i), providerId: id.slice(i + 1) };
+}
+function toLedgerRow(buyerId, m) {
+  const { provider, providerId } = splitId(m.id);
+  return {
+    buyer_id: buyerId,
+    channel: m.channel, direction: m.direction,
+    provider: m.provider || provider, provider_id: providerId,
+    thread_id: m.thread_id || "", message_id: m.message_id || "",
+    subject: String(m.subject || "").slice(0, 500), body: String(m.body || "").slice(0, 8000),
+    status: m.status || "", from_addr: String(m.from || "").slice(0, 300),
+    sent_at: m.at || new Date().toISOString(),
+  };
+}
+function fromLedgerRow(r) {
+  return {
+    id: `${r.provider}:${r.provider_id}`,
+    channel: r.channel, direction: r.direction,
+    body: r.body || "", subject: r.subject || "", at: r.sent_at,
+    status: r.status || "", from: r.from_addr || "",
+    thread_id: r.thread_id || "", message_id: r.message_id || "",
+    provider: r.provider, saved: true,
+  };
+}
+
+// Gmail search for the buyer's mail. `sinceIso` (the newest saved message)
+// turns it incremental: Gmail's after: is whole-day, epoch-seconds precision,
+// so back off a day to be safe — the id-skip in the caller drops the overlap.
+function gmailQuery(address, sinceIso) {
+  const base = `{from:${address} to:${address}} -in:chats`;
+  if (!sinceIso) return `${base} newer_than:2y`;
+  const epoch = Math.floor((new Date(sinceIso).getTime() - 86400e3) / 1000);
+  return `${base} after:${epoch}`;
 }
 
 // The newest email in the thread decides what a reply threads onto: its Gmail
@@ -270,6 +324,7 @@ function toIso(d) {
 module.exports = {
   isGhlSms, normalizeGhlMessage,
   normalizeGmailMessage, extractBody, stripQuotedReply, htmlToText, addressOf, addressesOf,
-  mergeThread, latestEmail, replySubject,
+  mergeThread, isEcho, latestEmail, replySubject,
+  toLedgerRow, fromLedgerRow, splitId, gmailQuery,
   textToHtml, buildMime, base64Url,
 };

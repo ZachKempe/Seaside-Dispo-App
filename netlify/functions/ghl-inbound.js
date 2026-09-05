@@ -94,6 +94,25 @@ exports.handler = async (event) => {
       cardId: recent ? recent.card_id : null,
       address: recent ? recent.address : "",
     });
+    // Save the text itself for the buyer's conversation panel (migration 037),
+    // so the thread is complete even when GHL's read API is unavailable. Best
+    // effort: the lead is already captured, and before 037 this just warns.
+    if (res.ok && res.buyerId && text.trim()) {
+      try {
+        await sb(`/buyer_messages?on_conflict=provider,provider_id`, {
+          method: "POST",
+          headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+          body: JSON.stringify({
+            buyer_id: res.buyerId, channel: "sms", direction: "in",
+            provider: "webhook", provider_id: String(messageId).slice(0, 200),
+            body: text.trim().slice(0, 8000), status: "received", from_addr: String(phone).slice(0, 40),
+            sent_at: new Date().toISOString(),
+          }),
+        });
+      } catch (e) {
+        console.warn("buyer_messages insert failed (migration 037 not run?):", e.message);
+      }
+    }
     return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(res) };
   } catch (err) {
     console.error("ghl-inbound error:", err.message);

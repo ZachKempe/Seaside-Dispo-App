@@ -4,16 +4,24 @@
 //   GET  ?buyer_id=N            → the buyer's whole thread, both channels merged
 //   POST { buyer_id, channel, body, subject? }  → send one text or one email
 //
-// History is read LIVE from the providers, not from a ledger of our own:
+// History is the `buyer_messages` ledger (migration 037), kept in sync with
+// the providers INCREMENTALLY on each open:
 //   • SMS   — GoHighLevel's conversation for the buyer's number (so texts sent
-//             from the GHL app show up too, and inbound texts appear whether or
-//             not the ghl-inbound webhook is wired).
-//   • Email — Gmail, every message to/from the buyer's address, sent from and
-//             received by the same mailbox capture-replies.js polls.
+//             from the GHL app show up too); inbound texts also land in the
+//             ledger straight from the ghl-inbound webhook.
+//   • Email — Gmail, messages to/from the buyer's address, sent from and
+//             received by the same mailbox capture-replies.js polls. Only ids
+//             not already saved are fetched — the first live-only version
+//             fetched everything on every open and exhausted Gmail's
+//             per-minute quota within the hour (403 "Total Query Cost").
+// When a provider errors or rate-limits, the saved history still renders and
+// the panel says so softly (`stale`) instead of showing an empty red thread.
+// Before 037 runs the function degrades to live-only reads and reports
+// `ledger: false` so the page can name the migration.
 // Sends go through the same libs the blasts use (lib/ghl-sms.js, Gmail with a
-// Resend fallback), and each one logs a `buyer_activity` touch — channel
-// "manual", so the engagement score doesn't count our own outreach as a reply
-// — which is what keeps "Last contacted" and the timeline honest.
+// Resend fallback), are written to the ledger immediately, and each logs a
+// `buyer_activity` touch — channel "manual", so the engagement score doesn't
+// count our own outreach as a reply — which keeps "Last contacted" honest.
 //
 // Compliance is the send path's job, not the UI's: a number on the STOP list
 // (sms_suppressions) is refused outright, and so is a hard-bounced address.
@@ -28,7 +36,9 @@ const gmail = require("./lib/gmail");
 const {
   normalizeGhlMessage, normalizeGmailMessage, mergeThread, latestEmail,
   replySubject, buildMime, base64Url, textToHtml,
+  toLedgerRow, fromLedgerRow, splitId, gmailQuery,
 } = require("./lib/conversation");
+const { fetchAllRows } = require("./lib/fetch-all");
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const RESEND_FROM = process.env.RESEND_FROM || "";
@@ -78,53 +88,112 @@ async function logTouch(buyerId, detail) {
   }
 }
 
+// ── Ledger helpers (buyer_messages, 037) ──────────────────────────
+// null = table missing (pre-037); the caller then runs live-only.
+async function loadLedger(buyerId) {
+  try {
+    const rows = await fetchAllRows(
+      (p) => sb(p, { method: "GET" }),
+      `/buyer_messages?buyer_id=eq.${Number(buyerId)}&select=*&order=sent_at.asc`,
+      { order: "sent_at" });
+    return rows || [];
+  } catch (e) {
+    console.warn("buyer_messages read failed (037 not run?):", e.message);
+    return null;
+  }
+}
+// Insert normalized messages, ignoring ones already saved (unique on
+// provider + provider_id). Best effort — a failed save never fails the read.
+async function saveToLedger(buyerId, messages) {
+  const rows = (messages || []).filter((m) => m && splitId(m.id).providerId).map((m) => toLedgerRow(buyerId, m));
+  if (!rows.length) return;
+  try {
+    await sb(`/buyer_messages?on_conflict=provider,provider_id`, {
+      method: "POST",
+      headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+      body: JSON.stringify(rows),
+    });
+  } catch (e) {
+    console.warn("buyer_messages save failed:", e.message);
+  }
+}
+
+const isQuotaError = (msg) => /-> 429|quota|rateLimit|usageLimits/i.test(msg || "");
+
 // ── GET: the thread ───────────────────────────────────────────────
-async function getThread(buyer) {
-  const sms = { configured: smsConfigured(), ok: false, error: "", contact_id: null };
-  const email = { configured: gmail.gmailConfigured(), ok: false, error: "", thread_id: null, in_reply_to: null, references: null, subject: "" };
+// `channels` limits which providers are synced this call: the page's
+// background poll asks for "sms" only (cheap, and where near-real-time
+// matters); opens, manual refreshes and post-send reloads sync both.
+async function getThread(buyer, channels = ["sms", "email"]) {
+  const sms = { configured: smsConfigured(), ok: false, stale: false, error: "", contact_id: null };
+  const email = { configured: gmail.gmailConfigured(), ok: false, stale: false, error: "", thread_id: null, in_reply_to: null, references: null, subject: "" };
+
+  const ledgerRows = await loadLedger(buyer.id);
+  const ledger = ledgerRows !== null;
+  const saved = (ledgerRows || []).map(fromLedgerRow);
+  const savedIds = new Set(saved.map((m) => splitId(m.id).providerId));
+  const newestEmailAt = saved.filter((m) => m.channel === "email" && m.provider === "gmail").map((m) => m.at).sort().pop() || null;
+
+  const failSoft = (side, message, quota) => {
+    // With saved history, a provider hiccup is a footnote; without, an error.
+    side.stale = saved.length > 0 || quota;
+    side.error = message;
+    return [];
+  };
 
   const [smsMsgs, emailMsgs] = await Promise.all([
     (async () => {
-      if (!sms.configured) { sms.error = "SMS isn't configured (GHL_API_KEY / GHL_FROM_NUMBER)."; return []; }
+      if (!channels.includes("sms")) { sms.ok = true; return []; }
+      if (!sms.configured) return failSoft(sms, "SMS isn't configured (GHL_API_KEY / GHL_FROM_NUMBER).");
       if (!buyer.phone) { sms.ok = true; return []; }
       try {
         const t = await fetchSmsThread(buyer.phone);
         sms.ok = true;
         sms.contact_id = t.contactId;
-        return t.messages.map(normalizeGhlMessage).filter(Boolean);
+        const live = t.messages.map(normalizeGhlMessage).filter(Boolean);
+        if (ledger) await saveToLedger(buyer.id, live.filter((m) => !savedIds.has(splitId(m.id).providerId)));
+        return live;
       } catch (e) {
-        sms.error = /-> 40[13]/.test(e.message)
-          ? "GoHighLevel refused to read conversations — the API token needs the Conversations read scopes (GHL → Settings → Private Integrations)."
-          : `Couldn't load texts from GoHighLevel: ${e.message.slice(0, 200)}`;
         console.warn("sms thread:", e.message);
-        return [];
+        return failSoft(sms, /-> 40[13]/.test(e.message)
+          ? "GoHighLevel refused to read conversations — the API token needs the Conversations read scopes (GHL → Settings → Private Integrations)."
+          : `Couldn't refresh texts from GoHighLevel: ${e.message.slice(0, 160)}`);
       }
     })(),
     (async () => {
-      if (!email.configured) { email.error = "Email history needs the Gmail connection (GMAIL_* env vars)."; return []; }
+      if (!channels.includes("email")) { email.ok = true; return []; }
+      if (!email.configured) return failSoft(email, "Email history needs the Gmail connection (GMAIL_* env vars).");
       if (!buyer.email) { email.ok = true; return []; }
       try {
+        const address = buyer.email.trim().toLowerCase();
         const token = await gmail.gmailAccessToken();
-        const raw = await gmail.fetchMessagesWith(token, buyer.email.trim().toLowerCase());
+        const raw = await gmail.fetchMessagesWith(token, address, {
+          q: gmailQuery(address, ledger ? newestEmailAt : null),
+          skipIds: ledger ? savedIds : undefined,
+        });
         email.ok = true;
-        const ours = ourAddresses();
-        return raw.map((m) => normalizeGmailMessage(m, ours, buyer.email)).filter(Boolean);
+        const live = raw.map((m) => normalizeGmailMessage(m, ourAddresses(), address)).filter(Boolean);
+        if (ledger) await saveToLedger(buyer.id, live);
+        return live;
       } catch (e) {
-        email.error = `Couldn't load email history from Gmail: ${e.message.slice(0, 200)}`;
         console.warn("email thread:", e.message);
-        return [];
+        const quota = isQuotaError(e.message);
+        return failSoft(email, quota
+          ? "Gmail is rate-limiting right now — showing saved history; it refreshes on its own once the minute resets."
+          : `Couldn't refresh email from Gmail: ${e.message.slice(0, 160)}`, quota);
       }
     })(),
   ]);
 
-  const messages = mergeThread(smsMsgs, emailMsgs);
+  // Live lists first so they win over saved/webhook copies of the same text.
+  const messages = mergeThread(smsMsgs, emailMsgs, saved);
   const last = latestEmail(messages);
   if (last) {
     email.thread_id = last.thread_id;
     email.in_reply_to = last.message_id || null;
     email.subject = replySubject(last.subject);
   }
-  return { buyer: publicBuyer(buyer, await isSuppressed(buyer.phone)), sms, email, messages };
+  return { buyer: publicBuyer(buyer, await isSuppressed(buyer.phone)), ledger, sms, email, messages };
 }
 
 function publicBuyer(b, smsSuppressed) {
@@ -144,12 +213,14 @@ async function sendText(buyer, body) {
   }
   const res = await sendSms(buyer.phone, body);
   await logTouch(buyer.id, `📤 Texted: “${body.replace(/\s+/g, " ").slice(0, 140)}”`);
-  return {
+  const message = {
     id: `ghl:${(res && res.messageId) || `sent-${Date.now()}`}`,
     channel: "sms", direction: "out", body, subject: "", at: new Date().toISOString(),
     status: "sent", from: "", thread_id: (res && res.conversationId) || "", message_id: (res && res.messageId) || "",
     provider: "ghl",
   };
+  await saveToLedger(buyer.id, [message]);
+  return message;
 }
 
 async function sendEmail(buyer, { body, subject, thread_id, in_reply_to, references }) {
@@ -191,10 +262,12 @@ async function sendEmail(buyer, { body, subject, thread_id, in_reply_to, referen
   }
 
   await logTouch(buyer.id, `📤 Emailed: “${subject.slice(0, 120)}”`);
-  return {
+  const message = {
     id, channel: "email", direction: "out", body, subject, at: new Date().toISOString(),
-    status: "sent", from: "", thread_id: threadId, message_id: "", provider,
+    status: "sent", from: gmail.gmailEnv().fromAddress || RESEND_FROM, thread_id: threadId, message_id: "", provider,
   };
+  await saveToLedger(buyer.id, [message]);
+  return message;
 }
 
 const http = (status, message) => Object.assign(new Error(message), { status });
@@ -205,11 +278,13 @@ exports.handler = async (event) => {
     if (!user) return json(401, { error: "unauthorized" });
 
     if (event.httpMethod === "GET") {
-      const id = Number((event.queryStringParameters || {}).buyer_id);
+      const qs = event.queryStringParameters || {};
+      const id = Number(qs.buyer_id);
       if (!id) return json(400, { error: "buyer_id required" });
       const buyer = await loadBuyer(id);
       if (!buyer) return json(404, { error: "buyer not found" });
-      return json(200, await getThread(buyer));
+      const channels = String(qs.sync || "sms,email").split(",").map((c) => c.trim()).filter((c) => c === "sms" || c === "email");
+      return json(200, await getThread(buyer, channels.length ? channels : ["sms", "email"]));
     }
 
     if (event.httpMethod === "POST") {

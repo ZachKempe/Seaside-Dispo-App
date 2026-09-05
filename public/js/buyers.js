@@ -762,12 +762,16 @@ async function runImport() {
 // without a reload.
 // ─────────────────────────────────────────────────────────────────────
 const convo = { buyer: null, channel: "sms", filter: "", data: null, timer: null, sending: false, pending: [] };
-const CONVO_POLL_MS = 20000;
+// Background polls sync texts only, and only while the tab is visible: the
+// Gmail side is quota-billed per minute and its history is already saved
+// (migration 037), so email refreshes happen on open, ↻ and after a send.
+const CONVO_POLL_MS = 30000;
 
 async function convoFetch(method, params) {
   const { data: { session } } = await supa.auth.getSession();
   if (!session) throw new Error("Not signed in.");
-  const url = "/.netlify/functions/buyer-messages" + (method === "GET" ? `?buyer_id=${params.buyer_id}` : "");
+  const url = "/.netlify/functions/buyer-messages" +
+    (method === "GET" ? `?buyer_id=${params.buyer_id}${params.sync ? `&sync=${params.sync}` : ""}` : "");
   const r = await fetch(url, {
     method,
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
@@ -797,7 +801,9 @@ function openConvo(b, channel) {
   document.getElementById("convo-backdrop").classList.remove("hidden");
   loadConvo();
   clearInterval(convo.timer);
-  convo.timer = setInterval(() => { if (!convo.sending) loadConvo({ quiet: true }); }, CONVO_POLL_MS);
+  convo.timer = setInterval(() => {
+    if (!convo.sending && document.visibilityState === "visible") loadConvo({ quiet: true, sync: "sms" });
+  }, CONVO_POLL_MS);
   setTimeout(() => document.getElementById("convo-body").focus(), 50);
 }
 
@@ -809,12 +815,14 @@ function closeConvo() {
   renderDetail(); // picks up any 📤 touches mirrored during the session
 }
 
-async function loadConvo({ quiet = false } = {}) {
+async function loadConvo({ quiet = false, sync = "" } = {}) {
   const b = convo.buyer;
   if (!b) return;
   try {
-    const data = await convoFetch("GET", { buyer_id: b.id });
+    const data = await convoFetch("GET", { buyer_id: b.id, sync });
     if (!convo.buyer || convo.buyer.id !== b.id) return; // panel moved on
+    // A texts-only poll carries no fresh email status — keep the last full one.
+    if (sync === "sms" && convo.data && convo.data.email) data.email = convo.data.email;
     // Drop optimistic bubbles the provider now reports — by id, or by the
     // same outbound text landing within a few minutes (GHL's send response
     // and its conversation listing don't always agree on the message id).
@@ -892,8 +900,11 @@ function renderConvo() {
   else if (b.phone && !d.buyer.sms_opt_in) notes.push({ text: "📱 No SMS opt-in on file — one-to-one replies only; blasts skip this buyer." });
   if (b.email && d.buyer.email_bounced) notes.push({ cls: "err", text: "⚠️ Their email hard-bounced — this address is dead. Emails from here are blocked until it's updated." });
   else if (b.email && d.buyer.email_opt_out) notes.push({ text: "✉️ Unsubscribed from deal blasts — a direct reply is fine, marketing isn't." });
-  if (b.phone && d.sms && !d.sms.ok) notes.push({ cls: "err", text: d.sms.error || "Texts couldn't be loaded." });
-  if (b.email && d.email && !d.email.ok) notes.push({ cls: "err", text: d.email.error || "Emails couldn't be loaded." });
+  // A provider that failed with saved history behind it is a footnote
+  // (amber, "saved history"); with nothing saved it's an error (red).
+  if (b.phone && d.sms && !d.sms.ok) notes.push({ cls: d.sms.stale ? "" : "err", text: d.sms.error || "Texts couldn't be refreshed." });
+  if (b.email && d.email && !d.email.ok) notes.push({ cls: d.email.stale ? "" : "err", text: d.email.error || "Emails couldn't be refreshed." });
+  if (d.ledger === false) notes.push({ text: "History isn't being saved yet — run sql/037_buyer_messages.sql in Supabase so the thread survives provider outages and rate limits." });
   document.getElementById("convo-notes").innerHTML = notes.map(n =>
     `<div class="convo-note ${n.cls || ""}">${escapeHtml(n.text)}</div>`).join("");
 

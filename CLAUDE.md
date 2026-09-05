@@ -80,11 +80,18 @@ duplicate buyers who each receive their own blast.
   conversation panel). `GET ?buyer_id=` returns the buyer's whole thread, both channels merged;
   `POST {buyer_id, channel, body, subject?}` sends one text (GHL) or one email (Gmail, Resend
   fallback, threaded onto the latest Gmail message via In-Reply-To + threadId). **History is
-  read live from the providers, not from a ledger of our own** — GHL's conversation for the
-  number (`fetchSmsThread` in `lib/ghl-sms.js`) and Gmail's messages to/from the address
-  (`lib/gmail.js`) — so texts sent from the GHL app and replies that never hit `ghl-inbound`
-  still show. Normalizing/merging/MIME is the pure `lib/conversation.js`
-  (`tests/conversation.test.js`). Every send logs a `buyer_activity` touch with channel
+  the `buyer_messages` ledger (migration 037), synced incrementally from the providers on
+  each open** — GHL's conversation for the number (`fetchSmsThread` in `lib/ghl-sms.js`) and
+  Gmail's messages to/from the address (`lib/gmail.js`), fetching only ids not already saved;
+  `ghl-inbound.js` writes inbound texts to the ledger too, and both send paths write what they
+  sent. ⚠ The first version read Gmail live on every open and hit the mailbox's
+  **per-minute quota within the hour** (403 "Total Query Cost") — never go back to fetching
+  a buyer's whole mailbox history per open; the page's background poll syncs `sms` only, and
+  only while the tab is visible. A provider error with saved history behind it is reported
+  `stale` (amber footnote), not an error. Pre-037 the function runs live-only and returns
+  `ledger:false` so the page names the migration. Normalizing/merging/MIME is the pure
+  `lib/conversation.js` (`tests/conversation.test.js`); the merge also folds the same text
+  under two ids (webhook copy vs GHL listing). Every send logs a `buyer_activity` touch with channel
   **`manual`** and a `📤` detail prefix — never `sms`/`email`, which `buildEngagement` scores
   as *replies*; the test pins that. Compliance lives in the send path: a number on
   `sms_suppressions` (replied STOP) and a hard-bounced address are refused; a buyer without
@@ -282,7 +289,7 @@ dashboard "✓ synced" indicator and the consecutive-failure email alert).
 ## Database / migrations
 
 Numbered SQL files in `sql/`, **run manually** in the Supabase SQL editor — there is no
-migration runner. Take the next number (highest is `036_contacts.sql`). Every new
+migration runner. Take the next number (highest is `037_buyer_messages.sql`). Every new
 migration must END with `insert into schema_migrations (filename) values ('0XX_name.sql')
 on conflict do nothing;` so applied state stays queryable. Migrations must be
 additive/idempotent (`if not exists`, `do $$` policy guards) and the frontend must fail soft

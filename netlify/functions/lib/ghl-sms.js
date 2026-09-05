@@ -57,6 +57,8 @@ async function ghlContactId(phone) {
   return data.contact.id;
 }
 
+// Resolves to GHL's response ({ conversationId, messageId, ... }) so a caller
+// that shows the thread can match what it just sent; existing callers ignore it.
 async function sendSms(phone, message) {
   const { apiKey, fromNumber } = ghlEnv();
   const e164 = normalizePhone(phone);
@@ -68,6 +70,48 @@ async function sendSms(phone, message) {
     body: JSON.stringify({ type: "SMS", contactId, fromNumber, message }),
   });
   if (!r.ok) throw new Error(`GHL send SMS -> ${r.status}: ${await r.text()}`);
+  const text = await r.text();
+  try { return text ? JSON.parse(text) : {}; } catch (_) { return {}; }
 }
 
-module.exports = { sendSms, normalizePhone, smsConfigured };
+// The SMS history GHL holds for a phone number — every text in or out,
+// including ones sent from the GHL app itself, which is why the buyers page
+// reads this rather than keeping its own ledger. Raw GHL message rows; the
+// caller normalizes them (lib/conversation.js). Returns { contactId,
+// conversationId, messages }. A number GHL has never seen yields an empty
+// thread rather than creating a contact — creation is the send path's job.
+async function fetchSmsThread(phone, { limit = 100 } = {}) {
+  const { apiKey, locationId } = ghlEnv();
+  const e164 = normalizePhone(phone);
+  if (!e164) return { contactId: null, conversationId: null, messages: [] };
+  const headers = { Authorization: `Bearer ${apiKey}`, Version: "2021-04-15" };
+
+  const dupUrl = `https://services.leadconnectorhq.com/contacts/search/duplicate?locationId=${encodeURIComponent(locationId)}&number=${encodeURIComponent(e164)}`;
+  const dr = await fetch(dupUrl, { headers: { ...headers, Version: "2021-07-28" } });
+  if (!dr.ok) throw new Error(`GHL contact lookup -> ${dr.status}: ${await dr.text()}`);
+  const dj = await dr.json();
+  const contactId = dj && dj.contact && dj.contact.id;
+  if (!contactId) return { contactId: null, conversationId: null, messages: [] };
+
+  const sr = await fetch(
+    `https://services.leadconnectorhq.com/conversations/search?locationId=${encodeURIComponent(locationId)}&contactId=${encodeURIComponent(contactId)}`,
+    { headers });
+  if (!sr.ok) throw new Error(`GHL conversations search -> ${sr.status}: ${await sr.text()}`);
+  const sj = await sr.json();
+  const convos = (sj && sj.conversations) || [];
+  if (!convos.length) return { contactId, conversationId: null, messages: [] };
+
+  const messages = [];
+  for (const c of convos) {
+    const mr = await fetch(
+      `https://services.leadconnectorhq.com/conversations/${encodeURIComponent(c.id)}/messages?limit=${limit}`,
+      { headers });
+    if (!mr.ok) throw new Error(`GHL messages -> ${mr.status}: ${await mr.text()}`);
+    const mj = await mr.json();
+    const rows = (mj && mj.messages && (Array.isArray(mj.messages) ? mj.messages : mj.messages.messages)) || [];
+    for (const m of rows) messages.push({ ...m, conversationId: m.conversationId || c.id });
+  }
+  return { contactId, conversationId: convos[0].id, messages };
+}
+
+module.exports = { sendSms, fetchSmsThread, ghlContactId, normalizePhone, smsConfigured };

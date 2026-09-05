@@ -76,6 +76,21 @@ duplicate buyers who each receive their own blast.
   that would silently exclude them from every deal, so it's dropped and re-asked rather than
   saved. Nothing wires into `onboard-buyers.js`: `dueTouch` already stops on
   `buyBoxCompleteness === 'full'`, so an answered form ends the email sequence by itself.
+- `buyer-messages.js` — the 💬 Text / ✉️ Email buttons on a buyer's card (buyers.html open a
+  conversation panel). `GET ?buyer_id=` returns the buyer's whole thread, both channels merged;
+  `POST {buyer_id, channel, body, subject?}` sends one text (GHL) or one email (Gmail, Resend
+  fallback, threaded onto the latest Gmail message via In-Reply-To + threadId). **History is
+  read live from the providers, not from a ledger of our own** — GHL's conversation for the
+  number (`fetchSmsThread` in `lib/ghl-sms.js`) and Gmail's messages to/from the address
+  (`lib/gmail.js`) — so texts sent from the GHL app and replies that never hit `ghl-inbound`
+  still show. Normalizing/merging/MIME is the pure `lib/conversation.js`
+  (`tests/conversation.test.js`). Every send logs a `buyer_activity` touch with channel
+  **`manual`** and a `📤` detail prefix — never `sms`/`email`, which `buildEngagement` scores
+  as *replies*; the test pins that. Compliance lives in the send path: a number on
+  `sms_suppressions` (replied STOP) and a hard-bounced address are refused; a buyer without
+  `sms_opt_in` CAN be texted one-to-one (a human replying is not a campaign) and the panel
+  says so. Nothing here reads `contacts`. If GHL returns 401/403 on the read, the panel says
+  the API token needs the Conversations read scopes.
 - `resend-events.js` — Resend webhook (svix-verified) for email opens/clicks/bounces/
   complaints → `email_events`, attributed via the buyer_id/card_id tags send-blast sets;
   complaints auto-set `email_opt_out`. Needs `RESEND_WEBHOOK_SECRET` + a webhook configured
@@ -188,7 +203,8 @@ the "Call today" strip from leads + recent deck views, and the follow-up nudge
 marked `[follow-up]` in `deal_blasts.detail` — that marker is what caps it at one per deal. Other cross-function helpers live in `netlify/functions/lib/` (`capture.js`,
 `deck-token.js`, `deck-photo.js`, `heartbeat.js`, `ghl-sms.js`, `unsub.js`,
 `interest-receipt.js`, `contact.js`, `buyer-intake.js`,
-`onboard-sequence.js`, `buy-box-form.js`, `deck-pdf.js`, `deal-address.js`). `unsub.js` owns both minting and verifying the unsubscribe token —
+`onboard-sequence.js`, `buy-box-form.js`, `deck-pdf.js`, `deal-address.js`, `gmail.js`,
+`conversation.js`). `unsub.js` owns both minting and verifying the unsubscribe token —
 they must agree or live links in already-sent email break (pinned in `tests/unsub.test.js`).
 
 **The Deal Deck Address override lives on the STRUCTURE table** — `morby_deals`

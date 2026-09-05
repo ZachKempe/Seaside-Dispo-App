@@ -118,8 +118,11 @@ function buildEngagement(activity, dViews, dLeads, eEvents, propNames, buyers) {
       bump(a.buyer_id, "reply"); touch(a.buyer_id, a.created_at);
       log(a.buyer_id, "💬", `Replied by ${a.channel}${dealName(a.card_id, a.address)}${a.detail ? ` — “${a.detail.slice(0, 80)}”` : ""}`, a.created_at);
     } else {
-      // manual/note = our outbound touch; shown in the timeline, not scored
-      log(a.buyer_id, "📝", a.detail ? a.detail.slice(0, 100) : "Activity logged", a.created_at);
+      // manual/note = our outbound touch; shown in the timeline, not scored.
+      // "📤 …" is a text/email sent from the conversation panel
+      // (buyer-messages.js) — same channel, its own icon.
+      const sent = /^📤\s*/.test(a.detail || "");
+      log(a.buyer_id, sent ? "📤" : "📝", a.detail ? a.detail.replace(/^📤\s*/, "").slice(0, 100) : "Activity logged", a.created_at);
     }
   }
   for (const l of dLeads) {
@@ -440,7 +443,8 @@ function renderDetail() {
       </div>
       <div style="display:flex;gap:8px;flex-shrink:0">
         ${b.phone ? `<a class="btn btn-primary btn-sm" href="tel:${escapeHtml(tel)}">📞 Call</a>` : ""}
-        ${b.phone ? `<a class="btn btn-ghost btn-sm" href="sms:${escapeHtml(tel)}">📱 Text</a>` : ""}
+        ${b.phone ? `<button class="btn btn-ghost btn-sm" id="detail-text" title="Text ${escapeHtml(b.name)} from here — the whole SMS thread opens">💬 Text</button>` : ""}
+        ${b.email ? `<button class="btn btn-ghost btn-sm" id="detail-email" title="Email ${escapeHtml(b.name)} from here — the whole email history opens">✉️ Email</button>` : ""}
         <button class="btn btn-ghost btn-sm" id="detail-edit">Edit</button>
       </div>
     </div>
@@ -513,6 +517,10 @@ function renderDetail() {
     </div>`;
 
   document.getElementById("detail-edit").addEventListener("click", () => openModal(b));
+  const textBtn = document.getElementById("detail-text");
+  if (textBtn) textBtn.addEventListener("click", () => openConvo(b, "sms"));
+  const emailBtn = document.getElementById("detail-email");
+  if (emailBtn) emailBtn.addEventListener("click", () => openConvo(b, "email"));
   document.getElementById("detail-log").addEventListener("click", () => logActivity(b));
   document.getElementById("detail-remove").addEventListener("click", () => removeBuyer(b));
   document.getElementById("detail-tier").addEventListener("click", async () => {
@@ -744,6 +752,250 @@ async function runImport() {
   alert(`Imported ${added} new buyer${added === 1 ? "" : "s"}.` + (failed ? ` ${failed} failed — check console.` : ""));
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Conversation panel — text or email ONE buyer from their card, with the
+// whole history in view. History is live from the providers via
+// /.netlify/functions/buyer-messages (GoHighLevel for texts, Gmail for
+// email), so texts sent from the GHL app and replies that never hit our
+// webhook show up too. Sends log a 📤 buyer_activity touch server-side; we
+// mirror it locally so the card's timeline and "Last contacted" update
+// without a reload.
+// ─────────────────────────────────────────────────────────────────────
+const convo = { buyer: null, channel: "sms", filter: "", data: null, timer: null, sending: false, pending: [] };
+const CONVO_POLL_MS = 20000;
+
+async function convoFetch(method, params) {
+  const { data: { session } } = await supa.auth.getSession();
+  if (!session) throw new Error("Not signed in.");
+  const url = "/.netlify/functions/buyer-messages" + (method === "GET" ? `?buyer_id=${params.buyer_id}` : "");
+  const r = await fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+    body: method === "GET" ? undefined : JSON.stringify(params),
+  });
+  const out = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
+  return out;
+}
+
+function openConvo(b, channel) {
+  convo.buyer = b;
+  convo.channel = channel === "email" && b.email ? "email" : b.phone ? "sms" : "email";
+  convo.filter = "";
+  convo.data = null;
+  convo.pending = [];
+  document.getElementById("convo-name").textContent = b.name || "Buyer";
+  document.getElementById("convo-contact").innerHTML =
+    (b.phone ? `<span>📞 ${escapeHtml(b.phone)}</span>` : "") +
+    (b.email ? `<span>✉️ ${escapeHtml(b.email)}</span>` : "");
+  document.getElementById("convo-notes").innerHTML = "";
+  document.getElementById("convo-thread").innerHTML = `<div class="loading" style="padding:40px 0"><div class="spinner"></div>Loading conversation…</div>`;
+  document.getElementById("convo-body").value = "";
+  document.getElementById("convo-subject").value = "";
+  document.querySelectorAll("#convo-filter button").forEach(x => x.classList.toggle("active", x.dataset.f === ""));
+  syncConvoChannel();
+  document.getElementById("convo-backdrop").classList.remove("hidden");
+  loadConvo();
+  clearInterval(convo.timer);
+  convo.timer = setInterval(() => { if (!convo.sending) loadConvo({ quiet: true }); }, CONVO_POLL_MS);
+  setTimeout(() => document.getElementById("convo-body").focus(), 50);
+}
+
+function closeConvo() {
+  clearInterval(convo.timer);
+  convo.timer = null;
+  document.getElementById("convo-backdrop").classList.add("hidden");
+  convo.buyer = null;
+  renderDetail(); // picks up any 📤 touches mirrored during the session
+}
+
+async function loadConvo({ quiet = false } = {}) {
+  const b = convo.buyer;
+  if (!b) return;
+  try {
+    const data = await convoFetch("GET", { buyer_id: b.id });
+    if (!convo.buyer || convo.buyer.id !== b.id) return; // panel moved on
+    // Drop optimistic bubbles the provider now reports — by id, or by the
+    // same outbound text landing within a few minutes (GHL's send response
+    // and its conversation listing don't always agree on the message id).
+    const msgs = data.messages || [];
+    const ids = new Set(msgs.map(m => m.id));
+    const echoed = (p) => msgs.some(m => m.direction === "out" && m.channel === p.channel && m.body === p.body
+      && Math.abs(new Date(m.at) - new Date(p.at)) < 10 * 60e3);
+    convo.pending = convo.pending.filter(m => !ids.has(m.id) && !echoed(m) && (Date.now() - new Date(m.at).getTime()) < 5 * 60e3);
+    convo.data = data;
+    renderConvo();
+  } catch (e) {
+    if (quiet) return;
+    document.getElementById("convo-thread").innerHTML = `<div class="convo-empty">Couldn't load the conversation.<br><span style="color:var(--red)">${escapeHtml(e.message)}</span></div>`;
+  }
+}
+
+// Which composer channel is selected — and whether each is even possible
+// for this buyer. Subject only shows for email.
+function syncConvoChannel() {
+  const b = convo.buyer || {};
+  const d = convo.data || {};
+  document.querySelectorAll("#convo-channel button").forEach(btn => {
+    const ch = btn.dataset.ch;
+    const possible = ch === "sms" ? !!b.phone : !!b.email;
+    btn.disabled = !possible;
+    btn.classList.toggle("active", ch === convo.channel);
+    btn.title = possible ? "" : (ch === "sms" ? "No phone on file" : "No email on file");
+  });
+  const isEmail = convo.channel === "email";
+  const subj = document.getElementById("convo-subject");
+  subj.classList.toggle("hidden", !isEmail);
+  if (isEmail && !subj.value && d.email && d.email.subject) subj.value = d.email.subject;
+  document.getElementById("convo-body").placeholder = isEmail ? "Write your email…" : "Type a text…";
+  document.getElementById("convo-send").textContent = isEmail ? "Send email" : "Send text";
+  updateConvoCount();
+}
+
+function updateConvoCount() {
+  const n = document.getElementById("convo-body").value.length;
+  const el = document.getElementById("convo-count");
+  if (convo.channel === "sms") {
+    const segs = n <= 160 ? 1 : Math.ceil(n / 153);
+    el.textContent = n ? `${n} chars · ${segs} segment${segs === 1 ? "" : "s"}` : "";
+    el.style.color = n > 1000 ? "var(--red)" : "";
+  } else el.textContent = "";
+}
+
+function fmtWhen(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const t = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return d.toDateString() === new Date().toDateString() ? t : `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${t}`;
+}
+function dayLabel(iso) {
+  const d = new Date(iso), now = new Date();
+  if (d.toDateString() === now.toDateString()) return "Today";
+  const y = new Date(now); y.setDate(now.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return "Yesterday";
+  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: d.getFullYear() === now.getFullYear() ? undefined : "numeric" });
+}
+function linkify(escaped) {
+  return escaped.replace(/(https?:\/\/[^\s<]+)/g, u => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
+}
+
+function renderConvo() {
+  const d = convo.data;
+  const b = convo.buyer;
+  if (!d || !b) return;
+
+  // Consent / deliverability notes and provider errors — the send path
+  // enforces the hard ones; these just say why before the buyer sees a
+  // half-working panel.
+  const notes = [];
+  if (b.phone && d.buyer.sms_suppressed) notes.push({ cls: "err", text: "🚫 This number replied STOP — texting it from here is blocked." });
+  else if (b.phone && !d.buyer.sms_opt_in) notes.push({ text: "📱 No SMS opt-in on file — one-to-one replies only; blasts skip this buyer." });
+  if (b.email && d.buyer.email_bounced) notes.push({ cls: "err", text: "⚠️ Their email hard-bounced — this address is dead. Emails from here are blocked until it's updated." });
+  else if (b.email && d.buyer.email_opt_out) notes.push({ text: "✉️ Unsubscribed from deal blasts — a direct reply is fine, marketing isn't." });
+  if (b.phone && d.sms && !d.sms.ok) notes.push({ cls: "err", text: d.sms.error || "Texts couldn't be loaded." });
+  if (b.email && d.email && !d.email.ok) notes.push({ cls: "err", text: d.email.error || "Emails couldn't be loaded." });
+  document.getElementById("convo-notes").innerHTML = notes.map(n =>
+    `<div class="convo-note ${n.cls || ""}">${escapeHtml(n.text)}</div>`).join("");
+
+  const all = [...(d.messages || []), ...convo.pending].sort((x, y) => new Date(x.at) - new Date(y.at));
+  const list = convo.filter ? all.filter(m => m.channel === convo.filter) : all;
+  const thread = document.getElementById("convo-thread");
+  if (!list.length) {
+    const what = convo.filter === "sms" ? "texts" : convo.filter === "email" ? "emails" : "messages";
+    thread.innerHTML = `<div class="convo-empty">No ${what} with ${escapeHtml(b.name)} yet.<br>Whatever you send below starts the thread.</div>`;
+  } else {
+    let lastDay = "";
+    thread.innerHTML = list.map(m => {
+      const day = new Date(m.at).toDateString();
+      const sep = day !== lastDay ? `<div class="convo-day">${escapeHtml(dayLabel(m.at))}</div>` : "";
+      lastDay = day;
+      const who = m.direction === "in" ? (b.name || "Buyer").split(" ")[0] : "You";
+      const chan = m.channel === "sms" ? "text" : "email";
+      const status = m.pending ? " · sending…" : m.status === "failed" || m.status === "undelivered" ? ` · <span style="color:var(--red)">${escapeHtml(m.status)}</span>` : "";
+      return `${sep}<div class="convo-msg ${m.direction} ${m.channel} ${m.pending ? "pending" : ""}">
+        <div class="convo-bubble">${m.channel === "email" && m.subject ? `<div class="convo-subject">${escapeHtml(m.subject)}</div>` : ""}${linkify(escapeHtml(m.body))}</div>
+        <div class="convo-meta">${escapeHtml(who)} · ${chan} · ${escapeHtml(fmtWhen(m.at))}${status}</div>
+      </div>`;
+    }).join("");
+    thread.scrollTop = thread.scrollHeight;
+  }
+  syncConvoChannel();
+}
+
+async function sendConvo() {
+  const b = convo.buyer;
+  if (!b || convo.sending) return;
+  const bodyEl = document.getElementById("convo-body");
+  const body = bodyEl.value.trim();
+  if (!body) { bodyEl.focus(); return; }
+  const channel = convo.channel;
+  const payload = { buyer_id: b.id, channel, body };
+  if (channel === "email") {
+    payload.subject = document.getElementById("convo-subject").value.trim();
+    const e = (convo.data && convo.data.email) || {};
+    // Thread onto the existing Gmail conversation when there is one.
+    if (e.thread_id) { payload.thread_id = e.thread_id; payload.in_reply_to = e.in_reply_to; payload.references = e.references; }
+  }
+  const optimistic = { id: `pending-${Date.now()}`, channel, direction: "out", body, subject: payload.subject || "", at: new Date().toISOString(), pending: true };
+  convo.pending.push(optimistic);
+  convo.sending = true;
+  const sendBtn = document.getElementById("convo-send");
+  sendBtn.disabled = true;
+  bodyEl.value = "";
+  renderConvo();
+  try {
+    const res = await convoFetch("POST", payload);
+    convo.pending = convo.pending.filter(m => m !== optimistic);
+    if (res.message) convo.pending.push(res.message);
+    // Mirror the server-side 📤 touch so the card updates without a reload.
+    const detail = channel === "sms" ? `📤 Texted: “${body.slice(0, 140)}”` : `📤 Emailed: “${(payload.subject || "(no subject)").slice(0, 120)}”`;
+    lastContactByBuyer[b.id] = optimistic.at;
+    (engByBuyer[b.id] ||= { score: 0, counts: {}, lastTouchAt: null, events: [] })
+      .events.unshift({ icon: "📤", label: detail.replace(/^📤\s*/, ""), at: optimistic.at });
+    toast(channel === "sms" ? "Text sent." : `Email sent${res.message && res.message.provider === "resend" ? " (via Resend)" : ""}.`, { type: "success" });
+    renderConvo();
+    // The provider usually shows the new message within a second or two.
+    setTimeout(() => loadConvo({ quiet: true }), 2500);
+  } catch (e) {
+    convo.pending = convo.pending.filter(m => m !== optimistic);
+    bodyEl.value = body; // give them their draft back
+    toast(`Couldn't send: ${e.message}`, { type: "error", duration: 7000 });
+    renderConvo();
+  } finally {
+    convo.sending = false;
+    sendBtn.disabled = false;
+    bodyEl.focus();
+  }
+}
+
+function wireConvo() {
+  document.getElementById("convo-close").addEventListener("click", closeConvo);
+  document.getElementById("convo-backdrop").addEventListener("click", e => { if (e.target.id === "convo-backdrop") closeConvo(); });
+  document.getElementById("convo-refresh").addEventListener("click", () => loadConvo());
+  document.getElementById("convo-filter").addEventListener("click", e => {
+    const btn = e.target.closest("button[data-f]");
+    if (!btn) return;
+    convo.filter = btn.dataset.f;
+    document.querySelectorAll("#convo-filter button").forEach(x => x.classList.toggle("active", x === btn));
+    renderConvo();
+  });
+  document.getElementById("convo-channel").addEventListener("click", e => {
+    const btn = e.target.closest("button[data-ch]");
+    if (!btn || btn.disabled) return;
+    convo.channel = btn.dataset.ch;
+    syncConvoChannel();
+    document.getElementById("convo-body").focus();
+  });
+  document.getElementById("convo-body").addEventListener("input", updateConvoCount);
+  document.getElementById("convo-body").addEventListener("keydown", e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); sendConvo(); }
+  });
+  document.getElementById("convo-form").addEventListener("submit", e => { e.preventDefault(); sendConvo(); });
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && !document.getElementById("convo-backdrop").classList.contains("hidden")) closeConvo();
+  });
+}
+
 // ── Onboarding buy-box request ──
 async function callOnboard(payload) {
   const { data: { session } } = await supa.auth.getSession();
@@ -836,6 +1088,7 @@ function closeImport() { document.getElementById("import-backdrop").classList.ad
   document.getElementById("import-btn").addEventListener("click", () => { openImport(); closeTools(); });
   document.getElementById("onboard-btn").addEventListener("click", () => { closeTools(); onboardBuyers(); });
 
+  wireConvo();
   document.getElementById("modal-cancel").addEventListener("click", closeModal);
   document.getElementById("modal-backdrop").addEventListener("click", e => { if (e.target.id === "modal-backdrop") closeModal(); });
 

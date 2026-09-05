@@ -220,6 +220,42 @@
     </div>
   </div>
 
+  <!-- ── Conversation: text / email one buyer, with the whole history ── -->
+  <div id="convo-backdrop" class="hidden modal-backdrop modal-backdrop-padded">
+    <div class="card convo-card">
+      <div class="convo-head">
+        <div style="min-width:0">
+          <div class="convo-name" id="convo-name"></div>
+          <div class="convo-contact" id="convo-contact"></div>
+        </div>
+        <div class="flex gap-8" style="align-items:center;flex-shrink:0">
+          <div class="convo-filter" id="convo-filter">
+            <button type="button" data-f="" class="active">All</button>
+            <button type="button" data-f="sms">Texts</button>
+            <button type="button" data-f="email">Emails</button>
+          </div>
+          <button type="button" class="btn btn-ghost btn-sm" id="convo-refresh" title="Refresh the thread">↻</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="convo-close" title="Close">✕</button>
+        </div>
+      </div>
+      <div id="convo-notes"></div>
+      <div class="convo-thread" id="convo-thread"><div class="loading" style="padding:40px 0"><div class="spinner"></div>Loading conversation…</div></div>
+      <form class="convo-compose" id="convo-form" autocomplete="off">
+        <div class="convo-channel" id="convo-channel">
+          <button type="button" data-ch="sms">💬 Text</button>
+          <button type="button" data-ch="email">✉️ Email</button>
+        </div>
+        <input id="convo-subject" class="hidden" placeholder="Subject">
+        <textarea id="convo-body" rows="3" placeholder="Type a text…"></textarea>
+        <div class="convo-compose-foot">
+          <span class="muted" id="convo-count" style="font-size:0.76rem"></span>
+          <span class="muted" style="font-size:0.72rem;margin-left:auto;margin-right:10px">⌘/Ctrl + Enter to send</span>
+          <button type="submit" class="btn btn-primary btn-sm" id="convo-send">Send text</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <script src="/js/supa.js"></script>
   <script src="/js/deal-shared.js"></script>
   <script src="/js/ui-shared.js"></script>

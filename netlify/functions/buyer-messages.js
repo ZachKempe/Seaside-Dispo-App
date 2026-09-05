@@ -36,13 +36,22 @@ const gmail = require("./lib/gmail");
 const {
   normalizeGhlMessage, normalizeGmailMessage, mergeThread, latestEmail,
   replySubject, buildMime, base64Url, textToHtml,
-  toLedgerRow, fromLedgerRow, splitId, gmailQuery,
+  toLedgerRow, fromLedgerRow, splitId, gmailQuery, parseMailbox,
 } = require("./lib/conversation");
 const { fetchAllRows } = require("./lib/fetch-all");
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const RESEND_FROM = process.env.RESEND_FROM || "";
 const NOTIFY_EMAIL = process.env.NOTIFY_EMAIL || process.env.GMAIL_FROM_ADDRESS || "";
+// Who a one-to-one email is from. Defaults to the blast identity (RESEND_FROM,
+// "Seaside Horizon <deals@seasidehorizon.com>") so a buyer sees one sender
+// across blasts and replies; DIRECT_EMAIL_FROM overrides the name/address.
+// The Gmail API only honors a From that is a verified "Send mail as" alias of
+// the mailbox — otherwise it silently rewrites it to the mailbox's own
+// address — so deals@ has to be added under Gmail → Settings → Accounts.
+// deals@ already delivers into that mailbox (blast replies are captured from
+// it), which is what makes the alias route the right one.
+const DIRECT_EMAIL_FROM = process.env.DIRECT_EMAIL_FROM || RESEND_FROM || "";
 
 const SMS_MAX = 1000;     // ~7 segments; anything longer is an email
 const EMAIL_MAX = 20000;
@@ -54,7 +63,7 @@ const json = (statusCode, body) => ({
 // Addresses that mean "us" when classifying an email's direction.
 function ourAddresses() {
   const { fromAddress, replyTo } = gmail.gmailEnv();
-  return [fromAddress, replyTo, RESEND_FROM, NOTIFY_EMAIL].filter(Boolean);
+  return [fromAddress, replyTo, RESEND_FROM, NOTIFY_EMAIL, DIRECT_EMAIL_FROM].filter(Boolean);
 }
 
 async function loadBuyer(id) {
@@ -233,8 +242,14 @@ async function sendEmail(buyer, { body, subject, thread_id, in_reply_to, referen
   if (gmail.gmailConfigured()) {
     const env = gmail.gmailEnv();
     const token = await gmail.gmailAccessToken();
+    const direct = parseMailbox(DIRECT_EMAIL_FROM);
+    const fromAddress = direct.address || env.fromAddress;
+    const fromName = direct.name || env.fromName;
+    // Reply-To only when it differs from the sender; deals@ already lands in
+    // this mailbox, so a bare From threads replies back here by itself.
+    const replyTo = env.replyTo && env.replyTo.toLowerCase() !== fromAddress ? env.replyTo : "";
     const raw = base64Url(buildMime({
-      fromName: env.fromName, fromAddress: env.fromAddress, to, replyTo: env.replyTo,
+      fromName, fromAddress, to, replyTo,
       subject, text: body, inReplyTo: in_reply_to || "", references: references || "",
     }));
     const r = await gmail.sendRaw(token, raw, thread_id || undefined);
@@ -264,7 +279,8 @@ async function sendEmail(buyer, { body, subject, thread_id, in_reply_to, referen
   await logTouch(buyer.id, `📤 Emailed: “${subject.slice(0, 120)}”`);
   const message = {
     id, channel: "email", direction: "out", body, subject, at: new Date().toISOString(),
-    status: "sent", from: gmail.gmailEnv().fromAddress || RESEND_FROM, thread_id: threadId, message_id: "", provider,
+    status: "sent", from: provider === "gmail" ? (parseMailbox(DIRECT_EMAIL_FROM).address || gmail.gmailEnv().fromAddress) : RESEND_FROM,
+    thread_id: threadId, message_id: "", provider,
   };
   await saveToLedger(buyer.id, [message]);
   return message;

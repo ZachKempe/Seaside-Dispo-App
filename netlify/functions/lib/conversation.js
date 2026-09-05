@@ -124,6 +124,15 @@ function stripQuotedReply(text) {
   return firstLine;
 }
 
+// "Zach | Seaside Horizon <deals@x.com>" → { name, address }; a bare address
+// has an empty name.
+function parseMailbox(headerValue) {
+  const v = String(headerValue || "").trim();
+  const m = v.match(/^\s*"?([^"<]*?)"?\s*<([^<>]+)>\s*$/);
+  if (m) return { name: m[1].trim(), address: m[2].trim().toLowerCase() };
+  return { name: "", address: v.includes("@") ? v.toLowerCase() : "" };
+}
+
 function addressOf(headerValue) {
   const m = String(headerValue || "").match(/<([^<>]+)>/);
   const addr = (m ? m[1] : String(headerValue || "")).trim().toLowerCase();
@@ -323,7 +332,7 @@ function toIso(d) {
 
 module.exports = {
   isGhlSms, normalizeGhlMessage,
-  normalizeGmailMessage, extractBody, stripQuotedReply, htmlToText, addressOf, addressesOf,
+  normalizeGmailMessage, extractBody, stripQuotedReply, htmlToText, addressOf, addressesOf, parseMailbox,
   mergeThread, isEcho, latestEmail, replySubject,
   toLedgerRow, fromLedgerRow, splitId, gmailQuery,
   textToHtml, buildMime, base64Url,

@@ -312,7 +312,11 @@ Push to `main` deploys via Netlify. Key env vars (set in Netlify): `SUPABASE_URL
 `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `RESEND_API_KEY`, `RESEND_FROM`,
 `GMAIL_*` (fallback sender + reply capture), `GHL_*` (SMS),
 `ANTHROPIC_API_KEY` (LOI/contract parsing + copy generation), `PUBLIC_SITE_URL`, `UNSUB_SECRET`, `DECK_TOKEN_SECRET`,
-`NOTIFY_EMAIL` (interest + sync-failure alerts), `GOOGLE_MAPS_API_KEY` (deck photo fallback),
+`NOTIFY_EMAIL` (interest + sync-failure alerts), `DIRECT_EMAIL_FROM` (**optional**: who a
+one-to-one email from the buyer conversation panel is from; defaults to `RESEND_FROM` so
+buyers see the same `deals@` sender as the blasts — the Gmail API only honors it once
+`deals@` is a verified "Send mail as" alias of the mailbox, otherwise it silently rewrites
+the From to `zach@`), `GOOGLE_MAPS_API_KEY` (deck photo fallback),
 `CAPTURE_WEBHOOK_SECRET` (GHL webhook), `CALENDLY_URL` (**optional** override for the
 booking button on the deck-page interest receipt — `lib/interest-receipt.js` hardcodes
 `DEFAULT_CALENDLY_URL` as the fallback, so the button renders whether or not this is set.

@@ -140,6 +140,18 @@ test("latestEmail + replySubject pick what a reply threads onto", () => {
   assert.equal(C.latestEmail([{ id: "ghl:1", channel: "sms" }]), null);
 });
 
+test("parseMailbox splits a display name from its address", () => {
+  assert.deepEqual(C.parseMailbox("Zach | Seaside Horizon <Deals@SeasideHorizon.com>"), { name: "Zach | Seaside Horizon", address: "deals@seasidehorizon.com" });
+  assert.deepEqual(C.parseMailbox('"Seaside Horizon" <deals@seasidehorizon.com>'), { name: "Seaside Horizon", address: "deals@seasidehorizon.com" });
+  assert.deepEqual(C.parseMailbox("deals@seasidehorizon.com"), { name: "", address: "deals@seasidehorizon.com" });
+  assert.deepEqual(C.parseMailbox(""), { name: "", address: "" });
+});
+
+test("one-to-one emails default to the blast identity, and Reply-To is dropped when it IS the sender", () => {
+  assert.ok(/DIRECT_EMAIL_FROM\s*=\s*process\.env\.DIRECT_EMAIL_FROM \|\| RESEND_FROM/.test(FN), "falls back to RESEND_FROM so buyers see one sender");
+  assert.ok(/replyTo\.toLowerCase\(\) !== fromAddress \? env\.replyTo : ""/.test(FN));
+});
+
 // ── Outbound MIME ────────────────────────────────────────────────
 test("buildMime threads onto the prior message and carries both text and html", () => {
   const raw = C.buildMime({

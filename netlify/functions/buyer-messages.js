@@ -43,15 +43,16 @@ const { fetchAllRows } = require("./lib/fetch-all");
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const RESEND_FROM = process.env.RESEND_FROM || "";
 const NOTIFY_EMAIL = process.env.NOTIFY_EMAIL || process.env.GMAIL_FROM_ADDRESS || "";
-// Who a one-to-one email is from. Defaults to the blast identity (RESEND_FROM,
-// "Seaside Horizon <deals@seasidehorizon.com>") so a buyer sees one sender
-// across blasts and replies; DIRECT_EMAIL_FROM overrides the name/address.
-// The Gmail API only honors a From that is a verified "Send mail as" alias of
-// the mailbox — otherwise it silently rewrites it to the mailbox's own
-// address — so deals@ has to be added under Gmail → Settings → Accounts.
-// deals@ already delivers into that mailbox (blast replies are captured from
-// it), which is what makes the alias route the right one.
-const DIRECT_EMAIL_FROM = process.env.DIRECT_EMAIL_FROM || RESEND_FROM || "";
+// Who a one-to-one email is from. Blasts are the brand ("Seaside Horizon
+// <deals@…>", RESEND_FROM); a personal reply is a person, so this defaults
+// to the Gmail identity — the mailbox the reply will actually come back to —
+// and DIRECT_EMAIL_FROM (production: "Zach Kempe <zach@seasidehorizon.com>")
+// sets the exact name. The Gmail API only honors a From address that is the
+// mailbox or one of its verified "Send mail as" aliases; anything else is
+// silently rewritten, which is why this must stay on zach@ until deals@
+// exists as an alias of that account.
+const DIRECT_EMAIL_FROM = process.env.DIRECT_EMAIL_FROM
+  || (process.env.GMAIL_FROM_ADDRESS ? `${process.env.GMAIL_FROM_NAME || "Seaside Horizon"} <${process.env.GMAIL_FROM_ADDRESS}>` : "");
 
 const SMS_MAX = 1000;     // ~7 segments; anything longer is an email
 const EMAIL_MAX = 20000;

@@ -183,7 +183,8 @@ async function sendViaResend(to, subject, html) {
   const r = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from: RESEND_FROM, to: [to], subject, html }),
+    // Reply-To for the same reason as blast-core: deals@ isn't a watched inbox.
+    body: JSON.stringify({ from: RESEND_FROM, to: [to], subject, html, reply_to: GMAIL_REPLY_TO || undefined }),
   });
   if (!r.ok) throw new Error(`Resend -> ${r.status}: ${await r.text()}`);
 }

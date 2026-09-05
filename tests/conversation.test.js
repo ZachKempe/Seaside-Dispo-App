@@ -147,9 +147,20 @@ test("parseMailbox splits a display name from its address", () => {
   assert.deepEqual(C.parseMailbox(""), { name: "", address: "" });
 });
 
-test("one-to-one emails default to the blast identity, and Reply-To is dropped when it IS the sender", () => {
-  assert.ok(/DIRECT_EMAIL_FROM\s*=\s*process\.env\.DIRECT_EMAIL_FROM \|\| RESEND_FROM/.test(FN), "falls back to RESEND_FROM so buyers see one sender");
+test("one-to-one emails come from the Gmail identity (a person), blasts from the brand; Reply-To dropped when it IS the sender", () => {
+  assert.ok(/DIRECT_EMAIL_FROM\s*=\s*process\.env\.DIRECT_EMAIL_FROM\s*\|\|\s*\(process\.env\.GMAIL_FROM_ADDRESS/.test(FN), "personal email must not default to RESEND_FROM (deals@) — Gmail would rewrite it anyway");
   assert.ok(/replyTo\.toLowerCase\(\) !== fromAddress \? env\.replyTo : ""/.test(FN));
+});
+
+test("every Resend send from deals@ carries a Reply-To into a watched inbox", () => {
+  // deals@ delivers to no mailbox we read. Without reply_to, a buyer's reply
+  // to a blast vanishes and capture-replies.js never sees it.
+  for (const f of ["lib/blast-core.js", "onboard-buyers.js"]) {
+    const src = fs.readFileSync(path.join(__dirname, "..", "netlify", "functions", f), "utf8");
+    const start = src.indexOf("async function sendViaResend");
+    const resendCall = src.slice(start, src.indexOf("\n}", start));
+    assert.ok(/reply_to:\s*GMAIL_REPLY_TO/.test(resendCall), `${f}: sendViaResend must set reply_to: GMAIL_REPLY_TO`);
+  }
 });
 
 // ── Outbound MIME ────────────────────────────────────────────────

@@ -247,6 +247,11 @@ async function sendViaResend(to, subject, html, unsubUrl, attachments, tags) {
     to: [to],
     subject,
     html,
+    // Blasts are FROM deals@, but nothing delivers deals@ into a mailbox we
+    // read: a buyer hitting Reply on a blast was writing into a void, and
+    // capture-replies.js (which polls GMAIL_FROM_ADDRESS's inbox) never saw
+    // it. Reply-To sends those replies to the inbox that is actually watched.
+    reply_to: GMAIL_REPLY_TO || undefined,
     headers: unsubUrl ? {
       "List-Unsubscribe": `<${unsubUrl}>`,
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",

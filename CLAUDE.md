@@ -312,16 +312,30 @@ Push to `main` deploys via Netlify. Key env vars (set in Netlify): `SUPABASE_URL
 `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `RESEND_API_KEY`, `RESEND_FROM`,
 `GMAIL_*` (fallback sender + reply capture), `GHL_*` (SMS),
 `ANTHROPIC_API_KEY` (LOI/contract parsing + copy generation), `PUBLIC_SITE_URL`, `UNSUB_SECRET`, `DECK_TOKEN_SECRET`,
-`NOTIFY_EMAIL` (interest + sync-failure alerts), `DIRECT_EMAIL_FROM` (**optional**: who a
-one-to-one email from the buyer conversation panel is from; defaults to `RESEND_FROM` so
-buyers see the same `deals@` sender as the blasts — the Gmail API only honors it once
-`deals@` is a verified "Send mail as" alias of the mailbox, otherwise it silently rewrites
-the From to `zach@`), `GOOGLE_MAPS_API_KEY` (deck photo fallback),
+`NOTIFY_EMAIL` (interest + sync-failure alerts), `DIRECT_EMAIL_FROM` (who a one-to-one
+email from the buyer conversation panel is from — production: `Zach Kempe
+<zach@seasidehorizon.com>`; defaults to the Gmail identity. **Blasts are the brand
+(`RESEND_FROM`, deals@); personal emails are a person (zach@)** — a deliberate split. The
+Gmail API only honors a From that is the mailbox or a verified "Send mail as" alias, so
+this cannot be deals@ until deals@ exists as an alias of that account), `GOOGLE_MAPS_API_KEY`
+(deck photo fallback),
 `CAPTURE_WEBHOOK_SECRET` (GHL webhook), `CALENDLY_URL` (**optional** override for the
 booking button on the deck-page interest receipt — `lib/interest-receipt.js` hardcodes
 `DEFAULT_CALENDLY_URL` as the fallback, so the button renders whether or not this is set.
 Relying on the env var alone silently stripped the button from live receipts once, because
 Netlify only injects env vars into functions at deploy time).
+
+### deals@seasidehorizon.com is a sender, not a mailbox (verified 2026-09-05)
+
+`RESEND_FROM` is `Seaside Horizon <deals@seasidehorizon.com>`, but Resend only needs DNS for
+that — nothing delivers mail *to* deals@ into any inbox we read (zach@'s Gmail has never
+received a message addressed to it, and a Gmail "Send mail as" confirmation sent there never
+arrived). Consequences, both handled in code: **every Resend send sets `reply_to:
+GMAIL_REPLY_TO`** (blast-core + onboard-buyers; deck-interest already used `NOTIFY_EMAIL`), so
+a buyer's reply lands in the inbox `capture-replies.js` polls and the conversation panel
+reads — until that fix, replies to Resend-era blasts went nowhere; and the panel's personal
+emails send as zach@, not deals@. `tests/conversation.test.js` pins the reply_to. If deals@
+is ever made a real alias of zach@ in Google Workspace Admin, both constraints lift.
 
 ### Env vars are per-context — deploy previews cannot send email
 

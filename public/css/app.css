@@ -435,6 +435,10 @@ tr:hover td { background: #FAFBFC; }
 .tier-pill-sm { font-weight: 700; border-radius: 999px; padding: 1px 8px; font-size: 0.62rem; white-space: nowrap; }
 .chip-market { background: #DBEAFE; color: var(--navy); font-size: 0.66rem; font-weight: 600; border-radius: 999px; padding: 1px 8px; }
 .chip-strat  { background: #EDF2F7; color: var(--text-2); font-size: 0.66rem; font-weight: 600; border-radius: 999px; padding: 1px 8px; }
+.chip-proptype { background: #FEFCBF; color: #744210; font-size: 0.66rem; font-weight: 600; border-radius: 999px; padding: 1px 8px; }
+.proptype-pill { background: #fff; color: var(--text-2); border: 1px solid var(--border); font: inherit; font-size: 0.78rem; font-weight: 600; border-radius: 999px; padding: 3px 12px; cursor: pointer; }
+.proptype-pill:hover { border-color: var(--navy); }
+.proptype-pill.on { background: var(--navy); border-color: var(--navy); color: #fff; }
 .match-badge { display: inline-block; min-width: 42px; text-align: center; font-weight: 700; font-size: 0.74rem; border-radius: 999px; padding: 3px 8px; }
 .match-green { background: #C6F6D5; color: var(--green); }
 .match-amber { background: #FEEBC8; color: var(--amber); }

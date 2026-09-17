@@ -4,16 +4,21 @@ let lastContactByBuyer = {};
 // ── Master–detail + matcher state (client-side only) ──
 let selectedId = null;
 let matchActive = false;
-let deal = { state: "", price: "", strategy: "" };
+let deal = { state: "", price: "", strategy: "", propType: "" };
 // Buy-box completeness filter (B4.1): "" = everyone, or one of the
 // DealShared.buyBoxCompleteness buckets. View-only — it narrows the list on
 // screen and nothing else. Blast audiences are unaffected.
 let boxFilter = "";
+// Property-type filter: "" = everyone, a PROPERTY_TYPES key, or "none" for
+// buyers with no type set. View-only, like boxFilter.
+let typeFilter = "";
 const MATCH_THRESHOLD = 70;   // "strong match" cutoff
 // Do the structured buy-box columns (migration 024) exist yet? Detected
 // from the loaded rows; until then close speed/status/asset are parsed
 // out of the notes text.
 let hasBuyboxCols = false;
+// buyers.property_types (migration 038). Until it runs the pills are hidden.
+let hasPropTypeCol = false;
 
 const TIER_INFO = {
   A: { label: "Hot",  cls: "tier-hot"  },
@@ -38,6 +43,18 @@ function phoneHref(b) { return (b.phone || "").replace(/[^\d+]/g, ""); }
 const STRATEGY_LABELS = { subto: "Subject To", owner_finance: "Owner Finance", cash: "Cash", morby: "Morby/Stack", all: "All" };
 function buyerStrategies(s) {
   return String(s || "").toLowerCase().split(",").map(x => x.trim()).filter(Boolean);
+}
+
+// Property types a buyer wants, stored comma-separated in `property_types`
+// (038). Empty = no preference. Buyers-page only — the list filter and the
+// matcher score read it; matchesDeal does not, so blasts are unaffected.
+const PROPERTY_TYPES = [
+  ["sfh", "SFH"], ["multifamily", "Multi-family"], ["hospitality", "Hospitality"],
+  ["commercial", "Commercial"], ["retail", "Retail"], ["other", "Other"],
+];
+const PROPERTY_TYPE_LABELS = Object.fromEntries(PROPERTY_TYPES);
+function buyerPropertyTypes(b) {
+  return String((b && b.property_types) || "").toLowerCase().split(",").map(x => x.trim()).filter(k => PROPERTY_TYPE_LABELS[k]);
 }
 
 // Structured buy-box, with a notes-parsing fallback for the fields that
@@ -174,6 +191,14 @@ function matchInfo(b) {
     if (!Number(b.max_price) || Number(b.max_price) >= p) { score += 20; reasons.push({ t: `≤ ${fmtMoney(p)}`, ok: true }); }
     else { score -= 60; reasons.push({ t: "over budget", ok: false }); }
   } else score += 20;
+  // Property type: no bonus (the 100 is already state+strategy+price), but a
+  // buyer who picked types that exclude this one is docked. No types = any.
+  if (deal.propType) {
+    const types = buyerPropertyTypes(b);
+    const label = PROPERTY_TYPE_LABELS[deal.propType];
+    if (!types.length || types.includes(deal.propType)) reasons.push({ t: label, ok: true });
+    else { score -= 30; reasons.push({ t: label, ok: false }); }
+  }
   return { score: Math.max(0, Math.min(100, score)), reasons };
 }
 
@@ -209,6 +234,9 @@ async function loadBuyers() {
   hasBuyboxCols = allBuyers.length > 0 && Object.prototype.hasOwnProperty.call(allBuyers[0], "close_speed");
   document.querySelectorAll(".buybox-col-field").forEach(el => el.classList.toggle("hidden", !hasBuyboxCols));
   document.getElementById("buybox-note").classList.toggle("hidden", hasBuyboxCols);
+  hasPropTypeCol = allBuyers.length > 0 && Object.prototype.hasOwnProperty.call(allBuyers[0], "property_types");
+  document.querySelectorAll(".proptype-col-field").forEach(el => el.classList.toggle("hidden", !hasPropTypeCol));
+  if (!hasPropTypeCol) typeFilter = "";
   populateMatchStates();
   loading.classList.add("hidden");
   document.getElementById("main-ui").classList.remove("hidden");
@@ -253,6 +281,8 @@ function visibleBuyers() {
   let list = allBuyers;
   if (q) list = list.filter(b => `${b.name} ${b.email} ${b.phone}`.toLowerCase().includes(q));
   if (boxFilter) list = list.filter(b => DealShared.buyBoxCompleteness(b) === boxFilter);
+  if (typeFilter === "none") list = list.filter(b => !buyerPropertyTypes(b).length);
+  else if (typeFilter) list = list.filter(b => buyerPropertyTypes(b).includes(typeFilter));
   const scored = list.map(b => ({ b, info: matchActive ? matchInfo(b) : null }));
   const sortMode = document.getElementById("list-sort").value;
   if (matchActive) scored.sort((x, y) => (y.info.score - x.info.score) || (x.b.name || "").localeCompare(y.b.name || ""));
@@ -330,6 +360,7 @@ function renderRows(scored) {
     const chips = [
       ...buyerStates(b).map(s => `<span class="chip-market">${escapeHtml(s)}</span>`),
       ...buyerStrategies(b.strategy).map(s => `<span class="chip-strat">${escapeHtml(STRATEGY_LABELS[s] || s.replace(/_/g, " "))}</span>`),
+      ...buyerPropertyTypes(b).map(k => `<span class="chip-proptype">${escapeHtml(PROPERTY_TYPE_LABELS[k])}</span>`),
     ].join("");
     return `
       <div class="buyer-row ${tint} ${b.id === selectedId ? "selected" : ""}" data-id="${b.id}">
@@ -477,6 +508,16 @@ function renderDetail() {
               : `<span class="bd-chip-strat">All</span>`}
           </div>
         </div>
+        ${hasPropTypeCol ? `
+        <div style="grid-column:1/-1">
+          <div class="bd-sublabel">Property types <span style="text-transform:none;letter-spacing:0;font-weight:500">— click to toggle${buyerPropertyTypes(b).length ? "" : " · none selected = any type"}</span></div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px" id="detail-proptypes">
+            ${PROPERTY_TYPES.map(([k, label]) => {
+              const on = buyerPropertyTypes(b).includes(k);
+              return `<button type="button" class="proptype-pill${on ? " on" : ""}" data-key="${k}" aria-pressed="${on}">${on ? "✓ " : ""}${escapeHtml(label)}</button>`;
+            }).join("")}
+          </div>
+        </div>` : ""}
         <div>
           <div class="bd-sublabel">Budget</div>
           <div style="font-size:0.9rem;color:var(--text-1);font-weight:600">${box.budget ? escapeHtml(box.budget) : `<span class="muted">—</span>`}</div>
@@ -523,6 +564,23 @@ function renderDetail() {
   if (emailBtn) emailBtn.addEventListener("click", () => openConvo(b, "email"));
   document.getElementById("detail-log").addEventListener("click", () => logActivity(b));
   document.getElementById("detail-remove").addEventListener("click", () => removeBuyer(b));
+  const typePills = document.getElementById("detail-proptypes");
+  if (typePills) typePills.addEventListener("click", async (e) => {
+    const pill = e.target.closest(".proptype-pill");
+    if (!pill) return;
+    const set = new Set(buyerPropertyTypes(b));
+    set.has(pill.dataset.key) ? set.delete(pill.dataset.key) : set.add(pill.dataset.key);
+    const next = PROPERTY_TYPES.map(([k]) => k).filter(k => set.has(k)).join(",");
+    const prev = b.property_types;
+    b.property_types = next; // optimistic — pills feel instant
+    renderAll();
+    const { error } = await supa.from("buyers").update({ property_types: next }).eq("id", b.id);
+    if (error) {
+      b.property_types = prev;
+      renderAll();
+      toast(`Couldn't update property types: ${error.message}`, { type: "error" });
+    }
+  });
   document.getElementById("detail-tier").addEventListener("click", async () => {
     const next = TIER_CYCLE[b.tier] || "A";
     const { error } = await supa.from("buyers").update({ tier: next }).eq("id", b.id);
@@ -607,6 +665,8 @@ function openModal(b) {
     document.getElementById("b-status").value = b ? (b.status || "") : "";
     document.getElementById("b-asset").value = b ? (b.asset_type || "") : "";
   }
+  const typeSet = new Set(buyerPropertyTypes(b));
+  document.querySelectorAll(".b-proptype-cb").forEach(cb => { cb.checked = typeSet.has(cb.value); });
   document.getElementById("b-notes").value = b ? (b.notes || "") : "";
   document.getElementById("b-sms").checked = b ? !!b.sms_opt_in : false;
   document.getElementById("modal-backdrop").classList.remove("hidden");
@@ -1109,6 +1169,7 @@ function closeImport() { document.getElementById("import-backdrop").classList.ad
       state: document.getElementById("match-state").value,
       price: document.getElementById("match-price").value.trim(),
       strategy: document.getElementById("match-strategy").value,
+      propType: hasPropTypeCol ? document.getElementById("match-proptype").value : "",
     };
     matchActive = true;
     renderAll();
@@ -1117,7 +1178,8 @@ function closeImport() { document.getElementById("import-backdrop").classList.ad
     document.getElementById("match-state").value = "";
     document.getElementById("match-price").value = "";
     document.getElementById("match-strategy").value = "";
-    deal = { state: "", price: "", strategy: "" };
+    document.getElementById("match-proptype").value = "";
+    deal = { state: "", price: "", strategy: "", propType: "" };
     matchActive = false;
     renderAll();
   });
@@ -1132,6 +1194,7 @@ function closeImport() { document.getElementById("import-backdrop").classList.ad
     renderTimer = setTimeout(renderAll, 180);
   });
   document.getElementById("list-sort").addEventListener("change", renderAll);
+  document.getElementById("list-proptype").addEventListener("change", (e) => { typeFilter = e.target.value; renderAll(); });
   document.getElementById("buyer-rows").addEventListener("click", (e) => {
     const row = e.target.closest(".buyer-row");
     if (!row) return;
@@ -1174,6 +1237,9 @@ function closeImport() { document.getElementById("import-backdrop").classList.ad
       payload.close_speed = document.getElementById("b-close").value;
       payload.status = document.getElementById("b-status").value;
       payload.asset_type = document.getElementById("b-asset").value.trim();
+    }
+    if (hasPropTypeCol) {
+      payload.property_types = [...document.querySelectorAll(".b-proptype-cb:checked")].map(cb => cb.value).join(",");
     }
     // Dedupe before writing. On an edit this only fires when the new contact
     // details collide with a DIFFERENT buyer.

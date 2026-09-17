@@ -86,6 +86,18 @@
               <option value="morby">Morby/Stack</option>
             </select>
           </div>
+          <div class="matcher-field proptype-col-field hidden">
+            <label for="match-proptype">Property type</label>
+            <select id="match-proptype" style="min-width:140px">
+              <option value="">Any type</option>
+              <option value="sfh">SFH</option>
+              <option value="multifamily">Multi-family</option>
+              <option value="hospitality">Hospitality</option>
+              <option value="commercial">Commercial</option>
+              <option value="retail">Retail</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
           <button class="matcher-go" id="match-go">Find matches</button>
           <button class="matcher-clear hidden" id="match-clear">Clear</button>
           <div class="matcher-status hidden" id="match-status"></div>
@@ -102,6 +114,16 @@
               <option value="engagement">🔥 Engagement</option>
               <option value="name">A–Z</option>
               <option value="newest">Newest</option>
+            </select>
+            <select id="list-proptype" class="proptype-col-field hidden" title="Filter by property type" style="width:auto;font-size:0.78rem;padding:4px 6px;border-radius:8px;border:1px solid var(--border)">
+              <option value="">All types</option>
+              <option value="sfh">SFH</option>
+              <option value="multifamily">Multi-family</option>
+              <option value="hospitality">Hospitality</option>
+              <option value="commercial">Commercial</option>
+              <option value="retail">Retail</option>
+              <option value="other">Other</option>
+              <option value="none">No type set</option>
             </select>
             <span class="list-count" id="list-count"></span>
           </div>
@@ -134,6 +156,17 @@
               <label class="flex gap-8" style="font-weight:500;color:var(--text-2);white-space:nowrap"><input type="checkbox" class="b-strat-cb" value="morby" style="width:auto"> Morby/Stack</label>
             </div>
             <p class="muted" style="font-size:0.76rem;margin:4px 0 0">Leave all unchecked to match every strategy.</p>
+          </div>
+          <div class="field proptype-col-field hidden" style="grid-column:1/-1"><label>Property types <span class="muted" style="font-weight:400">(check all that apply)</span></label>
+            <div class="flex gap-8" style="flex-wrap:wrap;padding-top:4px">
+              <label class="flex gap-8" style="font-weight:500;color:var(--text-2);white-space:nowrap"><input type="checkbox" class="b-proptype-cb" value="sfh" style="width:auto"> SFH</label>
+              <label class="flex gap-8" style="font-weight:500;color:var(--text-2);white-space:nowrap"><input type="checkbox" class="b-proptype-cb" value="multifamily" style="width:auto"> Multi-family</label>
+              <label class="flex gap-8" style="font-weight:500;color:var(--text-2);white-space:nowrap"><input type="checkbox" class="b-proptype-cb" value="hospitality" style="width:auto"> Hospitality</label>
+              <label class="flex gap-8" style="font-weight:500;color:var(--text-2);white-space:nowrap"><input type="checkbox" class="b-proptype-cb" value="commercial" style="width:auto"> Commercial</label>
+              <label class="flex gap-8" style="font-weight:500;color:var(--text-2);white-space:nowrap"><input type="checkbox" class="b-proptype-cb" value="retail" style="width:auto"> Retail</label>
+              <label class="flex gap-8" style="font-weight:500;color:var(--text-2);white-space:nowrap"><input type="checkbox" class="b-proptype-cb" value="other" style="width:auto"> Other</label>
+            </div>
+            <p class="muted" style="font-size:0.76rem;margin:4px 0 0">Leave all unchecked for any property type.</p>
           </div>
           <div class="field"><label>Max Entry ($)</label><input type="number" id="b-maxprice" placeholder="e.g. 350000"></div>
           <div class="field"><label>Max PITI ($/mo)</label><input type="number" id="b-piti"></div>

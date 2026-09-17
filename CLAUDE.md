@@ -264,6 +264,12 @@ rest of the top bar; `.nav-drop` in `app.css`). Buyers is the dropdown's first i
 trigger's own href, so a tap on touch — where `:hover` never fires — still lands somewhere
 useful.
 
+A buyer's **property types** (`buyers.property_types`, migration 038: comma list of
+`sfh,multifamily,hospitality,commercial,retail,other`, empty = any) are clickable pills on the
+buyer card and drive only the buyers-page list filter and "Match a deal" score. They are
+deliberately **not** read by `matchesDeal` — who receives a blast doesn't change — and deals
+keep their own two-value `property_type` (single_family/commercial), which drives DSCR math.
+
 Buyer records are deduped on **digits-only phone / lower-cased email** — the CSV importer
 (`classifyImport`) and the Add Buyer form (`findDuplicateBuyer`) must keep using the same
 keys, and the form additionally checks soft-deleted rows so a removed buyer is restored
@@ -289,7 +295,7 @@ dashboard "✓ synced" indicator and the consecutive-failure email alert).
 ## Database / migrations
 
 Numbered SQL files in `sql/`, **run manually** in the Supabase SQL editor — there is no
-migration runner. Take the next number (highest is `037_buyer_messages.sql`). Every new
+migration runner. Take the next number (highest is `038_buyer_property_types.sql`). Every new
 migration must END with `insert into schema_migrations (filename) values ('0XX_name.sql')
 on conflict do nothing;` so applied state stays queryable. Migrations must be
 additive/idempotent (`if not exists`, `do $$` policy guards) and the frontend must fail soft

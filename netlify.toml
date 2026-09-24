@@ -26,8 +26,9 @@
 [functions."weekly-digest"]
   schedule = "0 14 * * 1"
 
-# AirDNA — every single-family deal gets a short-term-rental estimate (new
-# deals within 15 min even if the dashboard's post-intake call never ran),
-# re-pulled every 30 days so the STR outlook is tracked. See lib/airdna.js.
-[functions."str-estimates-sync"]
+# Rent estimates — every single-family deal gets a short-term (AirDNA) and a
+# long-term (RentCast) estimate, new deals within 15 min even if the
+# dashboard's post-upload call never ran, re-pulled every 30 days so both are
+# tracked. See lib/rent-estimate.js.
+[functions."rent-estimates-sync"]
   schedule = "*/15 * * * *"

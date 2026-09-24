@@ -153,28 +153,32 @@ duplicate buyers who each receive their own blast.
   one-email-ever version). Stops asking anyone whose `buyBoxCompleteness` is `full`,
   honors email opt-out/bounce and the SMS STOP list, and `{preview:true}` reports exactly
   what would go out without sending. GHL sending is `lib/ghl-sms.js`, shared with blast-core.
-- `str-estimate.js` / `str-estimates-sync.js` — AirDNA Rentalizer short-term-rental estimates
-  (migration 039, `str_estimates`, append-only so each deal's STR outlook is tracked). Every
-  **single-family** deal gets one: Morby/cash unless `property_type='commercial'`, every Sub-To.
-  The dashboard fires `str-estimate` right after a new deal is created and on the card's ↻ button;
-  the 15-min sweep is the guarantee (no estimate → pull; error → retry after 24h; good → re-pull
-  after 30 days; ≤5 per run). It is deliberately **not** called from the parse-* intake functions
-  — an AirDNA stall must never cost a deal intake. **Every contract/LOI upload (new card or
-  in-card re-extract) and ↻ write AirDNA's monthly figure INTO the STR rent box**
-  (`str_monthly_rent`, or Sub-To `rent_str` + `rent_str_source`), replacing what the LOI
-  extraction put there — Zach's rule, Sept 2026. The sweep only ever fills a *blank* box, so a
-  number hand-typed after the upload is never replaced in the background; "Use $X" on the card
-  puts AirDNA's number back. The dashboard also sets the on-screen box immediately, because
-  panel fields save on blur and a stale value would be written straight back. Sub-To's STR
-  column still stays hidden until `str_permitted` is confirmed — AirDNA can't know that. AirDNA's
-  response schema isn't public, so `parseRentalizer` searches the payload by metric name and the
-  raw payload is stored beside the parsed numbers. All logic is `lib/airdna.js`.
+- `rent-estimate.js` / `rent-estimates-sync.js` — rent estimates for every **single-family**
+  deal (Morby/cash unless `property_type='commercial'`, every Sub-To): **short-term from AirDNA
+  Rentalizer** (`lib/airdna.js` → `str_estimates`, migration 039) and **long-term from RentCast**
+  (`lib/rentcast.js`, `GET /v1/avm/rent/long-term` with `X-Api-Key` → `ltr_estimates`, 040).
+  Both tables are append-only, so each deal's rent is tracked over time and the card shows the
+  move since the previous pull. What they share — eligibility, the address (via `dealAddress`),
+  which box gets written, the sweep spacing — is `lib/rent-estimate.js`; never fork it per
+  provider. The dashboard calls `rent-estimate` right after every contract/LOI upload (new card
+  or in-card re-extract) and from each line's ↻; the 15-min sweep is the guarantee (no estimate
+  → pull; error → retry after 24h; good → re-pull after 30 days; ≤5 per provider per run). A
+  provider with no key is skipped, so either can be switched on alone. It is deliberately **not**
+  called from the parse-* intake functions — a provider stall must never cost a deal intake.
+  **An upload or ↻ writes the provider's monthly figure INTO the rent box**
+  (`ltr_monthly_rent`/`str_monthly_rent`, or Sub-To `rent_ltr`/`rent_str` + their `_source`),
+  replacing what the LOI extraction put there — Zach's rule, Sept 2026. The sweep only ever fills
+  a *blank* box, so a number hand-typed after the upload is never replaced in the background;
+  "Use $X" on the card puts the provider's number back. The dashboard also sets the on-screen box
+  immediately, because panel fields save on blur and a stale value would be written straight back.
+  Sub-To's STR column still stays hidden until `str_permitted` is confirmed. AirDNA's figure is
+  **gross** revenue. Both store the raw provider payload beside the parsed numbers.
 - `unsubscribe.js` — HMAC-tokenized opt-out.
 - `ghl-inbound.js` — webhook for inbound GHL SMS; attributes the text to the deal most
   recently SMS-blasted to that phone (7-day window via `blast_recipients`).
 - Scheduled (see `netlify.toml`): `sync-buyers` (5 min, Netlify Forms buyer intake →
   `buyers`), `capture-replies` (15 min, Gmail replies → buyers + leads; also purges
-  `sync_runs` >30 days), `str-estimates-sync` (15 min, AirDNA), `weekly-digest` (Mondays 14:00 UTC, 7-day rollup email).
+  `sync_runs` >30 days), `rent-estimates-sync` (15 min, AirDNA + RentCast), `weekly-digest` (Mondays 14:00 UTC, 7-day rollup email).
   There is no Trello sync — deal creation and lifecycle (archive via the 🗑 button)
   are fully in-dashboard.
 
@@ -227,7 +231,7 @@ marked `[follow-up]` in `deal_blasts.detail` — that marker is what caps it at 
 `deck-token.js`, `deck-photo.js`, `heartbeat.js`, `ghl-sms.js`, `unsub.js`,
 `interest-receipt.js`, `contact.js`, `buyer-intake.js`,
 `onboard-sequence.js`, `buy-box-form.js`, `deck-pdf.js`, `deal-address.js`, `gmail.js`,
-`conversation.js`, `airdna.js`). `unsub.js` owns both minting and verifying the unsubscribe token —
+`conversation.js`, `rent-estimate.js`, `airdna.js`, `rentcast.js`). `unsub.js` owns both minting and verifying the unsubscribe token —
 they must agree or live links in already-sent email break (pinned in `tests/unsub.test.js`).
 
 **The Deal Deck Address override lives on the STRUCTURE table** — `morby_deals`
@@ -311,7 +315,7 @@ dashboard "✓ synced" indicator and the consecutive-failure email alert).
 ## Database / migrations
 
 Numbered SQL files in `sql/`, **run manually** in the Supabase SQL editor — there is no
-migration runner. Take the next number (highest is `039_str_estimates.sql`). Every new
+migration runner. Take the next number (highest is `040_ltr_estimates.sql`). Every new
 migration must END with `insert into schema_migrations (filename) values ('0XX_name.sql')
 on conflict do nothing;` so applied state stays queryable. Migrations must be
 additive/idempotent (`if not exists`, `do $$` policy guards) and the frontend must fail soft
@@ -343,7 +347,8 @@ this cannot be deals@ until deals@ exists as an alias of that account), `GOOGLE_
 (deck photo fallback), `AIRDNA_API_KEY` (Rentalizer Bearer token from AirDNA sales; unset =
 the STR integration is off and the sweep logs "skipped"; optional `AIRDNA_API_BASE` /
 `AIRDNA_RENTALIZER_PATH` override the default `https://api.airdna.co/api/enterprise/v2` +
-`/rentalizer/estimate` without a deploy),
+`/rentalizer/estimate` without a deploy), `RENTCAST_API_KEY` (long-term rent AVM, self-serve at
+app.rentcast.io; free tier is 50 calls/month; unset = LTR estimates off),
 `CAPTURE_WEBHOOK_SECRET` (GHL webhook), `CALENDLY_URL` (**optional** override for the
 booking button on the deck-page interest receipt — `lib/interest-receipt.js` hardcodes
 `DEFAULT_CALENDLY_URL` as the fallback, so the button renders whether or not this is set.

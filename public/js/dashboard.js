@@ -18,8 +18,11 @@ const expandedDealCards = new Set(); // card_ids currently shown as full cards
 const dealView = { query: "", filter: "all", sort: "attention" }; // triage bar state
 let boardData = null;      // last loadAll fetch — lets renderBoard re-render without refetching
 let dealSearchTimer = null; // debounce for the triage search box
-let strByCard = {};        // card_id -> newest str_estimates row (AirDNA); {} before 039 runs
-let strLoaded = false;     // false before 039 runs — the AirDNA line stays hidden
+// Rent estimates per deal: str = AirDNA (039), ltr = RentCast (040). `rows` is
+// card_id -> that card's pulls, newest first (index 0 is current; the newest
+// earlier good pull is what the trend compares against). `loaded` stays false
+// until the table exists, which keeps that line off every card.
+const rentEst = { str: { rows: {}, loaded: false }, ltr: { rows: {}, loaded: false } };
 
 // Shared with send-blast.js and the deck page (see /js/deal-shared.js) so
 // the blast preview, the live send, and the emails can never disagree.
@@ -369,7 +372,7 @@ function wireCallList() {
 // the query errors and the indicator simply stays hidden. ──
 // Trello was retired (July 2026) — deals are created by contract/LOI upload
 // now, so only the buyer-form, reply-capture and AirDNA syncs heartbeat here.
-const SYNC_FN_LABELS = { "sync-buyers": "Buyer form", "capture-replies": "Reply capture", "str-estimates-sync": "AirDNA" };
+const SYNC_FN_LABELS = { "sync-buyers": "Buyer form", "capture-replies": "Reply capture", "rent-estimates-sync": "Rent estimates" };
 async function loadSyncHealth() {
   const el = document.getElementById("sync-health");
   if (!el) return;
@@ -451,12 +454,16 @@ async function loadAll() {
   // blast × buyer), so pulling whole tables gets slow at scale — we only
   // ever need rows for the active cards on screen.
   const cardIds = (props || []).map(p => p.card_id);
-  // AirDNA estimates (039). Newest first, so the first row per card is current.
-  // Fails soft: before the migration, no card shows an AirDNA line at all.
-  const strPromise = supa.from("str_estimates")
-    .select("card_id,status,annual_revenue,adr,occupancy,bedrooms,bathrooms,comps_count,error,fetched_at")
-    .in("card_id", cardIds).order("fetched_at", { ascending: false })
-    .then(r => r, () => ({ data: null }));
+  // Rent estimates (039 AirDNA / 040 RentCast), newest first. Fail soft: before
+  // a migration runs, no card shows that line at all.
+  const estPromise = Promise.all([
+    supa.from("str_estimates")
+      .select("card_id,status,annual_revenue,adr,occupancy,bedrooms,bathrooms,comps_count,error,fetched_at")
+      .in("card_id", cardIds).order("fetched_at", { ascending: false }),
+    supa.from("ltr_estimates")
+      .select("card_id,status,rent,rent_low,rent_high,bedrooms,bathrooms,square_feet,comps_count,error,fetched_at")
+      .in("card_id", cardIds).order("fetched_at", { ascending: false }),
+  ].map(q => q.then(r => r, () => ({ data: null }))));
   const [{ data: terms, error: termsErr }, { data: statuses, error: statusesErr }, { data: fbPosts, error: fbErr }, { data: buyers, error: buyersErr }, { data: leads, error: leadsErr }, { data: blasts, error: blastsErr }, { data: acq, error: acqErr }, { data: morby, error: morbyErr }, { data: cash }, { data: recips, error: recipsErr }, { data: deckViews }, { data: emailEvents }, { data: tasks }, { data: activities, error: actErr }] = await Promise.all([
     supa.from("deal_terms").select("*").in("card_id", cardIds),
     supa.from("property_status").select("*").in("card_id", cardIds),
@@ -538,10 +545,12 @@ async function loadAll() {
 
   allBuyers = buyers || [];
 
-  const { data: strRows } = await strPromise;
-  strByCard = {};
-  for (const r of (strRows || [])) if (!strByCard[r.card_id]) strByCard[r.card_id] = r;
-  strLoaded = !!strRows;
+  const [{ data: strRows }, { data: ltrRows }] = await estPromise;
+  for (const [kind, rows] of [["str", strRows], ["ltr", ltrRows]]) {
+    const byCard = {};
+    for (const r of (rows || [])) (byCard[r.card_id] ||= []).push(r);
+    rentEst[kind] = { rows: byCard, loaded: !!rows };
+  }
 
   // Stash everything the renderer needs so the triage bar (search / filter /
   // sort / expand) can re-render instantly without refetching Supabase.
@@ -706,7 +715,7 @@ function renderBoard() {
   wireAddMorbyPanel();
   wireAddSubtoPanel();
   wireAddCashPanel();
-  wireStrEstimateButtons();
+  wireRentEstimateButtons();
   wireTriageBar();
   wireCallList();
 
@@ -1240,7 +1249,8 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
             <span class="term-chip">👥 <b>${matchCount}</b> matching buyer${matchCount === 1 ? "" : "s"}</span>
             <button type="button" class="btn btn-ghost btn-sm terms-edit-btn">✎ Edit Terms</button>
           </div>
-          ${renderStrEstimate(p.card_id, t.rent_str, false)}
+          ${renderRentEstimate("ltr", p.card_id, t.rent_ltr, false)}
+          ${renderRentEstimate("str", p.card_id, t.rent_str, false)}
         </div>
         <div class="terms-edit hidden mt-8">
           <div class="terms-edit-grid">
@@ -1572,84 +1582,114 @@ const MORBY_DSCR_DEFAULTS = {
 
 // (dscrMonthlyPayment comes from /js/deal-shared.js)
 
-// ── AirDNA STR estimate line (039, lib/airdna.js). One renderer for the
-// Sub-To term chips and the Morby/Cash income block. A contract/LOI upload and
-// ↻ write AirDNA's number into the STR rent box; the 15-min sweep only fills a
-// blank one. If the box has since been hand-edited, "Use" puts AirDNA's number
-// back (structure panels only — Sub-To rent is edited in ✎ Edit Terms). ──
-function renderStrEstimate(cardId, currentStr, canUse) {
-  if (!strLoaded) return "";
-  const e = strByCard[cardId];
+// ── Rent-estimate lines: short-term from AirDNA (039, lib/airdna.js) and
+// long-term from RentCast (040, lib/rentcast.js). One renderer for the Sub-To
+// term chips and the Morby/Cash income block. A contract/LOI upload and ↻
+// write the provider's number into its rent box; the 15-min sweep only fills a
+// blank one. If the box has since been hand-edited, "Use" puts the provider's
+// number back (structure panels only — Sub-To rent is edited in ✎ Edit Terms).
+// Every pull is kept, so the line also shows the move since the previous one. ──
+const RENT_EST = {
+  str: {
+    icon: "📈", name: "AirDNA STR", provider: "AirDNA", field: "str_monthly_rent", box: "Short-Term Rent",
+    monthly: (e) => Math.round(Number(e.annual_revenue) / 12),
+    details: (e) => [
+      `(${fmtMoney(e.annual_revenue)}/yr)`,
+      e.adr ? `ADR ${fmtMoney(Math.round(e.adr))}` : "",
+      e.occupancy != null ? `${Math.round(e.occupancy * 100)}% occ.` : "",
+      e.bedrooms ? `${e.bedrooms} bd${e.bathrooms ? ` / ${e.bathrooms} ba` : ""}` : "",
+      e.comps_count ? `${e.comps_count} comps` : "",
+    ],
+  },
+  ltr: {
+    icon: "🏠", name: "RentCast LTR", provider: "RentCast", field: "ltr_monthly_rent", box: "Long-Term Rent",
+    monthly: (e) => Math.round(Number(e.rent)),
+    details: (e) => [
+      e.rent_low && e.rent_high ? `(range ${fmtMoney(Math.round(e.rent_low))}–${fmtMoney(Math.round(e.rent_high))})` : "",
+      e.bedrooms ? `${e.bedrooms} bd${e.bathrooms ? ` / ${e.bathrooms} ba` : ""}${e.square_feet ? ` · ${Number(e.square_feet).toLocaleString()} sqft` : ""}` : "",
+      e.comps_count ? `${e.comps_count} comps` : "",
+    ],
+  },
+};
+
+function renderRentEstimate(kind, cardId, current, canUse) {
+  const cfg = RENT_EST[kind];
+  if (!rentEst[kind].loaded) return "";
+  const rows = rentEst[kind].rows[cardId] || [];
+  const e = rows[0];
   const id = escapeHtml(cardId);
-  const btn = (label) => `<button type="button" class="btn btn-ghost btn-sm airdna-btn" data-card-id="${id}" style="font-size:0.7rem;padding:1px 8px;margin-left:6px">${label}</button>`;
-  const wrap = (inner) => `<div class="airdna-line muted" style="grid-column:1/-1;font-size:0.8rem;margin-top:6px">📈 ${inner}</div>`;
-  if (!e) return wrap(`No AirDNA estimate yet — pulls automatically within 15 min.${btn("Pull now")}`);
+  const btn = (label) => `<button type="button" class="btn btn-ghost btn-sm rent-est-btn" data-card-id="${id}" data-kind="${kind}" style="font-size:0.7rem;padding:1px 8px;margin-left:6px">${label}</button>`;
+  const wrap = (inner) => `<div class="rent-est-line muted" style="grid-column:1/-1;font-size:0.8rem;margin-top:6px">${cfg.icon} ${inner}</div>`;
+  if (!e) return wrap(`No ${cfg.provider} estimate yet — pulls automatically within 15 min.${btn("Pull now")}`);
   const when = fmtDate(e.fetched_at) || "";
   if (e.status !== "ok") {
-    return wrap(`<span style="color:#B7791F" title="${escapeHtml(e.error || "")}">AirDNA couldn't price this (${escapeHtml((e.error || "error").slice(0, 90))})</span> · tried ${escapeHtml(when)}${btn("↻ Retry")}`);
+    return wrap(`<span style="color:#B7791F" title="${escapeHtml(e.error || "")}">${cfg.provider} couldn't price this (${escapeHtml((e.error || "error").slice(0, 90))})</span> · tried ${escapeHtml(when)}${btn("↻ Retry")}`);
   }
-  const monthly = Math.round(Number(e.annual_revenue) / 12);
-  const bits = [`<b>${fmtMoney(monthly)}/mo</b> (${fmtMoney(e.annual_revenue)}/yr)`];
-  if (e.adr) bits.push(`ADR ${fmtMoney(Math.round(e.adr))}`);
-  if (e.occupancy != null) bits.push(`${Math.round(e.occupancy * 100)}% occ.`);
-  if (e.bedrooms) bits.push(`${e.bedrooms} bd${e.bathrooms ? ` / ${e.bathrooms} ba` : ""}`);
-  if (e.comps_count) bits.push(`${e.comps_count} comps`);
-  const differs = canUse && Number(currentStr) && Math.abs(Number(currentStr) - monthly) >= 1;
-  const use = differs ? `<button type="button" class="btn btn-ghost btn-sm airdna-use-btn" data-monthly="${monthly}" style="font-size:0.7rem;padding:1px 8px;margin-left:6px" title="Replace the Short-Term Rent above with AirDNA's number">Use ${fmtMoney(monthly)}</button>` : "";
-  return wrap(`AirDNA STR: ${bits.join(" · ")} · ${escapeHtml(when)}${use}${btn("↻")}`);
+  const monthly = cfg.monthly(e);
+  // Tracking: the move since the previous good pull (the sweep re-pulls monthly).
+  const prev = rows.slice(1).find(r => r.status === "ok");
+  const delta = prev ? monthly - cfg.monthly(prev) : 0;
+  const trend = delta ? ` <span style="color:${delta > 0 ? "#2F855A" : "#C53030"}" title="Previous pull: ${fmtMoney(cfg.monthly(prev))}/mo on ${escapeHtml(fmtDate(prev.fetched_at) || "")}">${delta > 0 ? "▲" : "▼"} ${fmtMoney(Math.abs(delta))} since ${escapeHtml(fmtDate(prev.fetched_at) || "")}</span>` : "";
+  const bits = [`<b>${fmtMoney(monthly)}/mo</b>${trend}`, ...cfg.details(e).filter(Boolean)];
+  const differs = canUse && Number(current) && Math.abs(Number(current) - monthly) >= 1;
+  const use = differs ? `<button type="button" class="btn btn-ghost btn-sm rent-est-use-btn" data-field="${cfg.field}" data-monthly="${monthly}" style="font-size:0.7rem;padding:1px 8px;margin-left:6px" title="Replace the ${cfg.box} above with ${cfg.provider}'s number">Use ${fmtMoney(monthly)}</button>` : "";
+  return wrap(`${cfg.name}: ${bits.join(" · ")} · ${escapeHtml(when)}${use}${btn("↻")}`);
 }
 
-// Pull (or re-pull) one deal's estimate and write it into the STR rent box.
-// quiet: the post-upload call — no alert on failure (the 15-min sweep
-// retries), and no re-render while the user is typing in the card.
-async function pullStrEstimate(cardId, { quiet = false } = {}) {
+// Pull (or re-pull) a deal's estimates — both providers by default — and write
+// them into the rent boxes. quiet: the post-upload call — no alert on failure
+// (the 15-min sweep retries), and no re-render while the user is typing.
+async function pullRentEstimates(cardId, { kind = "both", quiet = false } = {}) {
   try {
     const { data: { session: s } } = await supa.auth.getSession();
-    const res = await fetch("/.netlify/functions/str-estimate", {
+    const res = await fetch("/.netlify/functions/rent-estimate", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
-      body: JSON.stringify({ card_id: cardId, overwrite: true }),
+      body: JSON.stringify({ card_id: cardId, kind, overwrite: true }),
     });
     const result = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
-    if (result.skipped) {
-      if (!quiet) toast(`AirDNA skipped this deal: ${result.skipped}.`, { type: "error" });
-      return;
-    }
-    const est = result.estimate || {};
-    if (est.status === "ok") {
+
+    const good = [], bad = [];
+    for (const k of ["ltr", "str"]) {
+      const r = result[k];
+      if (!r) continue;
+      const cfg = RENT_EST[k];
+      if (r.skipped) { bad.push(`${cfg.provider} skipped (${r.skipped})`); continue; }
+      if (r.error) { bad.push(`${cfg.provider}: ${r.error}`); continue; }
+      const est = r.estimate || {};
+      if (est.status !== "ok") { bad.push(`${cfg.provider}: ${est.error || "no estimate"}`); continue; }
+      const monthly = cfg.monthly(est);
       // Put the number in the box on screen NOW, even if we skip the re-render
       // below: every panel field saves on blur, so a stale value left showing
-      // would be written straight back over AirDNA's the next time it's tabbed through.
-      const monthly = Math.round(est.annual_revenue / 12);
-      const box = document.querySelector(`.structure-panel[data-card-id="${CSS.escape(cardId)}"] .acq-input[data-field="str_monthly_rent"]`);
-      if (box && result.filled) box.value = monthly;
-      const filled = result.filled ? " — entered as Short-Term Rent" : "";
-      toast(`📈 AirDNA: ${fmtMoney(Math.round(est.annual_revenue / 12))}/mo STR estimate${filled}.`, { type: "success" });
-    } else if (!quiet) {
-      toast(`AirDNA: ${est.error || "no estimate"}`, { type: "error" });
+      // would be written straight back over the provider's the next time it's tabbed through.
+      const box = document.querySelector(`.structure-panel[data-card-id="${CSS.escape(cardId)}"] .acq-input[data-field="${cfg.field}"]`);
+      if (box && r.filled) box.value = monthly;
+      good.push(`${cfg.icon} ${cfg.provider} ${fmtMoney(monthly)}/mo${r.filled ? ` → ${cfg.box}` : ""}`);
     }
+    if (good.length) toast(good.join(" · "), { type: "success" });
+    if (bad.length && !quiet) toast(bad.join(" · "), { type: "error" });
     const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
     if (!(quiet && typing)) await loadAll();
   } catch (e) {
-    if (!quiet) toast(`AirDNA pull failed: ${e.message}`, { type: "error" });
-    else console.warn("AirDNA post-intake pull:", e.message);
+    if (!quiet) toast(`Rent estimate pull failed: ${e.message}`, { type: "error" });
+    else console.warn("Post-upload rent estimate pull:", e.message);
   }
 }
 
-function wireStrEstimateButtons() {
-  if (wireStrEstimateButtons.done) return;
-  wireStrEstimateButtons.done = true;
+function wireRentEstimateButtons() {
+  if (wireRentEstimateButtons.done) return;
+  wireRentEstimateButtons.done = true;
   document.addEventListener("click", async (ev) => {
-    const pull = ev.target.closest(".airdna-btn");
+    const pull = ev.target.closest(".rent-est-btn");
     if (pull) {
       pull.disabled = true;
       pull.textContent = "Pulling…";
-      await pullStrEstimate(pull.dataset.cardId);
+      await pullRentEstimates(pull.dataset.cardId, { kind: pull.dataset.kind });
       pull.disabled = false; // only matters if the re-render didn't replace it
       return;
     }
-    const use = ev.target.closest(".airdna-use-btn");
+    const use = ev.target.closest(".rent-est-use-btn");
     if (use) {
       // Direct write rather than a synthetic blur, for the reason on
       // .use-carry-btn: the async blur save races the re-render.
@@ -1657,7 +1697,7 @@ function wireStrEstimateButtons() {
       if (!panel) return;
       use.disabled = true;
       const { error } = await supa.from(panel.dataset.table).upsert(
-        { card_id: panel.dataset.cardId, str_monthly_rent: Number(use.dataset.monthly), updated_at: new Date().toISOString() },
+        { card_id: panel.dataset.cardId, [use.dataset.field]: Number(use.dataset.monthly), updated_at: new Date().toISOString() },
         { onConflict: "card_id" },
       );
       if (error) { toast(`Couldn't save: ${error.message}`, { type: "error" }); use.disabled = false; return; }
@@ -1867,7 +1907,8 @@ function renderStructurePanel(p, row, terms, acq, kind, carriedFrom) {
         ` : `
           <div class="acq-field"><label>Long-Term Rent (monthly)</label><input type="number" class="acq-input" data-field="ltr_monthly_rent" value="${num(m.ltr_monthly_rent)}"></div>
           <div class="acq-field"><label>Short-Term Rent (monthly)</label><input type="number" class="acq-input" data-field="str_monthly_rent" value="${num(m.str_monthly_rent)}"></div>
-          ${renderStrEstimate(p.card_id, m.str_monthly_rent, true)}
+          ${renderRentEstimate("ltr", p.card_id, m.ltr_monthly_rent, true)}
+          ${renderRentEstimate("str", p.card_id, m.str_monthly_rent, true)}
         `}
         <div class="acq-field">
           <label>Property Taxes (monthly)
@@ -2922,7 +2963,7 @@ async function extractLoi(btn) {
 
     statusEl.textContent = "✓ Extracted — review the fields below.";
     await loadAll();
-    pullStrEstimate(cardId, { quiet: true }); // AirDNA → Short-Term Rent box
+    pullRentEstimates(cardId, { quiet: true }); // AirDNA + RentCast → the rent boxes
   } catch (e) {
     statusEl.textContent = `Couldn't extract: ${e.message}`;
   } finally {
@@ -2971,7 +3012,7 @@ function wireAddMorbyPanel() {
       // Open the new card in full so the extracted terms are reviewed, not
       // buried as a collapsed row.
       if (result.card_id) expandedDealCards.add(result.card_id);
-      pullStrEstimate(result.card_id, { quiet: true });
+      pullRentEstimates(result.card_id, { quiet: true });
 
       statusEl.textContent = "✓ Created — review the new card below.";
       panel.classList.add("hidden");
@@ -3054,7 +3095,7 @@ function wireAddSubtoPanel() {
       // Open the new card in full so the extracted terms are reviewed, not
       // buried as a collapsed row.
       if (result.card_id) expandedDealCards.add(result.card_id);
-      pullStrEstimate(result.card_id, { quiet: true });
+      pullRentEstimates(result.card_id, { quiet: true });
 
       submitBtn.textContent = "Writing marketing copy…";
       let copyError = null;
@@ -3147,7 +3188,7 @@ async function extractCashContract(btn) {
     if (!res.ok) throw new Error(result.error || "Extraction failed");
     statusEl.textContent = "✓ Extracted — review the terms below.";
     await loadAll();
-    pullStrEstimate(cardId, { quiet: true }); // AirDNA → Short-Term Rent box
+    pullRentEstimates(cardId, { quiet: true }); // AirDNA + RentCast → the rent boxes
   } catch (e) {
     statusEl.textContent = `Couldn't extract: ${e.message}`;
   } finally {
@@ -3203,7 +3244,7 @@ function wireAddCashPanel() {
       // Open the new card in full so the extracted price stack is reviewed,
       // not buried as a collapsed row.
       if (result.card_id) expandedDealCards.add(result.card_id);
-      pullStrEstimate(result.card_id, { quiet: true });
+      pullRentEstimates(result.card_id, { quiet: true });
 
       panel.classList.add("hidden");
       contractInput.value = "";

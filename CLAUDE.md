@@ -153,12 +153,24 @@ duplicate buyers who each receive their own blast.
   one-email-ever version). Stops asking anyone whose `buyBoxCompleteness` is `full`,
   honors email opt-out/bounce and the SMS STOP list, and `{preview:true}` reports exactly
   what would go out without sending. GHL sending is `lib/ghl-sms.js`, shared with blast-core.
+- `str-estimate.js` / `str-estimates-sync.js` — AirDNA Rentalizer short-term-rental estimates
+  (migration 039, `str_estimates`, append-only so each deal's STR outlook is tracked). Every
+  **single-family** deal gets one: Morby/cash unless `property_type='commercial'`, every Sub-To.
+  The dashboard fires `str-estimate` right after a new deal is created and on the card's ↻ button;
+  the 15-min sweep is the guarantee (no estimate → pull; error → retry after 24h; good → re-pull
+  after 30 days; ≤5 per run). It is deliberately **not** called from the parse-* intake functions
+  — an AirDNA stall must never cost a deal intake. The estimate fills the deal's STR rent
+  (`str_monthly_rent`, or Sub-To `rent_str` + `rent_str_source`) **only when blank**; a typed or
+  extracted number wins, and the card's "Use $X" button is the deliberate overwrite. Sub-To's STR
+  column still stays hidden until `str_permitted` is confirmed — AirDNA can't know that. AirDNA's
+  response schema isn't public, so `parseRentalizer` searches the payload by metric name and the
+  raw payload is stored beside the parsed numbers. All logic is `lib/airdna.js`.
 - `unsubscribe.js` — HMAC-tokenized opt-out.
 - `ghl-inbound.js` — webhook for inbound GHL SMS; attributes the text to the deal most
   recently SMS-blasted to that phone (7-day window via `blast_recipients`).
 - Scheduled (see `netlify.toml`): `sync-buyers` (5 min, Netlify Forms buyer intake →
   `buyers`), `capture-replies` (15 min, Gmail replies → buyers + leads; also purges
-  `sync_runs` >30 days), `weekly-digest` (Mondays 14:00 UTC, 7-day rollup email).
+  `sync_runs` >30 days), `str-estimates-sync` (15 min, AirDNA), `weekly-digest` (Mondays 14:00 UTC, 7-day rollup email).
   There is no Trello sync — deal creation and lifecycle (archive via the 🗑 button)
   are fully in-dashboard.
 
@@ -211,7 +223,7 @@ marked `[follow-up]` in `deal_blasts.detail` — that marker is what caps it at 
 `deck-token.js`, `deck-photo.js`, `heartbeat.js`, `ghl-sms.js`, `unsub.js`,
 `interest-receipt.js`, `contact.js`, `buyer-intake.js`,
 `onboard-sequence.js`, `buy-box-form.js`, `deck-pdf.js`, `deal-address.js`, `gmail.js`,
-`conversation.js`). `unsub.js` owns both minting and verifying the unsubscribe token —
+`conversation.js`, `airdna.js`). `unsub.js` owns both minting and verifying the unsubscribe token —
 they must agree or live links in already-sent email break (pinned in `tests/unsub.test.js`).
 
 **The Deal Deck Address override lives on the STRUCTURE table** — `morby_deals`
@@ -295,7 +307,7 @@ dashboard "✓ synced" indicator and the consecutive-failure email alert).
 ## Database / migrations
 
 Numbered SQL files in `sql/`, **run manually** in the Supabase SQL editor — there is no
-migration runner. Take the next number (highest is `038_buyer_property_types.sql`). Every new
+migration runner. Take the next number (highest is `039_str_estimates.sql`). Every new
 migration must END with `insert into schema_migrations (filename) values ('0XX_name.sql')
 on conflict do nothing;` so applied state stays queryable. Migrations must be
 additive/idempotent (`if not exists`, `do $$` policy guards) and the frontend must fail soft
@@ -324,7 +336,10 @@ email from the buyer conversation panel is from — production: `Zach Kempe
 (`RESEND_FROM`, deals@); personal emails are a person (zach@)** — a deliberate split. The
 Gmail API only honors a From that is the mailbox or a verified "Send mail as" alias, so
 this cannot be deals@ until deals@ exists as an alias of that account), `GOOGLE_MAPS_API_KEY`
-(deck photo fallback),
+(deck photo fallback), `AIRDNA_API_KEY` (Rentalizer Bearer token from AirDNA sales; unset =
+the STR integration is off and the sweep logs "skipped"; optional `AIRDNA_API_BASE` /
+`AIRDNA_RENTALIZER_PATH` override the default `https://api.airdna.co/api/enterprise/v2` +
+`/rentalizer/estimate` without a deploy),
 `CAPTURE_WEBHOOK_SECRET` (GHL webhook), `CALENDLY_URL` (**optional** override for the
 booking button on the deck-page interest receipt — `lib/interest-receipt.js` hardcodes
 `DEFAULT_CALENDLY_URL` as the fallback, so the button renders whether or not this is set.

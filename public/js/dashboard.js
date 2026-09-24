@@ -18,6 +18,8 @@ const expandedDealCards = new Set(); // card_ids currently shown as full cards
 const dealView = { query: "", filter: "all", sort: "attention" }; // triage bar state
 let boardData = null;      // last loadAll fetch — lets renderBoard re-render without refetching
 let dealSearchTimer = null; // debounce for the triage search box
+let strByCard = {};        // card_id -> newest str_estimates row (AirDNA); {} before 039 runs
+let strLoaded = false;     // false before 039 runs — the AirDNA line stays hidden
 
 // Shared with send-blast.js and the deck page (see /js/deal-shared.js) so
 // the blast preview, the live send, and the emails can never disagree.
@@ -366,8 +368,8 @@ function wireCallList() {
 // written by lib/heartbeat.js). Fails soft — before the 025 migration runs
 // the query errors and the indicator simply stays hidden. ──
 // Trello was retired (July 2026) — deals are created by contract/LOI upload
-// now, so only the buyer-form and reply-capture syncs heartbeat here.
-const SYNC_FN_LABELS = { "sync-buyers": "Buyer form", "capture-replies": "Reply capture" };
+// now, so only the buyer-form, reply-capture and AirDNA syncs heartbeat here.
+const SYNC_FN_LABELS = { "sync-buyers": "Buyer form", "capture-replies": "Reply capture", "str-estimates-sync": "AirDNA" };
 async function loadSyncHealth() {
   const el = document.getElementById("sync-health");
   if (!el) return;
@@ -449,6 +451,12 @@ async function loadAll() {
   // blast × buyer), so pulling whole tables gets slow at scale — we only
   // ever need rows for the active cards on screen.
   const cardIds = (props || []).map(p => p.card_id);
+  // AirDNA estimates (039). Newest first, so the first row per card is current.
+  // Fails soft: before the migration, no card shows an AirDNA line at all.
+  const strPromise = supa.from("str_estimates")
+    .select("card_id,status,annual_revenue,adr,occupancy,bedrooms,bathrooms,comps_count,error,fetched_at")
+    .in("card_id", cardIds).order("fetched_at", { ascending: false })
+    .then(r => r, () => ({ data: null }));
   const [{ data: terms, error: termsErr }, { data: statuses, error: statusesErr }, { data: fbPosts, error: fbErr }, { data: buyers, error: buyersErr }, { data: leads, error: leadsErr }, { data: blasts, error: blastsErr }, { data: acq, error: acqErr }, { data: morby, error: morbyErr }, { data: cash }, { data: recips, error: recipsErr }, { data: deckViews }, { data: emailEvents }, { data: tasks }, { data: activities, error: actErr }] = await Promise.all([
     supa.from("deal_terms").select("*").in("card_id", cardIds),
     supa.from("property_status").select("*").in("card_id", cardIds),
@@ -529,6 +537,11 @@ async function loadAll() {
   for (const t of (tasks || [])) (tasksByCard[t.card_id] ||= []).push(t);
 
   allBuyers = buyers || [];
+
+  const { data: strRows } = await strPromise;
+  strByCard = {};
+  for (const r of (strRows || [])) if (!strByCard[r.card_id]) strByCard[r.card_id] = r;
+  strLoaded = !!strRows;
 
   // Stash everything the renderer needs so the triage bar (search / filter /
   // sort / expand) can re-render instantly without refetching Supabase.
@@ -693,6 +706,7 @@ function renderBoard() {
   wireAddMorbyPanel();
   wireAddSubtoPanel();
   wireAddCashPanel();
+  wireStrEstimateButtons();
   wireTriageBar();
   wireCallList();
 
@@ -1226,6 +1240,7 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
             <span class="term-chip">👥 <b>${matchCount}</b> matching buyer${matchCount === 1 ? "" : "s"}</span>
             <button type="button" class="btn btn-ghost btn-sm terms-edit-btn">✎ Edit Terms</button>
           </div>
+          ${renderStrEstimate(p.card_id, t.rent_str, false)}
         </div>
         <div class="terms-edit hidden mt-8">
           <div class="terms-edit-grid">
@@ -1557,6 +1572,88 @@ const MORBY_DSCR_DEFAULTS = {
 
 // (dscrMonthlyPayment comes from /js/deal-shared.js)
 
+// ── AirDNA STR estimate line (039, lib/airdna.js). One renderer for the
+// Sub-To term chips and the Morby/Cash income block. The server fills the
+// deal's STR rent from AirDNA only when it's blank; when a different number is
+// already there, "Use" is the deliberate way to replace it (structure panels
+// only — Sub-To rent is edited in ✎ Edit Terms). ──
+function renderStrEstimate(cardId, currentStr, canUse) {
+  if (!strLoaded) return "";
+  const e = strByCard[cardId];
+  const id = escapeHtml(cardId);
+  const btn = (label) => `<button type="button" class="btn btn-ghost btn-sm airdna-btn" data-card-id="${id}" style="font-size:0.7rem;padding:1px 8px;margin-left:6px">${label}</button>`;
+  const wrap = (inner) => `<div class="airdna-line muted" style="grid-column:1/-1;font-size:0.8rem;margin-top:6px">📈 ${inner}</div>`;
+  if (!e) return wrap(`No AirDNA estimate yet — pulls automatically within 15 min.${btn("Pull now")}`);
+  const when = fmtDate(e.fetched_at) || "";
+  if (e.status !== "ok") {
+    return wrap(`<span style="color:#B7791F" title="${escapeHtml(e.error || "")}">AirDNA couldn't price this (${escapeHtml((e.error || "error").slice(0, 90))})</span> · tried ${escapeHtml(when)}${btn("↻ Retry")}`);
+  }
+  const monthly = Math.round(Number(e.annual_revenue) / 12);
+  const bits = [`<b>${fmtMoney(monthly)}/mo</b> (${fmtMoney(e.annual_revenue)}/yr)`];
+  if (e.adr) bits.push(`ADR ${fmtMoney(Math.round(e.adr))}`);
+  if (e.occupancy != null) bits.push(`${Math.round(e.occupancy * 100)}% occ.`);
+  if (e.bedrooms) bits.push(`${e.bedrooms} bd${e.bathrooms ? ` / ${e.bathrooms} ba` : ""}`);
+  if (e.comps_count) bits.push(`${e.comps_count} comps`);
+  const differs = canUse && Number(currentStr) && Math.abs(Number(currentStr) - monthly) >= 1;
+  const use = differs ? `<button type="button" class="btn btn-ghost btn-sm airdna-use-btn" data-monthly="${monthly}" style="font-size:0.7rem;padding:1px 8px;margin-left:6px" title="Replace the Short-Term Rent above with AirDNA's number">Use ${fmtMoney(monthly)}</button>` : "";
+  return wrap(`AirDNA STR: ${bits.join(" · ")} · ${escapeHtml(when)}${use}${btn("↻")}`);
+}
+
+// Pull (or re-pull) one deal's estimate. quiet: the post-intake call — no
+// alert on failure (the 15-min sweep retries), and no re-render while the user
+// is typing into the freshly created card.
+async function pullStrEstimate(cardId, { quiet = false } = {}) {
+  try {
+    const { data: { session: s } } = await supa.auth.getSession();
+    const res = await fetch("/.netlify/functions/str-estimate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
+      body: JSON.stringify({ card_id: cardId }),
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
+    if (result.skipped) {
+      if (!quiet) toast(`AirDNA skipped this deal: ${result.skipped}.`, { type: "error" });
+      return;
+    }
+    const est = result.estimate || {};
+    if (est.status === "ok") {
+      const filled = result.filled ? " — filled the blank Short-Term Rent" : "";
+      toast(`📈 AirDNA: ${fmtMoney(Math.round(est.annual_revenue / 12))}/mo STR estimate${filled}.`, { type: "success" });
+    } else if (!quiet) {
+      toast(`AirDNA: ${est.error || "no estimate"}`, { type: "error" });
+    }
+    const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+    if (!(quiet && typing)) await loadAll();
+  } catch (e) {
+    if (!quiet) toast(`AirDNA pull failed: ${e.message}`, { type: "error" });
+    else console.warn("AirDNA post-intake pull:", e.message);
+  }
+}
+
+function wireStrEstimateButtons() {
+  if (wireStrEstimateButtons.done) return;
+  wireStrEstimateButtons.done = true;
+  document.addEventListener("click", async (ev) => {
+    const pull = ev.target.closest(".airdna-btn");
+    if (pull) {
+      pull.disabled = true;
+      pull.textContent = "Pulling…";
+      await pullStrEstimate(pull.dataset.cardId);
+      pull.disabled = false; // only matters if the re-render didn't replace it
+      return;
+    }
+    const use = ev.target.closest(".airdna-use-btn");
+    if (use) {
+      const input = use.closest(".structure-panel")?.querySelector('.acq-input[data-field="str_monthly_rent"]');
+      if (!input) return;
+      input.value = use.dataset.monthly;
+      input.dispatchEvent(new Event("blur")); // the panel saves on blur
+      use.textContent = "✓ Used";
+    }
+  });
+}
+
 // Shared editor panel for BOTH structure-backed deal types (Morby and Cash).
 // One renderer on purpose: the two panels share the address override, the deck
 // photo, the gallery, the property type, the timeline, the property details,
@@ -1758,6 +1855,7 @@ function renderStructurePanel(p, row, terms, acq, kind, carriedFrom) {
         ` : `
           <div class="acq-field"><label>Long-Term Rent (monthly)</label><input type="number" class="acq-input" data-field="ltr_monthly_rent" value="${num(m.ltr_monthly_rent)}"></div>
           <div class="acq-field"><label>Short-Term Rent (monthly)</label><input type="number" class="acq-input" data-field="str_monthly_rent" value="${num(m.str_monthly_rent)}"></div>
+          ${renderStrEstimate(p.card_id, m.str_monthly_rent, true)}
         `}
         <div class="acq-field">
           <label>Property Taxes (monthly)
@@ -2860,6 +2958,7 @@ function wireAddMorbyPanel() {
       // Open the new card in full so the extracted terms are reviewed, not
       // buried as a collapsed row.
       if (result.card_id) expandedDealCards.add(result.card_id);
+      pullStrEstimate(result.card_id, { quiet: true });
 
       statusEl.textContent = "✓ Created — review the new card below.";
       panel.classList.add("hidden");
@@ -2942,6 +3041,7 @@ function wireAddSubtoPanel() {
       // Open the new card in full so the extracted terms are reviewed, not
       // buried as a collapsed row.
       if (result.card_id) expandedDealCards.add(result.card_id);
+      pullStrEstimate(result.card_id, { quiet: true });
 
       submitBtn.textContent = "Writing marketing copy…";
       let copyError = null;
@@ -3089,6 +3189,7 @@ function wireAddCashPanel() {
       // Open the new card in full so the extracted price stack is reviewed,
       // not buried as a collapsed row.
       if (result.card_id) expandedDealCards.add(result.card_id);
+      pullStrEstimate(result.card_id, { quiet: true });
 
       panel.classList.add("hidden");
       contractInput.value = "";

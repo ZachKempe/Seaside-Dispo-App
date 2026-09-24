@@ -25,3 +25,9 @@
 # F9 — weekly digest email to NOTIFY_EMAIL (Mondays 14:00 UTC ≈ 9am ET / 8am CT).
 [functions."weekly-digest"]
   schedule = "0 14 * * 1"
+
+# AirDNA — every single-family deal gets a short-term-rental estimate (new
+# deals within 15 min even if the dashboard's post-intake call never ran),
+# re-pulled every 30 days so the STR outlook is tracked. See lib/airdna.js.
+[functions."str-estimates-sync"]
+  schedule = "*/15 * * * *"

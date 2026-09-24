@@ -181,24 +181,29 @@ async function callRentalizer(body, env = process.env) {
   }
 }
 
-// Fill the deal's STR rent from the estimate — ONLY where it's blank. A number
-// typed by hand or extracted from the LOI/contract always wins; this is the
-// same "only ever FILL a blank" rule parse-cash follows for the price stack.
+// Write the estimate into the deal's STR rent box.
+//   overwrite:true  — a contract/LOI was just uploaded, or ↻ was clicked. Zach's
+//                     rule (Sept 23 2026): after a PSA upload the box IS the
+//                     AirDNA number, replacing whatever the LOI extraction
+//                     guessed. Both are deliberate, one-deal actions.
+//   overwrite:false — the scheduled sweep (first pull + 30-day refresh). Only
+//                     fills a blank, so a number typed by hand after the upload
+//                     is never silently replaced by a background job.
 // Sub-To also gets rent_str_source, because deal-shared hides any rent with no
 // source; its STR column still stays hidden until str_permitted is confirmed,
 // which AirDNA can't know.
-async function fillBlankStrRent(sb, prop, structRow, monthly) {
+async function fillStrRent(sb, prop, structRow, monthly, overwrite) {
   if (!monthly || !structRow) return null;
   const table = structTableFor(prop);
   const id = encodeURIComponent(prop.card_id);
   if (table === "deal_terms") {
-    if (structRow.rent_str) return null;
+    if (structRow.rent_str && (!overwrite || Number(structRow.rent_str) === monthly)) return null;
     const patch = { rent_str: monthly };
-    if (!String(structRow.rent_str_source || "").trim()) patch.rent_str_source = "AirDNA Rentalizer (12-mo projection)";
+    if (overwrite || !String(structRow.rent_str_source || "").trim()) patch.rent_str_source = "AirDNA Rentalizer (12-mo projection)";
     await sb(`/deal_terms?card_id=eq.${id}`, { method: "PATCH", body: JSON.stringify(patch) });
     return patch;
   }
-  if (structRow.str_monthly_rent) return null;
+  if (structRow.str_monthly_rent && (!overwrite || Number(structRow.str_monthly_rent) === monthly)) return null;
   const patch = { str_monthly_rent: monthly };
   await sb(`/${table}?card_id=eq.${id}`, { method: "PATCH", body: JSON.stringify(patch) });
   return patch;
@@ -213,7 +218,7 @@ async function loadStructRow(sb, prop) {
 // Pull one deal. Always records an attempt (ok or error) so the sweep's
 // retry spacing works and the dashboard can say why there's no number.
 // Returns { skipped } for ineligible deals without writing anything.
-async function pullStrEstimate(sb, prop, env = process.env) {
+async function pullStrEstimate(sb, prop, { overwrite = false, env = process.env } = {}) {
   const structRow = await loadStructRow(sb, prop);
   const elig = strEligibility(prop, structRow);
   if (!elig.ok) return { skipped: elig.reason };
@@ -243,7 +248,7 @@ async function pullStrEstimate(sb, prop, env = process.env) {
     body: JSON.stringify(row),
   });
   if (row.status === "ok") {
-    try { filled = await fillBlankStrRent(sb, prop, structRow, monthlyFromAnnual(row.annual_revenue)); }
+    try { filled = await fillStrRent(sb, prop, structRow, monthlyFromAnnual(row.annual_revenue), overwrite); }
     catch (e) { console.error("airdna fill rent:", e.message); }
   }
   return { estimate: (saved && saved[0]) || row, filled };

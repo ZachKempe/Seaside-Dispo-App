@@ -73,3 +73,33 @@ test("sweep: new deals now, errors after 24h, good estimates re-pulled after 30 
   assert.equal(isDue({ status: "ok", fetched_at: ago(24 * 29) }, now), false);
   assert.equal(isDue({ status: "ok", fetched_at: ago(24 * 31) }, now), true);
 });
+
+// The STR rent box rule: a PSA/LOI upload (overwrite) replaces whatever the
+// LOI extraction put there; the background sweep only ever fills a blank.
+async function runPull(structRow, overwrite) {
+  const { pullStrEstimate } = require("../netlify/functions/lib/airdna");
+  const writes = [];
+  const sb = async (path, opts = {}) => {
+    if (!opts.method) return [structRow];
+    writes.push({ path, method: opts.method, body: JSON.parse(opts.body) });
+    return [JSON.parse(opts.body)];
+  };
+  const realFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, text: async () => JSON.stringify({ payload: { revenue: { ltm: 51000 } }, status: { type: "success" } }) });
+  try {
+    await pullStrEstimate(sb, { card_id: "morby-x", deal_type: "morby", name: "1 A St, Ocala, FL" }, { overwrite, env: { AIRDNA_API_KEY: "k" } });
+  } finally { global.fetch = realFetch; }
+  return writes.filter(w => w.method === "PATCH");
+}
+
+test("after a PSA upload, AirDNA replaces the LOI's STR rent", async () => {
+  const patches = await runPull({ property_type: "single_family", str_monthly_rent: 3000 }, true);
+  assert.deepEqual(patches.map(p => p.body), [{ str_monthly_rent: 4250 }]);
+  assert.match(patches[0].path, /^\/morby_deals\?card_id=eq\.morby-x$/);
+});
+
+test("the background sweep never replaces a number that's already in the box", async () => {
+  assert.deepEqual(await runPull({ property_type: "single_family", str_monthly_rent: 3000 }, false), []);
+  const blank = await runPull({ property_type: "single_family", str_monthly_rent: null }, false);
+  assert.deepEqual(blank.map(p => p.body), [{ str_monthly_rent: 4250 }]);
+});

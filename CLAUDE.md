@@ -159,9 +159,13 @@ duplicate buyers who each receive their own blast.
   The dashboard fires `str-estimate` right after a new deal is created and on the card's ↻ button;
   the 15-min sweep is the guarantee (no estimate → pull; error → retry after 24h; good → re-pull
   after 30 days; ≤5 per run). It is deliberately **not** called from the parse-* intake functions
-  — an AirDNA stall must never cost a deal intake. The estimate fills the deal's STR rent
-  (`str_monthly_rent`, or Sub-To `rent_str` + `rent_str_source`) **only when blank**; a typed or
-  extracted number wins, and the card's "Use $X" button is the deliberate overwrite. Sub-To's STR
+  — an AirDNA stall must never cost a deal intake. **Every contract/LOI upload (new card or
+  in-card re-extract) and ↻ write AirDNA's monthly figure INTO the STR rent box**
+  (`str_monthly_rent`, or Sub-To `rent_str` + `rent_str_source`), replacing what the LOI
+  extraction put there — Zach's rule, Sept 2026. The sweep only ever fills a *blank* box, so a
+  number hand-typed after the upload is never replaced in the background; "Use $X" on the card
+  puts AirDNA's number back. The dashboard also sets the on-screen box immediately, because
+  panel fields save on blur and a stale value would be written straight back. Sub-To's STR
   column still stays hidden until `str_permitted` is confirmed — AirDNA can't know that. AirDNA's
   response schema isn't public, so `parseRentalizer` searches the payload by metric name and the
   raw payload is stored beside the parsed numbers. All logic is `lib/airdna.js`.

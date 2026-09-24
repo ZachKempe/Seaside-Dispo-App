@@ -1573,10 +1573,10 @@ const MORBY_DSCR_DEFAULTS = {
 // (dscrMonthlyPayment comes from /js/deal-shared.js)
 
 // ── AirDNA STR estimate line (039, lib/airdna.js). One renderer for the
-// Sub-To term chips and the Morby/Cash income block. The server fills the
-// deal's STR rent from AirDNA only when it's blank; when a different number is
-// already there, "Use" is the deliberate way to replace it (structure panels
-// only — Sub-To rent is edited in ✎ Edit Terms). ──
+// Sub-To term chips and the Morby/Cash income block. A contract/LOI upload and
+// ↻ write AirDNA's number into the STR rent box; the 15-min sweep only fills a
+// blank one. If the box has since been hand-edited, "Use" puts AirDNA's number
+// back (structure panels only — Sub-To rent is edited in ✎ Edit Terms). ──
 function renderStrEstimate(cardId, currentStr, canUse) {
   if (!strLoaded) return "";
   const e = strByCard[cardId];
@@ -1599,16 +1599,16 @@ function renderStrEstimate(cardId, currentStr, canUse) {
   return wrap(`AirDNA STR: ${bits.join(" · ")} · ${escapeHtml(when)}${use}${btn("↻")}`);
 }
 
-// Pull (or re-pull) one deal's estimate. quiet: the post-intake call — no
-// alert on failure (the 15-min sweep retries), and no re-render while the user
-// is typing into the freshly created card.
+// Pull (or re-pull) one deal's estimate and write it into the STR rent box.
+// quiet: the post-upload call — no alert on failure (the 15-min sweep
+// retries), and no re-render while the user is typing in the card.
 async function pullStrEstimate(cardId, { quiet = false } = {}) {
   try {
     const { data: { session: s } } = await supa.auth.getSession();
     const res = await fetch("/.netlify/functions/str-estimate", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
-      body: JSON.stringify({ card_id: cardId }),
+      body: JSON.stringify({ card_id: cardId, overwrite: true }),
     });
     const result = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
@@ -1618,7 +1618,13 @@ async function pullStrEstimate(cardId, { quiet = false } = {}) {
     }
     const est = result.estimate || {};
     if (est.status === "ok") {
-      const filled = result.filled ? " — filled the blank Short-Term Rent" : "";
+      // Put the number in the box on screen NOW, even if we skip the re-render
+      // below: every panel field saves on blur, so a stale value left showing
+      // would be written straight back over AirDNA's the next time it's tabbed through.
+      const monthly = Math.round(est.annual_revenue / 12);
+      const box = document.querySelector(`.structure-panel[data-card-id="${CSS.escape(cardId)}"] .acq-input[data-field="str_monthly_rent"]`);
+      if (box && result.filled) box.value = monthly;
+      const filled = result.filled ? " — entered as Short-Term Rent" : "";
       toast(`📈 AirDNA: ${fmtMoney(Math.round(est.annual_revenue / 12))}/mo STR estimate${filled}.`, { type: "success" });
     } else if (!quiet) {
       toast(`AirDNA: ${est.error || "no estimate"}`, { type: "error" });
@@ -1645,11 +1651,17 @@ function wireStrEstimateButtons() {
     }
     const use = ev.target.closest(".airdna-use-btn");
     if (use) {
-      const input = use.closest(".structure-panel")?.querySelector('.acq-input[data-field="str_monthly_rent"]');
-      if (!input) return;
-      input.value = use.dataset.monthly;
-      input.dispatchEvent(new Event("blur")); // the panel saves on blur
-      use.textContent = "✓ Used";
+      // Direct write rather than a synthetic blur, for the reason on
+      // .use-carry-btn: the async blur save races the re-render.
+      const panel = use.closest(".structure-panel");
+      if (!panel) return;
+      use.disabled = true;
+      const { error } = await supa.from(panel.dataset.table).upsert(
+        { card_id: panel.dataset.cardId, str_monthly_rent: Number(use.dataset.monthly), updated_at: new Date().toISOString() },
+        { onConflict: "card_id" },
+      );
+      if (error) { toast(`Couldn't save: ${error.message}`, { type: "error" }); use.disabled = false; return; }
+      await loadAll();
     }
   });
 }
@@ -2910,6 +2922,7 @@ async function extractLoi(btn) {
 
     statusEl.textContent = "✓ Extracted — review the fields below.";
     await loadAll();
+    pullStrEstimate(cardId, { quiet: true }); // AirDNA → Short-Term Rent box
   } catch (e) {
     statusEl.textContent = `Couldn't extract: ${e.message}`;
   } finally {
@@ -3134,6 +3147,7 @@ async function extractCashContract(btn) {
     if (!res.ok) throw new Error(result.error || "Extraction failed");
     statusEl.textContent = "✓ Extracted — review the terms below.";
     await loadAll();
+    pullStrEstimate(cardId, { quiet: true }); // AirDNA → Short-Term Rent box
   } catch (e) {
     statusEl.textContent = `Couldn't extract: ${e.message}`;
   } finally {

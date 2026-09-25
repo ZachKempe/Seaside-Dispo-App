@@ -74,11 +74,20 @@ exports.handler = async (event) => {
     const name =
       b.full_name || b.name || contact.name ||
       `${contact.firstName || ""} ${contact.lastName || ""}`.trim();
-    const text = b.message || b.body || b.sms || b.text || "";
+    // GHL's "Customer Replied" workflow webhook sends the text as an object,
+    // `message: { type, body }` — reading it as a string made every inbound
+    // text "[object Object]", so STOP never matched and the reply was garbage.
+    const msg = b.message && typeof b.message === "object" ? b.message : {};
+    const text = String(msg.body || (typeof b.message === "string" ? b.message : "") || b.body || b.sms || b.text || "");
 
     if (!phone) return { statusCode: 200, body: "no phone — ignored" };
 
-    const messageId = b.messageId || b.message_id || b.id || `ghl-${phone}-${text}`.slice(0, 180);
+    // Never the bare `id`: in a workflow payload that can be the CONTACT id,
+    // which would dedupe every later text from the same person as a repeat.
+    // The fallback is day-bucketed so GHL retries collapse but a buyer who
+    // texts "yes" again next week still counts.
+    const messageId = b.messageId || b.message_id || msg.id || msg.messageId ||
+      `ghl-${phone}-${new Date().toISOString().slice(0, 10)}-${text}`.slice(0, 180);
     const fresh = await markSeen(messageId, "sms");
     if (!fresh) return { statusCode: 200, body: "duplicate — ignored" };
 

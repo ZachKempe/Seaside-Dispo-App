@@ -15,6 +15,22 @@ let allBuyers = []; // every active buyer — used by the blast modal's "by meth
 // default and expand on click; the triage bar searches/filters/sorts them.
 // State lives here so it survives loadAll re-renders within the session.
 const expandedDealCards = new Set(); // card_ids currently shown as full cards
+// Morby deals below the PSA stage are hidden from this board (see
+// morbyOnDashboard); these are shown anyway for the session — a just-created
+// LOI card, or a #deal= deep link from the Pipeline board.
+const revealedDealCards = new Set();
+
+// Zach's rule (Sept 2026): a Morby deal only belongs on the posting board once
+// the Pipeline has it at the "PSA SIGNED" stage or later — the hundreds of
+// LOI-stage cards were just taking up space. Stages are operator-editable, so
+// the PSA stage is found by label; if it's been renamed away, nothing is hidden.
+function morbyOnDashboard(p) {
+  if (p.deal_type !== "morby" || revealedDealCards.has(p.card_id)) return true;
+  const psa = DISPO_STAGES.find(s => /\bpsa\b/i.test(s.label));
+  if (!psa) return true;
+  const stage = DISPO_BY_KEY[p.dispo_stage] || DISPO_STAGES[0];
+  return stage.key !== "dead" && DISPO_BY_KEY[stage.key].rank >= DISPO_BY_KEY[psa.key].rank;
+}
 const dealView = { query: "", filter: "all", sort: "attention" }; // triage bar state
 let boardData = null;      // last loadAll fetch — lets renderBoard re-render without refetching
 let dealSearchTimer = null; // debounce for the triage search box
@@ -409,22 +425,36 @@ async function loadSyncHealth() {
   if (warn) el.innerHTML += ` <span style="color:#B7791F">·</span> ${warn}`;
 }
 
-// Returns a warning span if the Resend webhook looks dead (a recent email blast
-// produced no email_events), else "". Fails soft — any query error yields "".
+// Returns a warning span if email isn't flowing, else "". Two different
+// failures, deliberately told apart: (1) the latest email blast sent nothing —
+// the provider rejected it (e.g. Sept 2026: Resend "domain is not verified"
+// after the DKIM record vanished from DNS), which used to be misreported below
+// as a dead webhook; (2) mail went out but no email_events came back after it —
+// the Resend webhook (resend-events) is the suspect. Only `sent` recipients
+// count as a send for (2), since a failed send never produces events.
+// Fails soft — any query error yields "".
 async function webhookStaleWarning() {
   try {
-    const [{ data: blast }, { data: evt }] = await Promise.all([
-      supa.from("blast_recipients").select("blasted_at")
+    const [{ data: lastBlast }, { data: blast }, { data: evt }] = await Promise.all([
+      supa.from("deal_blasts").select("status,blasted_at")
         .eq("channel", "email").order("blasted_at", { ascending: false }).limit(1),
+      supa.from("blast_recipients").select("blasted_at")
+        .eq("channel", "email").eq("status", "sent").order("blasted_at", { ascending: false }).limit(1),
       supa.from("email_events").select("created_at")
         .order("created_at", { ascending: false }).limit(1),
     ]);
-    const lastBlast = blast && blast[0] && new Date(blast[0].blasted_at).getTime();
-    if (!lastBlast) return ""; // never email-blasted — nothing to expect
-    const ageH = (Date.now() - lastBlast) / 3600000;
+    if (lastBlast && lastBlast[0] && lastBlast[0].status === "failed") {
+      const { data: why } = await supa.from("blast_recipients").select("detail")
+        .eq("channel", "email").eq("status", "failed").order("blasted_at", { ascending: false }).limit(1);
+      const reason = (why && why[0] && why[0].detail) || "see the blast log on the deal card";
+      return `<span style="color:var(--red,#C53030);font-weight:700" title="${escapeHtml(`Latest email blast (${new Date(lastBlast[0].blasted_at).toLocaleDateString()}) sent nothing: ${reason}`)}">⚠ Email blasts failing</span>`;
+    }
+    const lastSent = blast && blast[0] && new Date(blast[0].blasted_at).getTime();
+    if (!lastSent) return ""; // never email-blasted — nothing to expect
+    const ageH = (Date.now() - lastSent) / 3600000;
     if (ageH < 1) return ""; // too soon; give Resend time to deliver + report
     const lastEvt = evt && evt[0] && new Date(evt[0].created_at).getTime();
-    if (!lastEvt || lastEvt < lastBlast) {
+    if (!lastEvt || lastEvt < lastSent) {
       return `<span style="color:#B7791F;font-weight:700" title="No email opens/clicks/bounces recorded since the last blast — the Resend webhook (resend-events) may be misconfigured.">⚠ Resend webhook may be down</span>`;
     }
     return "";
@@ -569,8 +599,10 @@ async function loadAll() {
 function renderBoard() {
   if (!boardData) return;
   const content = document.getElementById("content");
-  const { props, buyers, leads, deckViews, activities, termsByCard, statusByCard, fbByCard, leadsByCard,
+  const { props: allProps, buyers, leads, deckViews, activities, termsByCard, statusByCard, fbByCard, leadsByCard,
           blastsByCard, recipsByCard, viewsByCard, eventsByCard, acqByCard, morbyByCard, cashByCard, tasksByCard } = boardData;
+  const props = allProps.filter(morbyOnDashboard);
+  const hiddenMorby = allProps.length - props.length;
 
   // B4.1 — the buy-box completeness number, on the page Zach opens daily. A
   // wildcard buyer has no state, strategy or budget on file, so they land in
@@ -676,7 +708,7 @@ function renderBoard() {
     </div>
     <div class="deal-type-group">
       <div class="deal-type-group-header flex-between">
-        <span>🤝 Morby Deals <span class="muted">${groupCount(morbyProps, allMorby)}</span></span>
+        <span>🤝 Morby Deals <span class="muted">${groupCount(morbyProps, allMorby)}</span>${hiddenMorby ? ` <a href="/pipeline.html" class="muted" style="font-size:0.78rem;font-weight:400" title="Morby deals appear here once the Pipeline has them at PSA SIGNED">· ${hiddenMorby} pre-PSA hidden</a>` : ""}</span>
         <button type="button" class="btn btn-primary btn-sm" id="add-morby-btn">+ Add Morby Deal</button>
       </div>
       <div id="add-morby-panel" class="card hidden" style="margin-bottom:16px">
@@ -3011,10 +3043,10 @@ function wireAddMorbyPanel() {
       if (!res.ok) throw new Error(result.error || "Extraction failed");
       // Open the new card in full so the extracted terms are reviewed, not
       // buried as a collapsed row.
-      if (result.card_id) expandedDealCards.add(result.card_id);
+      if (result.card_id) { expandedDealCards.add(result.card_id); revealedDealCards.add(result.card_id); }
       pullRentEstimates(result.card_id, { quiet: true });
 
-      statusEl.textContent = "✓ Created — review the new card below.";
+      statusEl.textContent = "✓ Created — review the new card below (it leaves this board on reload until the Pipeline has it at PSA SIGNED).";
       panel.classList.add("hidden");
       fileInput.value = "";
       await loadAll();
@@ -4577,6 +4609,7 @@ document.getElementById("lead-modal-delete").addEventListener("click", deleteLea
     const cardId = decodeURIComponent(m[1]);
     if (boardData.props.some(p => p.card_id === cardId)) {
       expandedDealCards.add(cardId);
+      revealedDealCards.add(cardId);
       renderBoard();
       const card = document.querySelector(`.prop-card[data-card-id="${CSS.escape(cardId)}"]`);
       if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });

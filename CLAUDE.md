@@ -28,7 +28,7 @@ duplicate buyers who each receive their own blast.
 |---|---|---|
 | Sign in | `public/index.html` | Supabase email/password auth + forgot-password (`reset.html` handles the recovery link) |
 | Reports | `public/reports.html` | Read-only rollups: per-deal funnel, copy-variation performance, time-in-stage aging, closed-deal stats |
-| Posting Dashboard | `public/dashboard.html` | Deals in three structure groups (Sub-To via contract upload, Morby via LOI upload, Cash via contract upload — all AI-extracted), terms, copy variations, email/SMS blasts, per-deal leads |
+| Posting Dashboard | `public/dashboard.html` | Deals in three structure groups (Sub-To via contract upload, Morby via LOI upload, Cash via contract upload — all AI-extracted), terms, copy variations, email/SMS blasts, per-deal leads. Morby deals only appear once the Pipeline has them at the PSA SIGNED stage or later (`morbyOnDashboard`; Dead excluded) |
 | Buyer Dashboard | `public/buyers.html` | Buyer CRM: master-detail list, CSV import, deal matcher, buy-box onboarding |
 | Contacts | `public/contacts.html` | The non-buyer network: DSCR lenders, mortgage brokers, transactional lenders, VIP agents (`?type=` picks the list) + CSV import |
 | Pipeline | `public/pipeline.html` | Kanban dispo board: manual stages, drag-drop, shared notes, stale flags |

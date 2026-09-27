@@ -20,7 +20,7 @@ The CSV import engine (`parseCsv`, `detectMapping`, `normalizeState`, `buildRows
 shared by the buyer and contact importers — a second copy of "which column is the phone
 number" and "have we already got this person" drifts silently, and drifted dedupe means
 duplicate buyers who each receive their own blast.
-`fmtMoney` is deliberately per-page (dashboard shows "—" for empty, buyers/pipeline show "").
+`fmtMoney` is deliberately per-page (dashboard shows "—" for empty, buyers show "").
 
 ### Surfaces
 
@@ -28,10 +28,9 @@ duplicate buyers who each receive their own blast.
 |---|---|---|
 | Sign in | `public/index.html` | Supabase email/password auth + forgot-password (`reset.html` handles the recovery link) |
 | Reports | `public/reports.html` | Read-only rollups: per-deal funnel, copy-variation performance, time-in-stage aging, closed-deal stats |
-| Posting Dashboard | `public/dashboard.html` | Deals in three structure groups (Sub-To via contract upload, Morby via LOI upload, Cash via contract upload — all AI-extracted), terms, copy variations, email/SMS blasts, per-deal leads. Morby deals only appear once the Pipeline has them at the PSA SIGNED stage or later (`morbyOnDashboard`; Dead excluded) |
+| Posting Dashboard | `public/dashboard.html` | Deals in three structure groups (Sub-To via contract upload, Morby via LOI upload, Cash via contract upload — all AI-extracted), terms, copy variations, email/SMS blasts, per-deal leads. Morby deals only appear at the PSA SIGNED stage or later (`morbyOnDashboard`; Dead excluded) — "+ Add Morby Deal" stamps every new card at PSA SIGNED (`stampPsaSigned`), since a Morby deal is only added once its PSA is signed |
 | Buyer Dashboard | `public/buyers.html` | Buyer CRM: master-detail list, CSV import, deal matcher, buy-box onboarding |
 | Contacts | `public/contacts.html` | The non-buyer network: DSCR lenders, mortgage brokers, transactional lenders, VIP agents (`?type=` picks the list) + CSV import |
-| Pipeline | `public/pipeline.html` | Kanban dispo board: manual stages, drag-drop, shared notes, stale flags |
 | Deck page (public) | `/deck/<slug>` → `netlify/functions/deck.js` | Buyer-facing deal page; `?b=<token>` attributes views/interest to a buyer; `.pdf` suffix redirects to the stored PDF |
 
 ### Functions
@@ -194,7 +193,7 @@ bugs.
 
 **Sub-To is the FALLBACK structure everywhere it's resolved**, so every other structure has
 to be named explicitly — `dealStrategyOf` (dashboard.js), the `dealStrategy` ternary in
-`blast-core.js`, the `allSubto` board filter, and `plDealType` (pipeline.js). A structure
+`blast-core.js`, and the `allSubto` board filter. A structure
 missing from one of those doesn't fail loudly; it quietly files a cash deal under Sub-To and
 blasts it with a Sub-To email. `dealMatchPrice` exists for the same reason: a cash deal has
 no `deal_terms` row, so reading `terms.price` hands `matchesDeal` a 0 — and a 0 price makes
@@ -220,7 +219,7 @@ Engagement data model: `deck_views` (page views + PDF downloads + dwell + `sourc
 which channel the link came from — `sms`/`email`/`dm`/`''`=direct, migration 030;
 blast-core tags every deck link with `&s=<channel>`), `email_events`
 (opens/clicks from Resend), `buyer_activity` (inbound replies + manual touches),
-`deal_leads` (pipeline stages), `deal_tasks` (next actions with due dates, pipeline page).
+`deal_leads` (per-deal lead stages, the "Leads" list on each Posting card).
 A `deck_views` row with `kind='pdf'` must mean a real download — `deck.js` resolves the
 Storage object before logging one (see `lib/deck-pdf.js`), because that row feeds both
 `engagementScore` and the buyer-facing download count.
@@ -428,5 +427,8 @@ is where every forgot-password link had been going.
   licensed Söhne OTF ever lands, swapping `DECK_FONT_FILES` is the whole change.
 - Soft-delete + undo toast over hard deletes; deletes/archives are reversible.
 - Build specs for larger features live in `docs/` and the repo root (`*-BUILD-SPEC.md`);
-  `dispo-stage-tracker-BUILD-SPEC.md` records locked product decisions (six manual stages,
-  no move history, no auto-movement) — don't re-litigate them.
+  `dispo-stage-tracker-BUILD-SPEC.md` is historical: the Pipeline board it specced was
+  **removed Sept 27 2026** (page, nav link, stage chips, deal_tasks UI, Reports aging /
+  closed-deal sections; `/pipeline.html` 301s to Posting). Its tables (`dispo_stages`,
+  `deal_notes`, `deal_tasks`, `properties.dispo_stage`) were deliberately left in place —
+  `dispo_stages` still drives the Morby PSA gate via `public/js/dispo.js`.

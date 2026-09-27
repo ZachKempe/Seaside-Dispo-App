@@ -16,6 +16,12 @@
   to = "/.netlify/functions/buy-box"
   status = 200
 
+# The Pipeline board was removed (Sept 27 2026); old bookmarks land on Posting.
+[[redirects]]
+  from = "/pipeline.html"
+  to = "/dashboard.html"
+  status = 301
+
 [functions."sync-buyers"]
   schedule = "*/5 * * * *"
 

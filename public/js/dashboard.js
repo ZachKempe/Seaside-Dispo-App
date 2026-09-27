@@ -17,19 +17,35 @@ let allBuyers = []; // every active buyer — used by the blast modal's "by meth
 const expandedDealCards = new Set(); // card_ids currently shown as full cards
 // Morby deals below the PSA stage are hidden from this board (see
 // morbyOnDashboard); these are shown anyway for the session — a just-created
-// LOI card, or a #deal= deep link from the Pipeline board.
+// LOI card, or a #deal= deep link.
 const revealedDealCards = new Set();
 
 // Zach's rule (Sept 2026): a Morby deal only belongs on the posting board once
-// the Pipeline has it at the "PSA SIGNED" stage or later — the hundreds of
-// LOI-stage cards were just taking up space. Stages are operator-editable, so
-// the PSA stage is found by label; if it's been renamed away, nothing is hidden.
+// it's at the "PSA SIGNED" stage or later — the hundreds of LOI-stage cards
+// were just taking up space. The Pipeline board that moved stages was removed
+// (Sept 27 2026): Zach now only adds a Morby deal once its PSA is signed, so
+// "+ Add Morby Deal" stamps the new card at PSA SIGNED (stampPsaSigned) and
+// the old pre-PSA cards simply stay hidden. The PSA stage is found by label in
+// `dispo_stages`; if it's been renamed away, nothing is hidden.
 function morbyOnDashboard(p) {
   if (p.deal_type !== "morby" || revealedDealCards.has(p.card_id)) return true;
-  const psa = DISPO_STAGES.find(s => /\bpsa\b/i.test(s.label));
+  const psa = psaStage();
   if (!psa) return true;
   const stage = DISPO_BY_KEY[p.dispo_stage] || DISPO_STAGES[0];
   return stage.key !== "dead" && DISPO_BY_KEY[stage.key].rank >= DISPO_BY_KEY[psa.key].rank;
+}
+function psaStage() { return DISPO_STAGES.find(s => /\bpsa\b/i.test(s.label)) || null; }
+
+// Put a just-created Morby card at PSA SIGNED so it stays on the board after
+// reload. Returns an error message, or "" on success / when there's no PSA stage.
+async function stampPsaSigned(cardId) {
+  const psa = psaStage();
+  if (!cardId || !psa) return "";
+  const { data: { session: s } } = await supa.auth.getSession();
+  const { error } = await supa.from("properties")
+    .update({ dispo_stage: psa.key, stage_moved_at: new Date().toISOString(), stage_moved_by: (s && s.user && s.user.email) || null })
+    .eq("card_id", cardId);
+  return error ? error.message : "";
 }
 const dealView = { query: "", filter: "all", sort: "attention" }; // triage bar state
 let boardData = null;      // last loadAll fetch — lets renderBoard re-render without refetching
@@ -494,7 +510,7 @@ async function loadAll() {
       .select("card_id,status,rent,rent_low,rent_high,bedrooms,bathrooms,square_feet,comps_count,error,fetched_at")
       .in("card_id", cardIds).order("fetched_at", { ascending: false }),
   ].map(q => q.then(r => r, () => ({ data: null }))));
-  const [{ data: terms, error: termsErr }, { data: statuses, error: statusesErr }, { data: fbPosts, error: fbErr }, { data: buyers, error: buyersErr }, { data: leads, error: leadsErr }, { data: blasts, error: blastsErr }, { data: acq, error: acqErr }, { data: morby, error: morbyErr }, { data: cash }, { data: recips, error: recipsErr }, { data: deckViews }, { data: emailEvents }, { data: tasks }, { data: activities, error: actErr }] = await Promise.all([
+  const [{ data: terms, error: termsErr }, { data: statuses, error: statusesErr }, { data: fbPosts, error: fbErr }, { data: buyers, error: buyersErr }, { data: leads, error: leadsErr }, { data: blasts, error: blastsErr }, { data: acq, error: acqErr }, { data: morby, error: morbyErr }, { data: cash }, { data: recips, error: recipsErr }, { data: deckViews }, { data: emailEvents }, { data: activities, error: actErr }] = await Promise.all([
     supa.from("deal_terms").select("*").in("card_id", cardIds),
     supa.from("property_status").select("*").in("card_id", cardIds),
     supa.from("facebook_posts").select("*").in("card_id", cardIds),
@@ -508,7 +524,7 @@ async function loadAll() {
     supa.from("deal_blasts").select("card_id,channel,status,detail,variation_index,variation_title,blasted_at").in("card_id", cardIds),
     supa.from("deal_acquisition").select("*").in("card_id", cardIds),
     supa.from("morby_deals").select("*").in("card_id", cardIds),
-    // Deliberately NOT in loadErrors: like deal_tasks/email_events, this fails
+    // Deliberately NOT in loadErrors: like email_events, this fails
     // soft until its migration (035) runs. No card can be deal_type 'cash'
     // before then, so an empty result changes nothing on screen.
     supa.from("cash_deals").select("*").in("card_id", cardIds),
@@ -521,14 +537,11 @@ async function loadAll() {
     fetchAllRows(() => supa.from("deck_views").select("card_id,buyer_id,viewed_at,kind,source,dwell_seconds").in("card_id", cardIds).order("id"))
       .then(r => r.error ? fetchAllRows(() => supa.from("deck_views").select("card_id,buyer_id,viewed_at").in("card_id", cardIds).order("id")) : r),
     fetchAllRows(() => supa.from("email_events").select("card_id,buyer_id,event").in("card_id", cardIds).order("id")),
-    // Pipeline-page data the dashboard folds in (fails soft pre-027): next
-    // actions drive the "task overdue" attention signal + the card's Next line.
-    supa.from("deal_tasks").select("*").in("card_id", cardIds).order("due_date", { ascending: true }),
     // Recent manual touches — clears "Call today" tiles you've already acted on.
     supa.from("buyer_activity").select("buyer_id,card_id,channel,created_at")
       .gte("created_at", new Date(Date.now() - 14 * 86400000).toISOString())
       .order("created_at", { ascending: false }),
-    // Stage labels/colors for the dispo-stage chips (dispo.js falls back to
+    // Stage list for morbyOnDashboard's PSA gate (dispo.js falls back to
     // the default six if the table is missing).
     loadDispoStages(),
   ]);
@@ -546,7 +559,7 @@ async function loadAll() {
   }
   // Everything else degrades to a visible warning (kept out of this list: the
   // queries that intentionally fail soft before their migration runs —
-  // deal_tasks 027, email_events 026, deck_views 030, dispo stages 022).
+  // email_events 026, deck_views 030, dispo stages 022).
   const loadErrors = [
     ["deal terms", termsErr], ["statuses", statusesErr], ["FB posts", fbErr],
     ["leads", leadsErr], ["blast log", blastsErr], ["acquisition info", acqErr],
@@ -570,8 +583,6 @@ async function loadAll() {
   const acqByCard = Object.fromEntries((acq || []).map(a => [a.card_id, a]));
   const morbyByCard = Object.fromEntries((morby || []).map(m => [m.card_id, m]));
   const cashByCard = Object.fromEntries((cash || []).map(c => [c.card_id, c]));
-  const tasksByCard = {}; // empty until 027 migration runs
-  for (const t of (tasks || [])) (tasksByCard[t.card_id] ||= []).push(t);
 
   allBuyers = buyers || [];
 
@@ -588,7 +599,7 @@ async function loadAll() {
     props: props || [], buyers: buyers || [], leads: leads || [], deckViews: deckViews || [],
     activities: activities || [],
     termsByCard, statusByCard, fbByCard, leadsByCard, blastsByCard, recipsByCard,
-    viewsByCard, eventsByCard, acqByCard, morbyByCard, cashByCard, tasksByCard,
+    viewsByCard, eventsByCard, acqByCard, morbyByCard, cashByCard,
     loadErrors,
   };
   renderBoard();
@@ -600,7 +611,7 @@ function renderBoard() {
   if (!boardData) return;
   const content = document.getElementById("content");
   const { props: allProps, buyers, leads, deckViews, activities, termsByCard, statusByCard, fbByCard, leadsByCard,
-          blastsByCard, recipsByCard, viewsByCard, eventsByCard, acqByCard, morbyByCard, cashByCard, tasksByCard } = boardData;
+          blastsByCard, recipsByCard, viewsByCard, eventsByCard, acqByCard, morbyByCard, cashByCard } = boardData;
   const props = allProps.filter(morbyOnDashboard);
   const hiddenMorby = allProps.length - props.length;
 
@@ -621,8 +632,7 @@ function renderBoard() {
     attByCard[p.card_id] = dealAttention(
       p, termsByCard[p.card_id] || {}, leadsByCard[p.card_id] || [],
       blastsByCard[p.card_id] || [], recipsByCard[p.card_id] || [],
-      viewsByCard[p.card_id] || [], eventsByCard[p.card_id] || [],
-      (tasksByCard && tasksByCard[p.card_id]) || []);
+      viewsByCard[p.card_id] || [], eventsByCard[p.card_id] || []);
   }
 
   const q = dealView.query.trim().toLowerCase();
@@ -708,7 +718,7 @@ function renderBoard() {
     </div>
     <div class="deal-type-group">
       <div class="deal-type-group-header flex-between">
-        <span>🤝 Morby Deals <span class="muted">${groupCount(morbyProps, allMorby)}</span>${hiddenMorby ? ` <a href="/pipeline.html" class="muted" style="font-size:0.78rem;font-weight:400" title="Morby deals appear here once the Pipeline has them at PSA SIGNED">· ${hiddenMorby} pre-PSA hidden</a>` : ""}</span>
+        <span>🤝 Morby Deals <span class="muted">${groupCount(morbyProps, allMorby)}</span>${hiddenMorby ? ` <span class="muted" style="font-size:0.78rem;font-weight:400" title="Morby deals below PSA SIGNED stay hidden; new ones added with + Add Morby Deal start at PSA SIGNED">· ${hiddenMorby} pre-PSA hidden</span>` : ""}</span>
         <button type="button" class="btn btn-primary btn-sm" id="add-morby-btn">+ Add Morby Deal</button>
       </div>
       <div id="add-morby-panel" class="card hidden" style="margin-bottom:16px">
@@ -954,24 +964,7 @@ function acqFlags(acq) {
 // loadAll already fetches, and each reason maps to an action Zach can take. ──
 const ATTENTION_BADGE_COLORS = { red: "#C53030", orange: "#DD6B20", yellow: "#B7791F", blue: "#2B6CB0", gray: "#718096" };
 
-// Pipeline-page task helpers (deal_tasks rows ride along in boardData).
-function isOverdueTask(t) {
-  return !t.done && t.due_date && new Date(t.due_date + "T23:59:59") < new Date();
-}
-function nextOpenTaskFor(cardId) {
-  return ((boardData && boardData.tasksByCard && boardData.tasksByCard[cardId]) || []).find(t => !t.done) || null;
-}
-
-// Dispo-stage chip: the deal's position on the Pipeline board, linked to it.
-// Labels/colors come from /js/dispo.js (DB-backed, falls back to defaults).
-function dispoStageChip(p) {
-  const key = p.dispo_stage || (DISPO_STAGES[0] && DISPO_STAGES[0].key) || "prep";
-  // Deleted/renamed stage keys display as the first stage, same as the board.
-  const s = DISPO_BY_KEY[key] || DISPO_BY_KEY[(DISPO_STAGES[0] || {}).key] || { label: key, color: "#A0AEC0" };
-  return `<a href="/pipeline.html#deal=${encodeURIComponent(p.card_id)}" class="pill" title="Dispo stage — click to open this deal on the Pipeline board" style="background:${s.color}22;color:${s.color};font-weight:700;text-decoration:none;white-space:nowrap">${escapeHtml(s.label)}</a>`;
-}
-
-function dealAttention(p, t, leads, blasts, recips, views, events, tasks) {
+function dealAttention(p, t, leads, blasts, recips, views, events) {
   let score = 0;
   const badges = [];
 
@@ -995,15 +988,6 @@ function dealAttention(p, t, leads, blasts, recips, views, events, tasks) {
   if (neverBlasted) {
     score += 25;
     badges.push({ icon: "📣", label: "Never blasted", cls: "blue", title: "No successful blast yet — buyers haven't seen this deal" });
-  }
-
-  // Overdue next-action: a scheduled task (Pipeline board) past its due date —
-  // attention that was explicitly planned and is now late.
-  const late = (tasks || []).filter(isOverdueTask);
-  if (late.length) {
-    score += 22;
-    badges.push({ icon: "⏳", label: "Task overdue", cls: "red",
-      title: `${late.length === 1 ? `"${late[0].title}"` : `${late.length} tasks`} past due — open this deal on the Pipeline board` });
   }
 
   // Follow-up window open: recipients went cold 48h+ after the last send.
@@ -1063,7 +1047,6 @@ function renderCompactCard(p, t, morby, cash, matchCount, leads, blasts, views, 
       <span class="muted">▸</span>
       <span style="font-weight:700;flex:1 1 220px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.name)}</span>
       ${p.state ? `<span class="pill pill-state">${escapeHtml(p.state)}</span>` : ""}
-      ${dispoStageChip(p)}
       <span class="muted" style="font-size:0.78rem;white-space:nowrap">${bits.map(escapeHtml).join(" · ")}</span>
       ${attentionBadges(att)}
     </div>`;
@@ -1101,7 +1084,6 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
           <p class="prop-title">${escapeHtml(p.name)}</p>
           <div class="prop-meta">
             ${p.state ? `<span class="pill pill-state">${escapeHtml(p.state)}</span>` : ""}
-            ${dispoStageChip(p)}
             ${p.deck_slug ? `<a href="${escapeHtml(deckUrlFor(p))}" target="_blank" rel="noopener">Deck page ↗</a>` : ""}
             <button type="button" class="btn btn-ghost btn-sm deck-copy-btn" data-card-id="${escapeHtml(p.card_id)}" style="font-size:0.72rem;padding:1px 8px" title="Copy the public deck-page link for DMs / FB groups">🔗 Copy link</button>
             <button type="button" class="btn btn-ghost btn-sm deck-pdf-copy-btn" data-card-id="${escapeHtml(p.card_id)}" style="font-size:0.72rem;padding:1px 8px" title="Copy a direct link to the Deal Deck PDF — generates and hosts it first if this deal hasn't been blasted yet">📄 Copy PDF link</button>
@@ -1136,7 +1118,6 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
           <p class="prop-title">${escapeHtml(p.name)}</p>
           <div class="prop-meta">
             ${p.state ? `<span class="pill pill-state">${escapeHtml(p.state)}</span>` : ""}
-            ${dispoStageChip(p)}
             ${p.deck_slug ? `<a href="${escapeHtml(deckUrlFor(p))}" target="_blank" rel="noopener">Deck page ↗</a>` : ""}
             <button type="button" class="btn btn-ghost btn-sm deck-copy-btn" data-card-id="${escapeHtml(p.card_id)}" style="font-size:0.72rem;padding:1px 8px" title="Copy the public deck-page link for DMs / FB groups">🔗 Copy link</button>
             <button type="button" class="btn btn-ghost btn-sm deck-pdf-copy-btn" data-card-id="${escapeHtml(p.card_id)}" style="font-size:0.72rem;padding:1px 8px" title="Copy a direct link to the Deal Deck PDF — generates and hosts it first if this deal hasn't been blasted yet">📄 Copy PDF link</button>
@@ -1160,7 +1141,7 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
   const acqBadgeComplete = acqDone.filled >= 10;
   const flags = acqFlags(acq);
 
-  // ── Pipeline: sorted by stage progression (closest-to-closing first) ──
+  // ── Leads: sorted by stage progression (closest-to-closing first) ──
   // Deck engagement (§7): views for this deal + a buyer_id -> view-count map.
   const allViews = (viewsByCard && viewsByCard[p.card_id]) || [];
   const views = allViews.filter(v => v.kind !== "pdf"); // page views only
@@ -1216,19 +1197,12 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
           <p class="prop-title">${escapeHtml(p.name)}</p>
           <div class="prop-meta">
             ${p.state ? `<span class="pill pill-state">${escapeHtml(p.state)}</span>` : ""}
-            ${dispoStageChip(p)}
             ${p.trello_url ? `<a href="${escapeHtml(p.trello_url)}" target="_blank" rel="noopener">Trello ↗</a>` : ""}
             ${p.drive_link ? `${p.trello_url ? " · " : ""}<a href="${escapeHtml(p.drive_link)}" target="_blank" rel="noopener">Photos (Drive) ↗</a>` : ""}
             ${p.deck_slug ? `${(p.trello_url || p.drive_link) ? " · " : ""}<a href="${escapeHtml(deckUrlFor(p))}" target="_blank" rel="noopener" title="The buyer-facing deal page">Deck page ↗</a>` : ""}
             <button type="button" class="btn btn-ghost btn-sm deck-copy-btn" data-card-id="${escapeHtml(p.card_id)}" style="font-size:0.72rem;padding:1px 8px" title="Copy the public deck-page link for DMs / FB groups">🔗 Copy link</button>
             ${respondedPlus ? ` <span class="pill responded-pill" data-card-id="${escapeHtml(p.card_id)}" style="background:#ff5a1f22;color:#ff5a1f;font-weight:700;cursor:pointer" title="Buyers who replied to a blast on this deal — click to view">🔥 ${respondedPlus} responded</span>` : ""}
           </div>
-          ${(() => {
-            const nt = nextOpenTaskFor(p.card_id);
-            if (!nt) return "";
-            const late = isOverdueTask(nt);
-            return `<div class="prop-meta" style="${late ? "color:#C53030;font-weight:600" : ""}">⏳ Next: ${escapeHtml(nt.title)}${nt.due_date ? ` · ${late ? "overdue since" : "due"} ${escapeHtml(nt.due_date)}` : ""} <a href="/pipeline.html#deal=${encodeURIComponent(p.card_id)}" style="font-size:0.78rem">manage ↗</a></div>`;
-          })()}
           ${flags.length ? `<div class="health-badges" style="justify-content:flex-start">${flags.map(f => `<span class="health-badge ${f.cls}" title="${escapeHtml(f.label)}">${f.icon} ${escapeHtml(f.label)}</span>`).join("")}</div>` : ""}
         </div>
         <div class="flex gap-8" style="flex-direction:column;align-items:flex-end">
@@ -1389,7 +1363,7 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
 
       <div class="mt-16">
         <div class="flex-between">
-          <label style="margin:0">Pipeline (${leads.length})</label>
+          <label style="margin:0">Leads (${leads.length})</label>
           <button type="button" class="btn btn-ghost btn-sm add-lead-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}">+ Add Lead</button>
         </div>
         <div class="muted" style="font-size:0.76rem;margin:2px 0 4px">👁 ${totalViews} view${totalViews === 1 ? "" : "s"}${sourceBreakdown ? ` (${escapeHtml(sourceBreakdown)})` : ""}${dwellTotal >= 15 ? ` · ⏱ ${escapeHtml(fmtDuration(dwellTotal))} total` : ""} · ${interestedCount} interested</div>
@@ -1422,7 +1396,7 @@ function renderCard(p, termsByCard, statusByCard, fbByCard, buyers, leadsByCard,
         <div style="font-size:0.8rem;color:var(--text-2);line-height:1.7">
           ${recips.length ? `<div><b>Delivery:</b> 📧 ${emailDelivered} delivered${emailFailed ? `, <span style="color:var(--red)">${emailFailed} failed</span>` : ""}${(smsDelivered || smsFailed) ? ` · 💬 ${smsDelivered} delivered${smsFailed ? `, <span style="color:var(--red)">${smsFailed} failed</span>` : ""}` : ""}${totalFailed ? ` <button type="button" class="btn btn-ghost btn-sm retry-failed-btn" data-card-id="${escapeHtml(p.card_id)}" data-address="${escapeHtml(p.name)}" style="font-size:0.7rem;padding:2px 8px;color:var(--red)">↻ Retry failed (${totalFailed})</button>` : ""}</div>` : ""}
           ${emailBlasts.length ? `<div><b>Copy variations sent:</b> ${Object.entries(variationStats).map(([title, n]) => `${escapeHtml(title)} (${n}×)`).join(" · ")}</div>` : ""}
-          ${leads.length ? `<div><b>Pipeline funnel:</b> ${STAGES.map(s => `${s.label} ${stageCounts[s.key] || 0}`).join(" → ")}</div>
+          ${leads.length ? `<div><b>Leads funnel:</b> ${STAGES.map(s => `${s.label} ${stageCounts[s.key] || 0}`).join(" → ")}</div>
           <div><b>Responded or further:</b> ${respondedPlus} of ${leads.length} logged lead${leads.length === 1 ? "" : "s"} (${leads.length ? Math.round(respondedPlus / leads.length * 100) : 0}%)</div>` : ""}
         </div>
       </div>` : ""}
@@ -3045,11 +3019,14 @@ function wireAddMorbyPanel() {
       // buried as a collapsed row.
       if (result.card_id) { expandedDealCards.add(result.card_id); revealedDealCards.add(result.card_id); }
       pullRentEstimates(result.card_id, { quiet: true });
+      const stampErr = await stampPsaSigned(result.card_id);
 
-      statusEl.textContent = "✓ Created — review the new card below (it leaves this board on reload until the Pipeline has it at PSA SIGNED).";
+      statusEl.textContent = "✓ Created — review the new card below.";
       panel.classList.add("hidden");
       fileInput.value = "";
       await loadAll();
+      // The panel (and statusEl) is re-rendered by loadAll, so this has to be a toast.
+      if (stampErr) toast(`Deal created, but couldn't mark it PSA SIGNED (${stampErr}) — it will be hidden after a reload.`, { type: "error" });
     } catch (e) {
       statusEl.textContent = `Couldn't create deal: ${e.message}`;
     } finally {
@@ -4124,7 +4101,7 @@ async function saveLead() {
 }
 async function deleteLead() {
   if (!activeLead || !activeLead.lead) return;
-  if (!confirm(`Remove "${activeLead.lead.name}" from this deal's pipeline?`)) return;
+  if (!confirm(`Remove "${activeLead.lead.name}" from this deal's leads?`)) return;
   const { error } = await supa.from("deal_leads").delete().eq("id", activeLead.lead.id);
   if (error) { toast(`Couldn't remove lead: ${error.message}`, { type: "error" }); return; }
   closeLeadModal();
@@ -4304,7 +4281,7 @@ function renderBlastCheckboxes(list, note = "") {
         ${DealShared.buyBoxCompleteness(b) === "wildcard" ? '<span style="font-size:0.66rem;color:#B7791F;font-weight:600" title="No market, strategy or budget on file — this buyer matches every deal, so this isn\'t a real match">✳ wildcard</span>' : ""}
         ${missing.length ? `<span style="font-size:0.66rem;color:#C53030;font-weight:600" title="Missing ${missing.join(', ')}">⚠ no ${missing.join("/")}</span>` : ""}
         <button type="button" class="btn btn-ghost btn-sm buyer-link-btn" data-buyer-id="${b.id}" style="margin-left:auto;font-size:0.7rem;padding:2px 8px" title="Copy this buyer's personal tracked deck link — views and Interested taps from it attribute to them, same as a blast">🔗</button>
-        <button type="button" class="btn btn-ghost btn-sm log-outcome-btn" data-buyer-id="${b.id}" data-name="${escapeHtml(b.name)}" data-contact="${escapeHtml(b.email || b.phone || "")}" style="font-size:0.7rem;padding:2px 8px" title="Log this buyer's response in the deal pipeline">📋 Log</button>
+        <button type="button" class="btn btn-ghost btn-sm log-outcome-btn" data-buyer-id="${b.id}" data-name="${escapeHtml(b.name)}" data-contact="${escapeHtml(b.email || b.phone || "")}" style="font-size:0.7rem;padding:2px 8px" title="Log this buyer's response in the deal's leads">📋 Log</button>
       </span>
       ${reasons.length ? `<span class="muted" style="font-size:0.72rem;padding-left:26px">${reasons.map(escapeHtml).join(" · ")}</span>` : ""}
     </label>`;
@@ -4603,7 +4580,7 @@ document.getElementById("lead-modal-delete").addEventListener("click", deleteLea
   // Runs first and clears the hash, so the #deal= check below can't misread it.
   await handlePhotoHandoff();
 
-  // #deal=<card_id> deep link (Pipeline board → this deal's full card).
+  // #deal=<card_id> deep link → this deal's full card.
   const m = location.hash.match(/^#deal=(.+)$/);
   if (m && boardData) {
     const cardId = decodeURIComponent(m[1]);

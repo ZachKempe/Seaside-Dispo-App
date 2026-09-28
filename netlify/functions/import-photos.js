@@ -197,7 +197,7 @@ exports.handler = async (event) => {
 
     // ── Drive mirror (optional, best-effort) ──
     const drive = { on: gdrive.driveConfigured(), saved: 0, failed: 0, folder: "", error: "" };
-    let driveFolderId = "", driveNames = new Set();
+    let dFolder = "", driveNames = new Set();
     const driveHashes = new Set();
     if (drive.on) {
       try {
@@ -206,20 +206,20 @@ exports.handler = async (event) => {
         });
         const rows = pr.ok ? await pr.json() : [];
         const f = await gdrive.dealFolder((rows[0] && rows[0].name) || card_id);
-        driveFolderId = f.id;
+        dFolder = f.id;
         drive.folder = gdrive.folderUrl(f.id);
         driveNames = await gdrive.listFolderNames(f.id);
         for (const n of driveNames) { const m = n.match(/-([a-f0-9]{10})-imp\./); if (m) driveHashes.add(m[1]); }
       } catch (e) {
         drive.error = e.message;
-        driveFolderId = "";
+        dFolder = "";
         console.warn("import-photos drive setup failed:", e.message);
       }
     }
     const toDrive = async (name, buf, type) => {
-      if (!driveFolderId) return;
+      if (!dFolder) return;
       try {
-        await gdrive.uploadToFolder(driveFolderId, name, buf, type);
+        await gdrive.uploadToFolder(dFolder, name, buf, type);
         drive.saved++;
       } catch (e) {
         drive.failed++;
@@ -240,7 +240,7 @@ exports.handler = async (event) => {
         if (importedHashes.has(hash)) {
           already++;
           // In the gallery but not in Drive yet → copy it over from Storage.
-          if (driveFolderId && !driveHashes.has(hash)) {
+          if (dFolder && !driveHashes.has(hash)) {
             const have = existing.find(p => p.name.includes(`-${hash}-imp.`));
             try {
               const sr = have && await fetch(have.url, { signal: AbortSignal.timeout(6000) });

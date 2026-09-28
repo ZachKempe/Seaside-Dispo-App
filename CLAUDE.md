@@ -117,15 +117,16 @@ duplicate buyers who each receive their own blast.
   bot-walls servers, so Zillow photos come from the user's own browser via
   `browser-extension/` (📸 button → `dashboard.html#import-photos=…`) or the 🧲
   bookmarklet in the dashboard gallery block.
-  **Google Drive mirror (Sept 2026):** when `GDRIVE_SA_EMAIL` + `GDRIVE_SA_PRIVATE_KEY` +
-  `GDRIVE_PHOTOS_FOLDER_ID` are set, every imported photo is also saved to a per-deal
-  subfolder (named after `properties.name`, found-or-created) of that parent folder —
-  `lib/gdrive.js`, a Google **service account** (the Gmail OAuth token has no Drive scope and
-  `GOOGLE_API_KEY` can't write). The parent folder must be shared with the service account
-  email as Editor. Best-effort: a Drive failure is reported in the response/toast, never fails
-  the gallery import; photos in the gallery but missing from Drive are copied over on the next
-  run of the same link. Unset = off. Deliberately does not touch `properties.drive_link` (it
-  prefills the import box, so pointing it at the mirror would re-import our own photos).
+  **Google Drive mirror (Sept 2026):** when `GDRIVE_REFRESH_TOKEN` is set (plus the existing
+  `GMAIL_CLIENT_ID/SECRET` — same OAuth client, published to production), every imported
+  photo is also saved to `Deal Photos/<deal name>/` in **zach@seasidehorizon.com's** Drive
+  (`lib/gdrive.js`). The token carries only the `drive.file` scope, so the app sees just what
+  it created and makes the root folder itself — no folder id to configure. (A service account
+  was tried first: the org policy `iam.disableServiceAccountKeyCreation` blocks its key.)
+  Best-effort: a Drive failure is reported in the response/toast, never fails the gallery
+  import; photos in the gallery but missing from Drive are copied over on the next run of the
+  same link. Unset = off. Deliberately does not touch `properties.drive_link` (it prefills the
+  import box, so pointing it at the mirror would re-import our own photos).
 - `parse-loi.js` — sends an LOI PDF to the Claude API, extracts Morby deal terms.
 - `parse-contacts.js` — "Import from PDF" for the Contacts page: a roster / attendee list /
   page of business cards → Claude → `{contacts:[…]}`. It **writes nothing and never holds the

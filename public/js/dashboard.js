@@ -2427,6 +2427,7 @@ async function syncGalleryCount(cardId, n) {
 async function runImportRounds(cardId, url, onProgress) {
   const { data: { session: s } } = await supa.auth.getSession();
   let imported = 0, already = 0, rounds = 0;
+  let drive = null; // null = Drive copy not configured
   while (rounds < 5) {
     rounds++;
     if (onProgress) onProgress(rounds === 1 ? "Fetching photos…" : `Fetching more… (${imported} so far)`);
@@ -2442,9 +2443,24 @@ async function runImportRounds(cardId, url, onProgress) {
     }
     imported += result.imported || 0;
     already = result.already || 0;
+    if (result.drive) {
+      drive = drive || { saved: 0, failed: 0, folder: "", error: "" };
+      drive.saved += result.drive.saved; drive.failed += result.drive.failed;
+      drive.folder = result.drive.folder || drive.folder;
+      drive.error = drive.error || result.drive.error;
+    }
     if (!result.partial) break;
   }
-  return { imported, already };
+  return { imported, already, drive };
+}
+
+// One-line Drive outcome for the import toasts ("" when the Drive copy is off).
+function driveNote(drive) {
+  if (!drive) return "";
+  if (drive.failed || (drive.error && !drive.saved)) {
+    return ` · ⚠ Google Drive copy failed${drive.error ? ` (${drive.error})` : ""} — re-run the same link to retry`;
+  }
+  return drive.saved ? ` · ${drive.saved} saved to Google Drive` : "";
 }
 
 // ── Chrome-extension / bookmarklet handoff ──
@@ -2515,10 +2531,10 @@ async function handlePhotoHandoff() {
     const statusEl = backdrop.querySelector("#handoff-status");
     goBtn.disabled = true;
     try {
-      const { imported, already } = await runImportRounds(cardId, urls.join("\n"), (msg) => { statusEl.textContent = msg; });
+      const { imported, already, drive } = await runImportRounds(cardId, urls.join("\n"), (msg) => { statusEl.textContent = msg; });
       close();
       expandedDealCards.add(cardId);
-      toast(`✓ Imported ${imported} photo${imported === 1 ? "" : "s"}${already ? ` · ${already} already there` : ""}.`, { type: "success", duration: 7000 });
+      toast(`✓ Imported ${imported} photo${imported === 1 ? "" : "s"}${already ? ` · ${already} already there` : ""}${driveNote(drive)}.`, { type: "success", duration: 7000 });
       await loadAll();
     } catch (e) {
       statusEl.textContent = "";
@@ -2604,11 +2620,11 @@ function wireGalleryBlocks() {
       const label = btn.textContent;
       btn.disabled = true; btn.textContent = "Importing…";
       try {
-        const { imported, already } = await runImportRounds(cardId, url, (msg) => { statusEl.textContent = msg; });
+        const { imported, already, drive } = await runImportRounds(cardId, url, (msg) => { statusEl.textContent = msg; });
         statusEl.textContent = "";
         const bits = [`✓ Imported ${imported} photo${imported === 1 ? "" : "s"}`];
         if (already) bits.push(`${already} already in the gallery`);
-        toast(`${bits.join(" · ")}.`, { type: "success", duration: 7000 });
+        toast(`${bits.join(" · ")}${driveNote(drive)}.`, { type: "success", duration: 7000 });
         await refresh();
       } catch (e) {
         statusEl.textContent = "";

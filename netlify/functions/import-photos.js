@@ -20,6 +20,13 @@
 //      user's own browser tab instead, and those paste in as shape 2. The
 //      photo CDN itself (photos.zillowstatic.com) downloads fine from here.
 //
+// Every imported photo is ALSO saved to a per-deal Google Drive folder when the
+// Drive service account is configured (lib/gdrive.js) — best-effort: a Drive
+// failure is reported in the response but never fails or blocks the gallery
+// import. Photos already in the gallery but missing from Drive (an earlier
+// Drive failure, or imported before Drive was switched on) are copied over from
+// Storage on the next run of the same link.
+//
 // Sync function budget is ~10s, so downloads run concurrently, are capped at
 // MAX_PHOTOS per run, and stop starting new work near the deadline — the
 // response reports found/imported/skipped so a partial run is visible.
@@ -31,6 +38,8 @@ const SB_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const GOOGLE_KEY = process.env.GOOGLE_API_KEY || process.env.GOOGLE_MAPS_API_KEY || "";
 
 const { listGalleryPhotos, uploadGalleryImage, syncPhotosCount } = require("./lib/gallery");
+const gdrive = require("./lib/gdrive");
+const SB_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const MAX_PHOTOS = 16;              // per import run — rerun to pull more
 const MIN_BYTES = 25 * 1024;        // below this it's a logo/thumbnail, not a photo
@@ -186,6 +195,38 @@ exports.handler = async (event) => {
     const found = candidates.length;
     candidates = candidates.slice(0, candidateCap);
 
+    // ── Drive mirror (optional, best-effort) ──
+    const drive = { on: gdrive.driveConfigured(), saved: 0, failed: 0, folder: "", error: "" };
+    let driveFolderId = "", driveNames = new Set();
+    const driveHashes = new Set();
+    if (drive.on) {
+      try {
+        const pr = await fetch(`${SB_URL}/rest/v1/properties?card_id=eq.${encodeURIComponent(card_id)}&select=name`, {
+          headers: { apikey: SB_SERVICE_KEY, Authorization: `Bearer ${SB_SERVICE_KEY}` },
+        });
+        const rows = pr.ok ? await pr.json() : [];
+        const f = await gdrive.dealFolder((rows[0] && rows[0].name) || card_id);
+        driveFolderId = f.id;
+        drive.folder = gdrive.folderUrl(f.id);
+        driveNames = await gdrive.listFolderNames(f.id);
+        for (const n of driveNames) { const m = n.match(/-([a-f0-9]{10})-imp\./); if (m) driveHashes.add(m[1]); }
+      } catch (e) {
+        drive.error = e.message;
+        driveFolderId = "";
+        console.warn("import-photos drive setup failed:", e.message);
+      }
+    }
+    const toDrive = async (name, buf, type) => {
+      if (!driveFolderId) return;
+      try {
+        await gdrive.uploadToFolder(driveFolderId, name, buf, type);
+        drive.saved++;
+      } catch (e) {
+        drive.failed++;
+        if (!drive.error) drive.error = e.message;
+      }
+    };
+
     // ── Download + filter + upload, concurrently, inside the time budget ──
     let imported = 0, skipped = 0, already = 0;
     const errors = [];
@@ -196,7 +237,18 @@ exports.handler = async (event) => {
         const idx = next++;
         const c = candidates[idx];
         const hash = urlHash(c.url);
-        if (importedHashes.has(hash)) { already++; continue; }
+        if (importedHashes.has(hash)) {
+          already++;
+          // In the gallery but not in Drive yet → copy it over from Storage.
+          if (driveFolderId && !driveHashes.has(hash)) {
+            const have = existing.find(p => p.name.includes(`-${hash}-imp.`));
+            try {
+              const sr = have && await fetch(have.url, { signal: AbortSignal.timeout(6000) });
+              if (sr && sr.ok) await toDrive(have.name, Buffer.from(await sr.arrayBuffer()), sr.headers.get("content-type") || "image/jpeg");
+            } catch (_) { drive.failed++; }
+          }
+          continue;
+        }
         try {
           const r = await fetch(c.url, {
             headers: { "User-Agent": BROWSER_UA, Accept: "image/*,*/*" },
@@ -212,8 +264,11 @@ exports.handler = async (event) => {
           if (imported >= MAX_PHOTOS) return;
           // Deterministic name: candidate position (keeps display order) + the
           // source-URL hash (makes re-imports idempotent via the skip above).
-          await uploadGalleryImage(card_id, `${String(idx).padStart(3, "0")}-${hash}-imp.${ext}`, buf, type.startsWith("image/") ? type : "image/jpeg");
+          const fname = `${String(idx).padStart(3, "0")}-${hash}-imp.${ext}`;
+          const ctype = type.startsWith("image/") ? type : "image/jpeg";
+          await uploadGalleryImage(card_id, fname, buf, ctype);
           imported++;
+          await toDrive(fname, buf, ctype);
         } catch (e) {
           skipped++;
           if (errors.length < 3) errors.push(e.message);
@@ -232,6 +287,7 @@ exports.handler = async (event) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         imported, found, skipped, already, total,
+        drive: drive.on ? { saved: drive.saved, failed: drive.failed, folder: drive.folder, error: drive.error } : null,
         partial: (imported >= MAX_PHOTOS || Date.now() - started > TIME_BUDGET_MS) && (imported + already) < found,
       }),
     };

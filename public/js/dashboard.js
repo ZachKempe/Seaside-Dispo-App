@@ -2950,8 +2950,72 @@ function wireMorbyPanel() {
   });
 }
 
+// Netlify rejects any request body over ~6 MB *before* our function runs (an
+// empty reply, which the page reported as "Unexpected end of JSON input"), and
+// base64 inflates a PDF by a third — so anything over ~4 MB of raw PDF (a phone
+// scan of a signed contract is routinely 8–10 MB) cannot go through as-is.
+// Oversized PDFs are re-rendered page by page to JPEG in the browser and
+// rebuilt as a smaller image-only PDF; Claude reads those fine. Small PDFs are
+// untouched, and if shrinking fails the original is sent, so this can only
+// help. Used by every upload path (LOI, cash contract, Sub-To contract).
+const PDF_UPLOAD_MAX_BYTES = 4 * 1024 * 1024;
+const PDFJS_VERSION = "3.11.174";
+let _pdfJsPromise = null;
+function loadPdfJs() {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (_pdfJsPromise) return _pdfJsPromise;
+  _pdfJsPromise = new Promise((resolve, reject) => {
+    const sc = document.createElement("script");
+    sc.src = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}/pdf.min.js`;
+    sc.onload = () => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+        `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}/pdf.worker.min.js`;
+      resolve(window.pdfjsLib);
+    };
+    sc.onerror = () => { _pdfJsPromise = null; reject(new Error("Failed to load PDF reader")); };
+    document.head.appendChild(sc);
+  });
+  return _pdfJsPromise;
+}
+async function shrinkPdf(buf) {
+  const [pdfjs] = await Promise.all([loadPdfJs(), loadJsPdf()]);
+  const src = await pdfjs.getDocument({ data: buf.slice(0) }).promise;
+  // Progressively lower fidelity until it fits; page width in px, JPEG quality.
+  for (const [targetW, quality] of [[1100, 0.6], [900, 0.5], [750, 0.4], [600, 0.35]]) {
+    let out = null;
+    for (let n = 1; n <= src.numPages; n++) {
+      const page = await src.getPage(n);
+      const base = page.getViewport({ scale: 1 });
+      const vp = page.getViewport({ scale: targetW / base.width });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      const img = canvas.toDataURL("image/jpeg", quality);
+      const orient = canvas.width > canvas.height ? "landscape" : "portrait";
+      if (!out) out = new window.jspdf.jsPDF({ unit: "px", format: [canvas.width, canvas.height], orientation: orient, compress: true });
+      else out.addPage([canvas.width, canvas.height], orient);
+      out.addImage(img, "JPEG", 0, 0, canvas.width, canvas.height);
+      page.cleanup();
+    }
+    const bytes = out.output("arraybuffer");
+    if (bytes.byteLength <= PDF_UPLOAD_MAX_BYTES) return bytes;
+  }
+  throw new Error("PDF is too large even after compression — try splitting it or exporting a smaller copy");
+}
 async function pdfFileToBase64(file) {
-  return arrayBufferToBase64(await file.arrayBuffer());
+  let buf = await file.arrayBuffer();
+  if (buf.byteLength > PDF_UPLOAD_MAX_BYTES && file.type === "application/pdf") {
+    try { buf = await shrinkPdf(buf); }
+    catch (e) {
+      console.warn("PDF shrink failed:", e);
+      // A re-render that couldn't fit is worth saying out loud; an unavailable
+      // reader just falls through to the original (which may still be rejected).
+      if (/too large/.test(e.message)) throw e;
+    }
+  }
+  return arrayBufferToBase64(buf);
 }
 
 async function extractLoi(btn) {

@@ -10,10 +10,11 @@
 const { verifyDeckToken, viewToken } = require("./lib/deck-token");
 const {
   fmtMoney, buyerCashAtClose, subtoTermRows, morbyTermRows,
-  cashTermRows, cashPriceStack,
+  cashTermRows, cashPriceStack, dealCashFlow,
   subtoCarry, subtoRentOptions, subtoPrincipalPaydown, RESERVE_MONTHS,
 } = require("../../public/js/deal-shared");
 const { dealAddress } = require("./lib/deal-address");
+const { nearestCityFor, describeNearestCity } = require("./lib/nearest-city");
 const { resolveDealPhotos } = require("./lib/deck-photo");
 const { listGalleryPhotos } = require("./lib/gallery");
 const { isBot } = require("./lib/bot-ua");
@@ -361,6 +362,42 @@ exports.handler = async (event) => {
         <div class="money" style="margin:10px 0 0;font-weight:800;font-size:60px;line-height:.95;color:${NAVY};letter-spacing:-.03em;font-variant-numeric:tabular-nums">${esc(heroValue)}</div>
         <p style="margin:16px 4px 0;font-size:13.5px;line-height:1.5;color:#718096">${esc(heroSub)}</p>
       </div>`;
+
+    // "Doesn't cash flow" callout (Morby + cash). A deal whose rent can't carry
+    // its debt service sells on two other things: what the buyer is paid at the
+    // table and where the property sits. Shown ONLY when rent/NOI is on file and
+    // every strategy nets ≤ $0 (dealCashFlow.flows === false) — missing data is
+    // not the same as "negative". Wrapped whole: nothing here may take down a
+    // deal page, and the geocode lookup only runs when the callout will render.
+    let noFlowSec = "";
+    if (isMorby || isCash) {
+      try {
+        const cf = dealCashFlow(isCash ? cash : morby, { isCash });
+        if (cf.flows === false) {
+          const nearest = await nearestCityFor(address).catch(() => null);
+          const tiles = [];
+          if (isCash) {
+            const { forgiven } = cashPriceStack(cash);
+            if (forgiven > 0) tiles.push(["Amount Forgiven", "$" + Math.round(forgiven).toLocaleString(), "Equity you own the day you close"]);
+          } else {
+            const cac = buyerCashAtClose(morby);
+            if (cac > 0) tiles.push(["Cash to You at Close", "~$" + Math.round(cac).toLocaleString(), "Paid at the table, before a dollar of yours goes in"]);
+          }
+          if (nearest) tiles.push(["Location", describeNearestCity(nearest), "Straight-line distance to the nearest major city"]);
+          if (tiles.length) {
+            noFlowSec = `
+      <div class="noflow-sec" style="margin:18px 20px 0;background:#FFF9EC;border:1px solid #EAD9A0;border-radius:16px;padding:18px 18px 16px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#8A6D1F">This is a payday deal, not a rental-income deal</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:12px">
+          ${tiles.map(([k, v, sub]) => `<div style="background:#fff;border:1px solid ${LINE};border-radius:12px;padding:13px 15px"><div style="font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#94A0B2">${esc(k)}</div><div style="margin-top:5px;font-size:22px;font-weight:800;color:${NAVY};letter-spacing:-.01em">${esc(v)}</div><div style="margin-top:4px;font-size:11.5px;color:${MUTED}">${esc(sub)}</div></div>`).join("")}
+        </div>
+      </div>`;
+          }
+        }
+      } catch (e) {
+        console.warn("no-cash-flow callout skipped:", e.message);
+      }
+    }
 
     // Activity strip — real engagement counts only (no fabricated numbers).
     // Hides entirely when a deal is too quiet to be persuasive.
@@ -809,6 +846,7 @@ exports.handler = async (event) => {
         ${banner}
         ${greeting}
         ${heroCard}
+        ${noFlowSec}
         ${activity}
         ${photosSec}
         ${termsSec}${rentSec}

@@ -491,7 +491,46 @@
     return rows.filter(([, v]) => v && v !== "—");
   }
 
+  // ── Does the deal cash flow? ────────────────────────────────────
+  // ONE implementation of the Morby/cash monthly P&L, shared by the PDF deck
+  // (dashboard.js) and the deck page (deck.js) so the figure printed on one
+  // can never disagree with the "doesn't cash flow" call made on the other.
+  //   net = rent (or NOI) − DSCR payment − seller-note payment − taxes − insurance
+  // A cash deal has no seller note, so its seller payment is 0 by definition.
+  // `flows` is null when there is no rent/NOI on file — "unknown" must never
+  // be advertised as "doesn't cash flow" on a buyer-facing page. Otherwise it
+  // is true when ANY strategy with a rent on file nets above $0 (a deal that
+  // loses as an LTR but makes money as an STR does cash flow).
+  const DSCR_DEFAULTS = {
+    single_family: { rate: 7.75, ltv: 75, credit: 800 },
+    commercial:    { rate: 8.5,  ltv: 70, credit: 800 },
+  };
+  function dealCashFlow(m, opts) {
+    m = m || {};
+    const isCash = !!(opts && opts.isCash);
+    const commercial = m.property_type === "commercial";
+    const d = DSCR_DEFAULTS[commercial ? "commercial" : "single_family"];
+    const rate = m.dscr_rate != null ? Number(m.dscr_rate) : d.rate;
+    const ltv = m.dscr_ltv != null ? Number(m.dscr_ltv) : d.ltv;
+    const price = isCash ? cashPriceStack(m).purchase : (Number(m.purchase_price) || 0);
+    const debtService = dscrMonthlyPayment(price, rate, ltv);
+    const sellerPmt = isCash ? 0 : (Number(m.monthly_payment) || 0);
+    const taxes = Number(m.monthly_taxes) || 0;
+    const insurance = Number(m.monthly_insurance) || 0;
+    const load = debtService + sellerPmt + taxes + insurance;
+    const noi = m.monthly_noi != null ? Number(m.monthly_noi) : (Number(m.annual_noi) || 0) / 12;
+    const ltr = Number(m.ltr_monthly_rent) || 0;
+    const str = Number(m.str_monthly_rent) || 0;
+    const out = { commercial, price, rate, ltv, debtService, sellerPmt, taxes, insurance, noi, ltr, str,
+      noiNet: noi - load, ltrNet: ltr - load, strNet: str - load, flows: null };
+    const nets = commercial ? (noi > 0 ? [out.noiNet] : [])
+      : [ltr > 0 ? out.ltrNet : null, str > 0 ? out.strNet : null].filter(n => n != null);
+    if (nets.length) out.flows = Math.max(...nets) > 0;
+    return out;
+  }
+
   return {
+    dealCashFlow, DSCR_DEFAULTS,
     fmtMoney, fmtPct, matchesDeal, buyerCashAtClose, dscrMonthlyPayment,
     subtoSummaryRows, subtoTermRows, morbyTermRows,
     cashPriceStack, cashTermRows,

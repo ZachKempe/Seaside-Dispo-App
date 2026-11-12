@@ -1581,10 +1581,7 @@ function renderAcqPanel(p, acq, terms) {
 }
 
 // ── Morby Deal tab content (LOI terms + Deal Deck inputs) ──
-const MORBY_DSCR_DEFAULTS = {
-  single_family: { rate: 7.75, ltv: 75, credit: 800 },
-  commercial:    { rate: 8.5,  ltv: 70, credit: 800 },
-};
+const MORBY_DSCR_DEFAULTS = DealShared.DSCR_DEFAULTS; // one copy: the deck page's cash-flow call uses it too
 
 // (dscrMonthlyPayment comes from /js/deal-shared.js)
 
@@ -3455,9 +3452,7 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
   // Deliberately 0 on a cash deal — there is no assignment split to take a
   // share of, so any figure here would be money that never changes hands.
   // Every downstream use is already gated on `> 0`.
-  const cashToBuyerAtClose = isCash
-    ? 0
-    : (loanAmount - (Number(m.down_payment) || 0) - price * 0.05 - addlBrokerFee) / 2;
+  const cashToBuyerAtClose = isCash ? 0 : DealShared.buyerCashAtClose(m);
 
   const fmt = (n) => `$${Math.round(Number(n) || 0).toLocaleString()}`;
   const fmtPct = (n) => `${Number(n) || 0}%`;
@@ -3531,18 +3526,19 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
 
   // Cash Flow Analysis is laid out as a simple P&L: income, less debt
   // service (DSCR loan + seller financing), equals net cash flow.
-  const sellerPmt  = Number(m.monthly_payment)   || 0;
+  const cf = DealShared.dealCashFlow(m, { isCash });
+  const sellerPmt  = cf.sellerPmt;
   // A cash deal has no seller note, so this isn't a $0 payment — it's a line
   // that doesn't exist. Printing "Seller Financing Pmt ($0)" invites the
   // question of what seller financing.
   const sellerPmtRow = isCash ? [] : [["Seller Financing Pmt", fmtExpense(sellerPmt)]];
-  const taxes      = Number(m.monthly_taxes)      || 0;
-  const insurance  = Number(m.monthly_insurance)  || 0;
+  const taxes      = cf.taxes;
+  const insurance  = cf.insurance;
   let cashFlowLeftRows, cashFlowRightRows;
   let cashFlowHeadlineLtr, cashFlowHeadlineStr, cashFlowLabelLtr, cashFlowLabelStr;
   if (propertyType === "commercial") {
-    const noi = m.monthly_noi != null ? Number(m.monthly_noi) : (Number(m.annual_noi) || 0) / 12;
-    const netCashFlow = noi - monthlyDebtService - sellerPmt - taxes - insurance;
+    const noi = cf.noi;
+    const netCashFlow = cf.noiNet;
     cashFlowLeftRows = [
       ["Net Operating Income",   fmt(noi)],
       ["DSCR Loan Payment",      fmtExpense(monthlyDebtService)],
@@ -3557,10 +3553,8 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
     cashFlowLabelLtr = "Net Cash Flow";
     cashFlowLabelStr = "Net Cash Flow";
   } else {
-    const ltr = Number(m.ltr_monthly_rent) || 0;
-    const str = Number(m.str_monthly_rent) || 0;
-    const ltrNet = ltr - monthlyDebtService - sellerPmt - taxes - insurance;
-    const strNet = str - monthlyDebtService - sellerPmt - taxes - insurance;
+    const ltr = cf.ltr, str = cf.str;
+    const ltrNet = cf.ltrNet, strNet = cf.strNet;
     cashFlowLeftRows = [
       ["Rental Income (LTR)",  fmt(ltr)],
       ["DSCR Loan Payment",    fmtExpense(monthlyDebtService)],
@@ -3593,7 +3587,12 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
   if (btn) { btn.textContent = "Generating…"; btn.disabled = true; }
   try {
     await loadJsPdf();
-    const [logoDataUrl, deckFonts] = await Promise.all([loadLogoDataUrl(), loadDeckFontData()]);
+    // Only a deal that doesn't cash flow gets the location lookup; it fails soft
+    // (null) so the PDF still generates without it.
+    const noFlow = cf.flows === false;
+    const [logoDataUrl, deckFonts, nearestText] = await Promise.all([
+      loadLogoDataUrl(), loadDeckFontData(), noFlow ? fetchNearestCityText(dealAddress) : null,
+    ]);
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit: "pt", format: "letter", orientation: "portrait" });
     // Every setFont below goes through this, so a font that failed to load
@@ -3712,6 +3711,42 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
       }
     });
     y += summaryBoxH + 18;
+
+    // ── "Doesn't cash flow" callout ──
+    // Rent can't carry the debt service, so the pitch is what the buyer is paid
+    // at the table (Morby) / the equity they own on day one (cash) plus where the
+    // property sits. Only when rent/NOI is on file and nothing nets above $0.
+    if (noFlow) {
+      const callouts = [];
+      if (isCash) { if (stack.forgiven > 0) callouts.push(["AMOUNT FORGIVEN", fmt(stack.forgiven)]); }
+      else if (cashToBuyerAtClose > 0) callouts.push(["CASH TO YOU AT CLOSE", `~${fmt(cashToBuyerAtClose)}`]);
+      if (nearestText) callouts.push(["LOCATION", nearestText]);
+      if (callouts.length) {
+        const boxH = 58;
+        ensureSpace(boxH + 16);
+        doc.setFillColor(255, 249, 236);
+        doc.setDrawColor(...GOLD);
+        doc.setLineWidth(1);
+        doc.roundedRect(marginX, y, colW, boxH, 6, 6, "FD");
+        doc.setFont(deckFont, "bold");
+        doc.setFontSize(7.5);
+        doc.setTextColor(138, 109, 31);
+        doc.text("THIS IS A PAYDAY DEAL, NOT A RENTAL-INCOME DEAL", marginX + 14, y + 16);
+        const cw = (colW - 28) / callouts.length;
+        callouts.forEach(([label, value], i) => {
+          const cx = marginX + 14 + cw * i;
+          doc.setFont(deckFont, "normal");
+          doc.setFontSize(6.5);
+          doc.setTextColor(120, 120, 120);
+          doc.text(label, cx, y + 31);
+          doc.setFont(deckFont, "bold");
+          doc.setFontSize(12.5);
+          doc.setTextColor(...NAVY);
+          doc.text(doc.splitTextToSize(value, cw - 8)[0], cx, y + 48);
+        });
+        y += boxH + 16;
+      }
+    }
 
     let rowIndex = 0;
     const sectionHeader = (title) => {
@@ -3973,6 +4008,22 @@ async function generateDealDeck(cardId, btn, { returnBase64 = false } = {}) {
   } finally {
     if (btn) { btn.textContent = original; btn.disabled = false; }
   }
+}
+
+// Location line for the "doesn't cash flow" callout — "~14 mi from Tampa, FL".
+// Null on any failure so a lookup problem can never block a deck.
+async function fetchNearestCityText(address) {
+  try {
+    const { data: { session: s } } = await supa.auth.getSession();
+    const res = await fetch("/.netlify/functions/nearest-city", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.access_token}` },
+      body: JSON.stringify({ address }),
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    return (j.nearest && j.nearest.text) || null;
+  } catch (e) { return null; }
 }
 
 let _logoDataUrlPromise = null;
